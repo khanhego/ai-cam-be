@@ -1,0 +1,68 @@
+# Môi trường dev. Port host lệch chuẩn để không đụng dự án khác trên cùng máy.
+# Chạy: docker compose -f docker/compose.dev.yml up --build
+name: aicam-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: aicam
+      POSTGRES_USER: aicam
+      POSTGRES_PASSWORD: aicam
+    ports: ["55432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aicam -d aicam"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports: ["56379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 10
+
+  mediamtx:
+    image: bluenviron/mediamtx:1
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+      - video:/data/video
+    ports:
+      - "58554:8554"   # RTSP
+      - "58889:8889"   # WebRTC / WHEP
+      - "59997:9997"   # API
+
+  fake-cam1:
+    build: ./fake-cams
+    environment: { CAM: cam1, TARGET: "rtsp://mediamtx:8554/cam-fake1" }
+    depends_on: [mediamtx]
+    restart: unless-stopped
+
+  fake-cam2:
+    build: ./fake-cams
+    environment: { CAM: cam2, TARGET: "rtsp://mediamtx:8554/cam-fake2" }
+    depends_on: [mediamtx]
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file: [../.env.example]
+    environment:
+      LOG_JSON: "true"
+    ports: ["8180:8000"]
+    volumes: [video:/data/video]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      retries: 5
+
+volumes:
+  pgdata:
+  video:

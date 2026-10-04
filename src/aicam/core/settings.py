@@ -1,0 +1,75 @@
+"""Cấu hình đọc từ biến môi trường (02a §9)."""
+
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DEV_SECRET_PREFIX = "dev-only-"  # noqa: S105 — tiền tố nhận diện secret dev, không phải secret
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    app_env: str = "dev"  # dev | test | staging | production
+    log_level: str = "INFO"
+    log_json: bool = True
+    tz_display: str = "Asia/Ho_Chi_Minh"
+    cors_origins: list[str] = []
+
+    database_url: str = "postgresql+asyncpg://aicam:aicam@localhost:55432/aicam"
+    redis_url: str = "redis://localhost:56379/0"
+
+    # Secret: bản dev có giá trị mặc định; production bắt buộc đặt (kiểm ở validator).
+    jwt_secret: str = f"{_DEV_SECRET_PREFIX}jwt-secret-change-me-0123456789abcdef"
+    fernet_key: str = "ZGV2LW9ubHktZmVybmV0LWtleS0zMmJ5dGVzLWxvbmc="  # base64 của 32 byte, chỉ dev
+    media_signing_key: str = f"{_DEV_SECRET_PREFIX}media-signing-key"
+
+    access_token_minutes: int = 15
+    refresh_days_dashboard: int = 7
+    refresh_days_station: int = 30
+    login_max_fails: int = 10
+    login_lock_minutes: int = 15
+
+    video_root: Path = Path("/data/video")
+    mediamtx_api_url: str = "http://localhost:59997"
+    mediamtx_rtsp_url: str = "rtsp://localhost:58554"
+
+    scan_code_regex: str = r"^[A-Z0-9-]{8,40}$"
+    platform_lookup_timeout_s: float = 2.0
+    clip_padding_s: int = 5
+
+    platform_adapter: str = "mock"  # shopee | mock
+    shopee_enabled: bool = False
+    shopee_partner_id: str = ""
+    shopee_partner_key: str = ""
+    shopee_redirect_url: str = ""
+    shopee_base_url: str = "https://partner.shopeemobile.com"
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env == "production"
+
+    @property
+    def fake_clock_allowed(self) -> bool:
+        return self.app_env == "test"
+
+    @model_validator(mode="after")
+    def _require_real_secrets_in_production(self) -> "Settings":
+        if self.is_production:
+            dev_values = [
+                name
+                for name in ("jwt_secret", "media_signing_key")
+                if getattr(self, name).startswith(_DEV_SECRET_PREFIX)
+            ]
+            if self.fernet_key == Settings.model_fields["fernet_key"].default:
+                dev_values.append("fernet_key")
+            if dev_values:
+                raise ValueError(f"Production cần đặt secret thật cho: {', '.join(dev_values)}")
+        return self
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

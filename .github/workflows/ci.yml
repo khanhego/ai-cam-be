@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: aicam
+          POSTGRES_USER: aicam
+          POSTGRES_PASSWORD: aicam
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aicam -d aicam" --health-interval 5s --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql+asyncpg://aicam:aicam@localhost:5432/aicam_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: Lint
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: Type check
+        run: uv run mypy
+      - name: Import contracts
+        run: uv run lint-imports
+      - name: Migration khớp model
+        run: uv run alembic upgrade head && uv run alembic check
+        env:
+          DATABASE_URL: postgresql+asyncpg://aicam:aicam@localhost:5432/aicam
+      - name: Test (unit + integration)
+        run: uv run pytest
+
+  image:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -f docker/Dockerfile -t aicam:ci .

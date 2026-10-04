@@ -1,0 +1,51 @@
+# MediaMTX: relay RTSP, ghi segment fMP4 60 giây, live view WebRTC/WHEP (ADR-003, 02a §2).
+# Path camera thật được thêm qua API (T-8: path `cam-{camera_id}`). Bản dev có sẵn 2 path camera giả.
+
+logLevel: info
+
+api: yes
+apiAddress: :9997
+metrics: yes
+metricsAddress: :9998
+
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+
+webrtc: yes
+webrtcAddress: :8889
+
+rtmp: no
+hls: no
+srt: no
+
+# Dev: mọi client trong mạng compose được publish/read/api.
+# Production (T-19): giới hạn `api`, `metrics` theo IP mạng nội bộ của stack.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: []
+    permissions:
+      - action: publish
+      - action: read
+      - action: playback
+      - action: api
+      - action: metrics
+
+pathDefaults:
+  record: yes
+  # Giờ trong tên file là UTC (container không đặt TZ); J-10 đọc tên file theo UTC.
+  recordPath: /data/video/raw/%path/%Y/%m/%d/%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 60s
+  # Xóa do J-02 đảm nhận theo setting (02a §7), MediaMTX không tự xóa.
+  recordDeleteAfter: 0s
+
+paths:
+  # Camera giả (docker/fake-cams) publish vào đây.
+  cam-fake1:
+    source: publisher
+  cam-fake2:
+    source: publisher
+  all_others:
