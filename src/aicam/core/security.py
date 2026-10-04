@@ -22,6 +22,17 @@ def hash_password(password: str) -> str:
     return _hasher.hash(password)
 
 
+_DUMMY_HASH: str | None = None
+
+
+def verify_dummy(password: str) -> None:
+    """Username không tồn tại vẫn tốn một lần verify: thời gian phản hồi không lộ username (review #21)."""
+    global _DUMMY_HASH
+    if _DUMMY_HASH is None:
+        _DUMMY_HASH = _hasher.hash("aicam-dummy-password")
+    verify_password(_DUMMY_HASH, password)
+
+
 def verify_password(password_hash: str, password: str) -> bool:
     try:
         return _hasher.verify(password_hash, password)
@@ -63,7 +74,13 @@ def decode_access_token(secret: str, token: str) -> AccessClaims:
             token,
             secret,
             algorithms=["HS256"],
-            options={"require": ["sub", "exp", "role"], "verify_exp": False},
+            # Kiểm thời gian bằng core.clock (một nguồn giờ, test tua được), không dùng giờ hệ điều hành.
+            options={
+                "require": ["sub", "exp", "role"],
+                "verify_exp": False,
+                "verify_iat": False,
+                "verify_nbf": False,
+            },
         )
     except jwt.PyJWTError as exc:
         raise TokenError(str(exc)) from exc

@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     refresh_days_station: int = 30
     login_max_fails: int = 10
     login_lock_minutes: int = 15
+    login_ip_max_fails: int = 30  # 429 theo IP trong 5 phút (DEC-45)
+    cookie_secure: bool = True  # localhost vẫn nhận cookie Secure
 
     video_root: Path = Path("/data/video")
     mediamtx_api_url: str = "http://localhost:59997"
@@ -57,7 +59,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _require_real_secrets_in_production(self) -> "Settings":
-        if self.is_production:
+        # Mọi môi trường dùng chung được (staging, production) đều cần secret thật (review M1 #17).
+        if self.app_env not in ("dev", "test"):
             dev_values = [
                 name
                 for name in ("jwt_secret", "media_signing_key")
@@ -66,7 +69,9 @@ class Settings(BaseSettings):
             if self.fernet_key == Settings.model_fields["fernet_key"].default:
                 dev_values.append("fernet_key")
             if dev_values:
-                raise ValueError(f"Production cần đặt secret thật cho: {', '.join(dev_values)}")
+                raise ValueError(
+                    f"Môi trường {self.app_env} cần đặt secret thật cho: {', '.join(dev_values)}"
+                )
         return self
 
 

@@ -50,9 +50,12 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: aicam-dev
     env_file: [../.env.example]
-    environment:
+    environment: &app_env
       LOG_JSON: "true"
+      MEDIAMTX_API_URL: http://mediamtx:9997
+      MEDIAMTX_RTSP_URL: rtsp://mediamtx:8554
     ports: ["8180:8000"]
     volumes: [video:/data/video]
     depends_on:
@@ -62,6 +65,29 @@ services:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 10s
       retries: 5
+
+  vision:
+    image: aicam-dev
+    command: ["python", "-m", "aicam.entrypoints.vision"]
+    env_file: [../.env.example]
+    environment: *app_env
+    depends_on: [api, mediamtx]
+    restart: unless-stopped
+
+  worker:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "default,video,export,sync", "--loglevel", "info"]
+    env_file: [../.env.example]
+    environment: *app_env
+    volumes: [video:/data/video]
+    depends_on: [api]
+
+  beat:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.beat", "beat", "--loglevel", "info", "--schedule", "/tmp/celerybeat-schedule"]
+    env_file: [../.env.example]
+    environment: *app_env
+    depends_on: [api]
 
 volumes:
   pgdata:

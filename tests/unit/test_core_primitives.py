@@ -14,11 +14,12 @@ def test_uuid7_has_version_and_variant() -> None:
     assert value.variant == "specified in RFC 4122"
 
 
-def test_uuid7_sorts_by_creation_time() -> None:
-    first = uuid7()
-    clock_ms_later = [uuid7() for _ in range(5)]
+def test_uuid7_is_strictly_monotonic_within_same_millisecond() -> None:
+    ids = [uuid7() for _ in range(5000)]
 
-    assert all(first.int >> 80 <= later.int >> 80 for later in clock_ms_later)
+    assert ids == sorted(ids)
+    assert len(set(ids)) == len(ids)
+    assert all(i.version == 7 for i in ids)
 
 
 def test_clock_freeze_and_advance() -> None:
@@ -54,3 +55,39 @@ def test_production_accepts_real_secrets() -> None:
 
     assert settings.is_production
     assert not settings.fake_clock_allowed
+
+
+def test_log_redacts_secrets_and_url_credentials() -> None:
+    """Review M1 #16."""
+    from aicam.core.logging import redact
+
+    event = redact(
+        None,
+        "info",
+        {
+            "event": "probe rtsp://admin:pw123@10.0.0.5/stream",
+            "password": "pw123",
+            "access_token": "eyJ...",
+            "source": "rtsp://u:p@cam/1",
+            "code": "SPXTST0000001",
+        },
+    )
+
+    assert event == {
+        "event": "probe rtsp://***:***@10.0.0.5/stream",
+        "password": "***",
+        "access_token": "***",
+        "source": "rtsp://***:***@cam/1",
+        "code": "SPXTST0000001",
+    }
+
+
+def test_staging_requires_real_secrets() -> None:
+    """Review M1 #17."""
+    import pytest
+    from pydantic import ValidationError
+
+    from aicam.core.settings import Settings
+
+    with pytest.raises(ValidationError, match="staging cần đặt secret thật"):
+        Settings(app_env="staging")

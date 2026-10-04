@@ -44,8 +44,11 @@ pathDefaults:
 
 paths:
   # Camera giả (docker/fake-cams) publish vào đây.
+  # Không ghi path camera giả: camera thật trong DB trỏ tới đây qua path cam-{id} (tránh ghi trùng).
   cam-fake1:
     source: publisher
+    record: no
   cam-fake2:
     source: publisher
+    record: no
   all_others:
