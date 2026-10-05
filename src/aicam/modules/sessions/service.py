@@ -8,7 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
-from sqlalchemy import all_, func, literal, select, text, update
+from sqlalchemy import all_, delete, func, literal, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -638,3 +638,9 @@ def notify_after_commit(session: AsyncSession, station_id: uuid.UUID, state: Sta
         await publish.to_dashboard("report.updated", {"date": today.isoformat()})
 
     after_commit(session, _send)
+
+
+async def purge_scan_dedup(session: AsyncSession, older_than: timedelta) -> int:
+    """J-11: bỏ bản ghi chống quét trùng quá hạn giữ (02 §8: `client_scan_id` giữ 10 phút)."""
+    result = await session.execute(delete(ScanDedup).where(ScanDedup.created_at < clock.now() - older_than))
+    return int(result.rowcount or 0)  # type: ignore[attr-defined]

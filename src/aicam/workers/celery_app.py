@@ -23,6 +23,7 @@ app.conf.update(
         "j07-session-timeouts": {"task": "sessions.check_timeouts", "schedule": 30.0},
         "j09-check-clock-drift": {"task": "stations.check_clock_drift", "schedule": 600.0},
         "j10-index-segments": {"task": "media.index_segments", "schedule": 60.0},
+        "j11-housekeeping": {"task": "maintenance.housekeeping", "schedule": 300.0},
         # 02:00 giờ VN (UTC+7, không đổi giờ mùa hè) = 19:00 UTC.
         "j02-enforce-retention": {"task": "media.enforce_retention", "schedule": crontab(hour=19, minute=0)},
     },

@@ -170,6 +170,10 @@ class BuildResult:
     failed: list[uuid.UUID] = field(default_factory=list)
 
 
+class _NoCamera(Exception):
+    """Station không có camera vai này: lỗi cố định, FAILED ngay (không thử lại)."""
+
+
 class _Retry(Exception):
     """Video chưa đủ (MediaMTX chưa ghi tới cuối khoảng): thử lại sau."""
 
@@ -224,7 +228,7 @@ async def _build_one(
 ) -> bool:  # fmt: skip
     """Cắt một clip. Trả True nếu thiếu video (VIDEO_INCOMPLETE). Ném `_Retry` khi chưa đủ dữ liệu."""
     if camera is None:
-        raise ffmpeg.FFmpegError(f"Station chưa cấu hình {clip.camera_role}")
+        raise _NoCamera(f"Station chưa cấu hình {clip.camera_role}")
     segments, last_closed = await _segments_for(db, camera, t0, t1, settings)
     if not segments:
         if not final:
@@ -319,6 +323,9 @@ async def build_session_clips(
             )
         except _Retry:
             result.retry_in = 10.0
+        except _NoCamera as exc:
+            clip.status, clip.error = "FAILED", str(exc)
+            result.failed.append(clip.id)
         except (ffmpeg.FFmpegError, OSError, ValueError) as exc:
             if not final:
                 log.warning("clip_build_retry", clip_id=str(clip.id), error=str(exc))

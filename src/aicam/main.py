@@ -15,7 +15,9 @@ from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.media.router import router as media_router
 from aicam.modules.orders.router import router as orders_router
+from aicam.modules.reports.router import router as reports_router
 from aicam.modules.sessions.router import router as sessions_router
+from aicam.modules.settings.router import router as settings_router
 from aicam.modules.stations.listeners import CAMERA_HEALTH_CHANNEL, on_camera_health
 from aicam.modules.stations.router import router as stations_router
 from aicam.modules.users.router import router as users_router
@@ -64,6 +66,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(sessions_router, prefix="/api/v1")
     app.include_router(orders_router, prefix="/api/v1")
     app.include_router(media_router, prefix="/api/v1")
+    app.include_router(reports_router, prefix="/api/v1")
+    app.include_router(settings_router, prefix="/api/v1")
     app.include_router(ws_router)
 
     @app.get("/healthz", tags=["system"])

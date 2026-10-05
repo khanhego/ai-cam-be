@@ -431,3 +431,18 @@ async def test_no_api_to_modify_or_delete_clip(
         res = await api.request(method, f"/api/v1/clips/{clip.id}", headers=admin)
         assert res.status_code in (404, 405)
     assert (await _clip(db, clip.session_id)).status == "READY"
+
+
+async def test_station_without_camera_fails_immediately(
+    db: AsyncSession, redis_client: object, media_settings: Settings
+) -> None:
+    """Station chưa gắn camera: clip FAILED ngay ở lần đầu (không thử lại vô ích)."""
+    _, station = await make_station_account(db)
+    pack = await make_closed_session(db, station, "SPXTST0000009", T, T + timedelta(seconds=20))
+    clock.freeze(T + timedelta(seconds=60))
+
+    result = await media.build_session_clips(db, pack.id, media_settings)
+
+    assert result.retry_in is None
+    assert len(result.failed) == 2
+    assert (await _clip(db, pack.id, "CAM2")).error == "Station chưa cấu hình CAM2"

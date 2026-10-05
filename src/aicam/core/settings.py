@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     export_ttl_hours: int = 24  # 02a API-44/45: file xuất giữ ≤ 24 giờ (J-10 dọn)
     export_timeout_s: int = 600
     export_font_file: Path = Path("/usr/share/fonts/truetype/bevietnampro/BeVietnamPro-SemiBold.ttf")
+    import_root: Path = Path("/data/imports")  # file CSV / xlsx gốc (T-17); J-11 xóa sau 90 ngày
 
     platform_adapter: str = "mock"  # shopee | mock
     shopee_enabled: bool = False

@@ -3,6 +3,7 @@
 import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import Any
 
 import structlog
@@ -12,7 +13,8 @@ import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại g
 from aicam.core.db import dispose_engine, init_engine, sessionmaker
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import get_settings
-from aicam.modules.media import exports
+from aicam.modules.imports import service as imports
+from aicam.modules.media import exports, jobs
 from aicam.modules.media import service as media
 from aicam.modules.sessions import service as sessions
 from aicam.modules.stations import service as stations
@@ -93,3 +95,24 @@ def enforce_retention() -> dict[str, int]:
 def render_export(export_id: str) -> str:
     """J-03 (queue `export`, worker riêng concurrency 1 — DEC-32): encode bản xuất có overlay."""
     return _run(lambda db: exports.render_export(db, uuid.UUID(export_id), get_settings()))
+
+
+@app.task(name="maintenance.housekeeping", soft_time_limit=240)  # type: ignore[untyped-decorator]
+def housekeeping() -> dict[str, int]:
+    """J-11 (5 phút): dọn scan_dedup > 10 phút, CSV hết hạn; J-01 lại cho phiên thiếu clip."""
+
+    async def _job(db: AsyncSession) -> dict[str, int]:
+        settings = get_settings()
+        out = {
+            "scan_dedup": await sessions.purge_scan_dedup(db, timedelta(minutes=10)),
+            "imports_expired": await imports.expire_previews(db),
+            "import_files": await imports.purge_old_files(db, settings.import_root),
+        }
+        await db.commit()
+        missing = await media.sessions_missing_clips(db, timedelta(minutes=5), timedelta(days=1))
+        for session_id in missing:
+            await jobs.send(jobs.BUILD_CLIPS, [str(session_id)], "video")
+        out["clip_jobs"] = len(missing)
+        return out
+
+    return _run(_job)
