@@ -4699,7 +4699,12 @@
                     "HANDED_OVER",
                     "DELIVERED",
                     "CANCELLED",
-                    "CANCELLED_AFTER_PACK"
+                    "CANCELLED_AFTER_PACK",
+                    "RETURN_EXPECTED",
+                    "RETURN_INSPECTING",
+                    "RETURN_RECEIVED_OK",
+                    "RETURN_RECEIVED_ISSUE",
+                    "RETURN_MISSING"
                   ],
                   "type": "string"
                 },
@@ -4749,7 +4754,13 @@
                     "VIDEO_INCOMPLETE",
                     "REPACK",
                     "HAD_MISMATCH",
-                    "CLOSED_BY_SUPERVISOR"
+                    "CLOSED_BY_SUPERVISOR",
+                    "AUTO_CLOSED",
+                    "ORDER_CANCELLED",
+                    "NO_PACK_CLIP",
+                    "UNANNOUNCED",
+                    "UNIDENTIFIED",
+                    "INSPECTION_CORRECTED"
                   ],
                   "type": "string"
                 },

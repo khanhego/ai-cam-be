@@ -20,7 +20,14 @@ WAREHOUSE_STATUSES = (
     "DELIVERED",
     "CANCELLED",
     "CANCELLED_AFTER_PACK",
+    # Phase 2 (02 §5.2, migration 0003).
+    "RETURN_EXPECTED",
+    "RETURN_INSPECTING",
+    "RETURN_RECEIVED_OK",
+    "RETURN_RECEIVED_ISSUE",
+    "RETURN_MISSING",
 )
+RETURN_STATUSES = tuple(s for s in WAREHOUSE_STATUSES if s.startswith("RETURN_"))
 HISTORY_SOURCES = ("PLATFORM", "WAREHOUSE", "MANUAL")
 
 
@@ -42,6 +49,7 @@ class Shop(UUIDPk, Base):
     last_synced_at: Mapped[datetime | None]
     last_sync_cursor: Mapped[datetime | None]
     last_error: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    last_return_cursor: Mapped[datetime | None]  # J-13 (0003)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
 
 
@@ -78,6 +86,8 @@ class Package(UUIDPk, Base):
     __table_args__ = (
         Index("uq_package_tracking_number_upper", text("upper(tracking_number)"), unique=True),
         Index(None, "warehouse_status", "updated_at"),
+        # BR-12, BR-14 (DEC-225, DEC-255): mốc vào trạng thái hiện tại.
+        Index(None, "warehouse_status", "status_changed_at"),
         enum_check("warehouse_status", WAREHOUSE_STATUSES),
     )
 
@@ -88,6 +98,11 @@ class Package(UUIDPk, Base):
     platform_logistics_status: Mapped[str | None] = mapped_column(Text)
     verified: Mapped[bool] = mapped_column(default=True, server_default="true")
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow, server_default=func.now())
+    # 0003 (DEC-225): `status_changed_at` đổi trong `orders.transition()`; backfill từ `status_history`.
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
+    status_changed_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
+    # Kiện tạm `TAM-…` của phiên hoàn chưa xác định (02 §6.3 #2, DEC-260).
+    is_placeholder: Mapped[bool] = mapped_column(default=False, server_default="false")
 
 
 class StatusHistory(UUIDPk, Base):

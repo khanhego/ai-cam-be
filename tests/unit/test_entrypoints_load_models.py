@@ -30,7 +30,7 @@ def test_entrypoint_registers_all_tables(module: str) -> None:
     )
 
     assert result.returncode == 0, result.stderr[-2000:]
-    assert result.stdout.strip() == "19"
+    assert result.stdout.strip() == "28"  # 19 Phase 1 + 9 Phase 2 (migration 0003)
 
 
 def test_seed_demo_refuses_production(monkeypatch: pytest.MonkeyPatch) -> None:
