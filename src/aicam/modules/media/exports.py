@@ -9,14 +9,16 @@ import json
 import shutil
 import tempfile
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
-from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, select, text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 from aicam import __version__
 from aicam.core import audit, clock
@@ -256,9 +258,40 @@ async def _publish(db: AsyncSession, export: Export, settings: Settings) -> None
     await publish.to_user(export.created_by, "export.updated", data)
 
 
+@asynccontextmanager
+async def _render_lock(db: AsyncSession, export_id: uuid.UUID) -> AsyncIterator[bool]:
+    """Khóa advisory mức session trên một connection riêng giữ suốt lúc encode (G3-N12).
+
+    Celery giao trùng (acks_late, broker giao lại) → lần thứ hai không lấy được khóa → SKIPPED. Worker chết →
+    connection đóng → khóa tự nhả, lần giao lại sau đó chạy tiếp được (export đang RUNNING dở).
+    """
+    bind = db.bind
+    engine = bind.engine if isinstance(bind, AsyncConnection) else bind
+    if not isinstance(engine, AsyncEngine):
+        raise TypeError("Session chưa gắn engine")
+    key = {"k": f"export:{export_id}"}
+    async with engine.connect() as conn:
+        got = bool(await conn.scalar(text("SELECT pg_try_advisory_lock(hashtext(:k))"), key))
+        await conn.commit()
+        try:
+            yield got
+        finally:
+            if got:
+                await conn.execute(text("SELECT pg_advisory_unlock(hashtext(:k))"), key)
+                await conn.commit()
+
+
 async def render_export(db: AsyncSession, export_id: uuid.UUID, settings: Settings) -> str:
     """J-03 (queue `export`, concurrency 1): encode, ghi info.json, cập nhật tiến độ, WS `export.updated`."""
-    export = await db.get(Export, export_id)
+    async with _render_lock(db, export_id) as got:
+        if not got:
+            log.warning("export_already_rendering", export_id=str(export_id))
+            return "SKIPPED"
+        return await _render(db, export_id, settings)
+
+
+async def _render(db: AsyncSession, export_id: uuid.UUID, settings: Settings) -> str:
+    export = await db.get(Export, export_id, populate_existing=True)
     if export is None or export.status not in ("QUEUED", "RUNNING"):
         return "SKIPPED"
     export.status, export.progress = "RUNNING", 0

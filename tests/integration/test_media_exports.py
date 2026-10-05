@@ -334,3 +334,24 @@ async def test_render_side_by_side_with_gap_aligns_and_reports(
     for key in ("session_started_at", "session_ended_at", "video_start_at", "video_end_at", "exported_at"):
         assert info[key].endswith("Z"), key
     assert info["video_start_at"] == clock.iso_z(T0 - timedelta(seconds=5))
+
+
+async def test_render_export_skips_when_another_worker_renders(
+    db: AsyncSession, redis_client: object, media_settings: Settings, engine: Any
+) -> None:
+    """G3-N12: Celery giao trùng J-03 → lần đang chạy giữ khóa; lần thứ hai SKIPPED, không đụng trạng thái."""
+    from sqlalchemy import text
+
+    user = await make_user(db, "tst_cskh", "CSKH")
+    _, station = await make_station_account(db)
+    session_id = await _session_with_clips(db, media_settings, station, {"CAM1": "READY"})
+    export = Export(session_id=session_id, layout="CAM1", created_by=user.id)
+    db.add(export)
+    await db.flush()
+    async with engine.connect() as other:
+        await other.execute(text("SELECT pg_advisory_lock(hashtext(:k))"), {"k": f"export:{export.id}"})
+        assert await exports.render_export(db, export.id, media_settings) == "SKIPPED"
+        await other.execute(text("SELECT pg_advisory_unlock(hashtext(:k))"), {"k": f"export:{export.id}"})
+    reloaded = await db.get(Export, export.id, populate_existing=True)
+    assert reloaded is not None
+    assert (reloaded.status, reloaded.progress) == ("QUEUED", 0)
