@@ -37,4 +37,11 @@ print(sum(1 for p in json.load(sys.stdin)["items"] if p["name"] in want and p.ge
 done
 echo "Camera seed sẵn sàng: ${ready:-0}/2 sau ${i:-0} giây"
 [ "${ready:-0}" -ge 2 ] || echo "Cảnh báo: camera seed chưa sẵn sàng sau 45 giây" >&2
+# --mute-cam2: E2E không cần Cam 2 đọc phiếu thật. Camera giả 2 phát vòng 60 giây nhiều phiếu → khay có phiếu khác
+# đúng lúc quét đóng thì BR-06 chặn, test phụ thuộc thời điểm (QA G4). Đặt ROI vào góc khay luôn trống (NOT_SEEN).
+if [ "${1:-}" = "--mute-cam2" ]; then
+  $COMPOSE exec -T postgres psql -U aicam -d aicam -qc "UPDATE camera SET roi = '{\"x\":0,\"y\":0,\"w\":0.1,\"h\":0.1}' WHERE role = 'CAM2'" >/dev/null
+  $COMPOSE exec -T redis redis-cli PUBLISH vision.config '{}' >/dev/null
+  sleep 3  # vision nạp ROI + khử nhiễu khay trống
+fi
 echo "QA reset xong"
