@@ -1,0 +1,5950 @@
+{
+  "components": {
+    "schemas": {
+      "AccountRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username"
+        ],
+        "title": "AccountRef",
+        "type": "object"
+      },
+      "AlertOut": {
+        "properties": {
+          "code": {
+            "enum": [
+              "ORDER_CANCELLED",
+              "ALREADY_PACKED",
+              "ALREADY_HANDED_OVER",
+              "INVALID_CODE",
+              "PACKED_ELSEWHERE_IN_PROGRESS"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Data",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "AlertOut",
+        "type": "object"
+      },
+      "ApprovalBrief": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "MISMATCH",
+              "ASSIST",
+              "REPACK"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "tracking_number",
+          "created_at"
+        ],
+        "title": "ApprovalBrief",
+        "type": "object"
+      },
+      "ApprovalCreated": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "RESOLVED",
+              "WITHDRAWN"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "MISMATCH",
+              "ASSIST",
+              "REPACK"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "status",
+          "tracking_number",
+          "created_at"
+        ],
+        "title": "ApprovalCreated",
+        "type": "object"
+      },
+      "ApprovalCreatedOut": {
+        "properties": {
+          "approval_request": {
+            "$ref": "#/components/schemas/ApprovalCreated"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StationStateOut"
+          }
+        },
+        "required": [
+          "approval_request",
+          "state"
+        ],
+        "title": "ApprovalCreatedOut",
+        "type": "object"
+      },
+      "ApprovalItem": {
+        "description": "Item API-20, cũng là `data` của WS-02 `approval.*`.",
+        "properties": {
+          "context": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "decision": {
+            "anyOf": [
+              {
+                "enum": [
+                  "CONTINUE",
+                  "CLOSE_WITH_NOTE",
+                  "CANCEL_SESSION",
+                  "APPROVE_REPACK",
+                  "REJECT"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "station": {
+            "$ref": "#/components/schemas/StationRef"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "RESOLVED",
+              "WITHDRAWN"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "MISMATCH",
+              "ASSIST",
+              "REPACK"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "status",
+          "station",
+          "session_id",
+          "tracking_number",
+          "context",
+          "created_at"
+        ],
+        "title": "ApprovalItem",
+        "type": "object"
+      },
+      "ApprovalRequestIn": {
+        "description": "MISMATCH / ASSIST cần `session_id`; REPACK cần `tracking_number`.",
+        "properties": {
+          "session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "tracking_number": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Number"
+          },
+          "type": {
+            "enum": [
+              "MISMATCH",
+              "ASSIST",
+              "REPACK"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type"
+        ],
+        "title": "ApprovalRequestIn",
+        "type": "object"
+      },
+      "AuditLogOut": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "data": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data"
+          },
+          "object_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Id"
+          },
+          "object_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Object Type"
+          },
+          "user": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AuditUser"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "at",
+          "user",
+          "action",
+          "object_type",
+          "object_id"
+        ],
+        "title": "AuditLogOut",
+        "type": "object"
+      },
+      "AuditUser": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "AuditUser",
+        "type": "object"
+      },
+      "AuthUrlOut": {
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "AuthUrlOut",
+        "type": "object"
+      },
+      "Body_upload_api_v1_imports_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_api_v1_imports_post",
+        "type": "object"
+      },
+      "CameraBrief": {
+        "properties": {
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "status"
+        ],
+        "title": "CameraBrief",
+        "type": "object"
+      },
+      "CameraHealth": {
+        "properties": {
+          "clock_offset_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clock Offset Ms"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_seen_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen At"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "station_name": {
+            "title": "Station Name",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "station_name",
+          "role",
+          "status",
+          "clock_offset_ms",
+          "last_seen_at"
+        ],
+        "title": "CameraHealth",
+        "type": "object"
+      },
+      "CameraIn": {
+        "properties": {
+          "password": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "rtsp_url": {
+            "maxLength": 255,
+            "pattern": "^rtsp://",
+            "title": "Rtsp Url",
+            "type": "string"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "required": [
+          "rtsp_url"
+        ],
+        "title": "CameraIn",
+        "type": "object"
+      },
+      "CameraOut": {
+        "properties": {
+          "clock_offset_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clock Offset Ms"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "roi": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Roi"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "role": {
+            "enum": [
+              "CAM1",
+              "CAM2"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "rtsp_url_masked": {
+            "title": "Rtsp Url Masked",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ONLINE",
+              "OFFLINE"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "rtsp_url_masked",
+          "status",
+          "roi"
+        ],
+        "title": "CameraOut",
+        "type": "object"
+      },
+      "CameraState": {
+        "properties": {
+          "role": {
+            "enum": [
+              "CAM1",
+              "CAM2"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ONLINE",
+              "OFFLINE"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "status"
+        ],
+        "title": "CameraState",
+        "type": "object"
+      },
+      "CameraTestOut": {
+        "properties": {
+          "clock_offset_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clock Offset Ms"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "snapshot": {
+            "title": "Snapshot",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "snapshot",
+          "clock_offset_ms"
+        ],
+        "title": "CameraTestOut",
+        "type": "object"
+      },
+      "CancelIn": {
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "enum": [
+              "OUT_OF_STOCK",
+              "WRONG_SCAN",
+              "OTHER"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "CancelIn",
+        "type": "object"
+      },
+      "ClipDetail": {
+        "properties": {
+          "camera_role": {
+            "title": "Camera Role",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "duration_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration S"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "held": {
+            "title": "Held",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "retention_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Until"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "camera_role",
+          "status",
+          "sha256",
+          "duration_s",
+          "held",
+          "retention_until",
+          "deleted_at",
+          "flags"
+        ],
+        "title": "ClipDetail",
+        "type": "object"
+      },
+      "DailyOut": {
+        "properties": {
+          "attention": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Attention",
+            "type": "array"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/aicam__modules__reports__service__Counts"
+          },
+          "date": {
+            "format": "date",
+            "title": "Date",
+            "type": "string"
+          },
+          "stations": {
+            "items": {
+              "$ref": "#/components/schemas/StationDaily"
+            },
+            "title": "Stations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "date",
+          "counts",
+          "stations",
+          "attention"
+        ],
+        "title": "DailyOut",
+        "type": "object"
+      },
+      "DecisionIn": {
+        "properties": {
+          "action": {
+            "enum": [
+              "CONTINUE",
+              "CLOSE_WITH_NOTE",
+              "CANCEL_SESSION",
+              "APPROVE_REPACK",
+              "REJECT"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "DecisionIn",
+        "type": "object"
+      },
+      "DecisionOut": {
+        "properties": {
+          "approval_request": {
+            "$ref": "#/components/schemas/DecisionResult"
+          }
+        },
+        "required": [
+          "approval_request"
+        ],
+        "title": "DecisionOut",
+        "type": "object"
+      },
+      "DecisionResult": {
+        "properties": {
+          "decided_at": {
+            "format": "date-time",
+            "title": "Decided At",
+            "type": "string"
+          },
+          "decided_by": {
+            "$ref": "#/components/schemas/UserBrief"
+          },
+          "decision": {
+            "enum": [
+              "CONTINUE",
+              "CLOSE_WITH_NOTE",
+              "CANCEL_SESSION",
+              "APPROVE_REPACK",
+              "REJECT"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "RESOLVED",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "decision",
+          "decided_by",
+          "decided_at"
+        ],
+        "title": "DecisionResult",
+        "type": "object"
+      },
+      "DiskOut": {
+        "properties": {
+          "percent": {
+            "title": "Percent",
+            "type": "integer"
+          },
+          "total_bytes": {
+            "title": "Total Bytes",
+            "type": "integer"
+          },
+          "used_bytes": {
+            "title": "Used Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total_bytes",
+          "used_bytes",
+          "percent"
+        ],
+        "title": "DiskOut",
+        "type": "object"
+      },
+      "ExportCreated": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "READY",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "progress"
+        ],
+        "title": "ExportCreated",
+        "type": "object"
+      },
+      "ExportFiles": {
+        "properties": {
+          "info": {
+            "title": "Info",
+            "type": "string"
+          },
+          "video": {
+            "title": "Video",
+            "type": "string"
+          }
+        },
+        "required": [
+          "video",
+          "info"
+        ],
+        "title": "ExportFiles",
+        "type": "object"
+      },
+      "ExportIn": {
+        "properties": {
+          "layout": {
+            "enum": [
+              "CAM1",
+              "CAM2",
+              "SIDE_BY_SIDE"
+            ],
+            "title": "Layout",
+            "type": "string"
+          }
+        },
+        "required": [
+          "layout"
+        ],
+        "title": "ExportIn",
+        "type": "object"
+      },
+      "ExportOut": {
+        "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ExportFiles"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "layout": {
+            "enum": [
+              "CAM1",
+              "CAM2",
+              "SIDE_BY_SIDE"
+            ],
+            "title": "Layout",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "source_clip_sha256": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Source Clip Sha256",
+            "type": "object"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "READY",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "layout",
+          "status",
+          "progress",
+          "sha256",
+          "source_clip_sha256",
+          "files",
+          "expires_at"
+        ],
+        "title": "ExportOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthOut": {
+        "properties": {
+          "cameras": {
+            "items": {
+              "$ref": "#/components/schemas/CameraHealth"
+            },
+            "title": "Cameras",
+            "type": "array"
+          },
+          "db": {
+            "enum": [
+              "OK",
+              "ERROR"
+            ],
+            "title": "Db",
+            "type": "string"
+          },
+          "disk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DiskOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "mediamtx": {
+            "enum": [
+              "OK",
+              "ERROR"
+            ],
+            "title": "Mediamtx",
+            "type": "string"
+          },
+          "redis": {
+            "enum": [
+              "OK",
+              "ERROR"
+            ],
+            "title": "Redis",
+            "type": "string"
+          },
+          "sync": {
+            "items": {
+              "$ref": "#/components/schemas/SyncHealth"
+            },
+            "title": "Sync",
+            "type": "array"
+          }
+        },
+        "required": [
+          "db",
+          "redis",
+          "mediamtx",
+          "disk",
+          "cameras",
+          "sync"
+        ],
+        "title": "HealthOut",
+        "type": "object"
+      },
+      "HoldIn": {
+        "properties": {
+          "held": {
+            "title": "Held",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "held"
+        ],
+        "title": "HoldIn",
+        "type": "object"
+      },
+      "HoldOut": {
+        "properties": {
+          "held": {
+            "title": "Held",
+            "type": "boolean"
+          },
+          "held_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Held At"
+          },
+          "held_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "retention_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retention Until"
+          }
+        },
+        "required": [
+          "id",
+          "held",
+          "held_by",
+          "held_at",
+          "retention_until"
+        ],
+        "title": "HoldOut",
+        "type": "object"
+      },
+      "ImportCommitOut": {
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/aicam__modules__imports__schemas__Counts"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "counts"
+        ],
+        "title": "ImportCommitOut",
+        "type": "object"
+      },
+      "ImportItem": {
+        "properties": {
+          "committed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Committed At"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/aicam__modules__imports__schemas__Counts"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "file_name": {
+            "title": "File Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "file_name",
+          "counts",
+          "created_by",
+          "created_at",
+          "committed_at"
+        ],
+        "title": "ImportItem",
+        "type": "object"
+      },
+      "ImportPreviewOut": {
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/aicam__modules__imports__schemas__Counts"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/RowErrorOut"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "file_name": {
+            "title": "File Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "sample": {
+            "items": {
+              "$ref": "#/components/schemas/SampleRow"
+            },
+            "title": "Sample",
+            "type": "array"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "file_name",
+          "counts",
+          "errors",
+          "sample",
+          "expires_at"
+        ],
+        "title": "ImportPreviewOut",
+        "type": "object"
+      },
+      "ItemDetail": {
+        "properties": {
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "variation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variation"
+          }
+        },
+        "required": [
+          "product_name",
+          "variation",
+          "quantity",
+          "image_url"
+        ],
+        "title": "ItemDetail",
+        "type": "object"
+      },
+      "ItemOut": {
+        "properties": {
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "variation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variation"
+          }
+        },
+        "required": [
+          "product_name",
+          "variation",
+          "quantity",
+          "image_url"
+        ],
+        "title": "ItemOut",
+        "type": "object"
+      },
+      "LastSession": {
+        "properties": {
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "station_name": {
+            "title": "Station Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "station_name",
+          "ended_at"
+        ],
+        "title": "LastSession",
+        "type": "object"
+      },
+      "LiveCamera": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "CAM1",
+              "CAM2"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "ONLINE",
+              "OFFLINE"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "whep_url": {
+            "title": "Whep Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "status",
+          "whep_url"
+        ],
+        "title": "LiveCamera",
+        "type": "object"
+      },
+      "LiveOut": {
+        "properties": {
+          "stations": {
+            "items": {
+              "$ref": "#/components/schemas/LiveStation"
+            },
+            "title": "Stations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "stations"
+        ],
+        "title": "LiveOut",
+        "type": "object"
+      },
+      "LiveStation": {
+        "properties": {
+          "cameras": {
+            "items": {
+              "$ref": "#/components/schemas/LiveCamera"
+            },
+            "title": "Cameras",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "cameras"
+        ],
+        "title": "LiveStation",
+        "type": "object"
+      },
+      "LoginIn": {
+        "properties": {
+          "client": {
+            "enum": [
+              "STATION",
+              "DASHBOARD"
+            ],
+            "title": "Client",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          },
+          "username": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password",
+          "client"
+        ],
+        "title": "LoginIn",
+        "type": "object"
+      },
+      "LoginOut": {
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "user": {
+            "$ref": "#/components/schemas/UserOut"
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_in",
+          "user"
+        ],
+        "title": "LoginOut",
+        "type": "object"
+      },
+      "MeOut": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
+          },
+          "role": {
+            "enum": [
+              "ADMIN",
+              "SUPERVISOR",
+              "CSKH",
+              "STATION"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "station": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StationRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "display_name",
+          "role",
+          "permissions"
+        ],
+        "title": "MeOut",
+        "type": "object"
+      },
+      "MismatchOut": {
+        "properties": {
+          "actual": {
+            "title": "Actual",
+            "type": "string"
+          },
+          "expected": {
+            "title": "Expected",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "SCAN",
+              "CAM2"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "expected",
+          "actual"
+        ],
+        "title": "MismatchOut",
+        "type": "object"
+      },
+      "OrderBrief": {
+        "properties": {
+          "buyer_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Note"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          },
+          "platform_order_sn": {
+            "title": "Platform Order Sn",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "platform_order_sn",
+          "buyer_note"
+        ],
+        "title": "OrderBrief",
+        "type": "object"
+      },
+      "OrderDetail": {
+        "properties": {
+          "buyer_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Buyer Note"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemDetail"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          },
+          "platform_order_sn": {
+            "title": "Platform Order Sn",
+            "type": "string"
+          },
+          "platform_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "platform",
+          "platform_order_sn",
+          "platform_status",
+          "buyer_note",
+          "source",
+          "items"
+        ],
+        "title": "OrderDetail",
+        "type": "object"
+      },
+      "PackageBrief": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrderBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "order",
+          "items"
+        ],
+        "title": "PackageBrief",
+        "type": "object"
+      },
+      "PackageDetail": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OrderDetail"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "platform_logistics_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Logistics Status"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/SessionDetail"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "timeline": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineItem"
+            },
+            "title": "Timeline",
+            "type": "array"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "warehouse_status",
+          "platform_logistics_status",
+          "verified",
+          "order",
+          "sessions",
+          "timeline"
+        ],
+        "title": "PackageDetail",
+        "type": "object"
+      },
+      "PackageItem": {
+        "properties": {
+          "has_clip": {
+            "title": "Has Clip",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LastSession"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "platform_order_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Order Sn"
+          },
+          "platform_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "API",
+                  "CSV"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "platform_order_sn",
+          "warehouse_status",
+          "platform_status",
+          "source",
+          "last_session",
+          "has_clip"
+        ],
+        "title": "PackageItem",
+        "type": "object"
+      },
+      "Page_ApprovalItem_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[ApprovalItem]",
+        "type": "object"
+      },
+      "Page_AuditLogOut_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AuditLogOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[AuditLogOut]",
+        "type": "object"
+      },
+      "Page_ImportItem_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ImportItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[ImportItem]",
+        "type": "object"
+      },
+      "Page_PackageItem_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PackageItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[PackageItem]",
+        "type": "object"
+      },
+      "Page_UserListItem_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/UserListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[UserListItem]",
+        "type": "object"
+      },
+      "PlayUrlOut": {
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at"
+        ],
+        "title": "PlayUrlOut",
+        "type": "object"
+      },
+      "QueuedOut": {
+        "properties": {
+          "queued": {
+            "default": true,
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "title": "QueuedOut",
+        "type": "object"
+      },
+      "RebuildOut": {
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "RebuildOut",
+        "type": "object"
+      },
+      "RecentClip": {
+        "properties": {
+          "camera_role": {
+            "enum": [
+              "CAM1",
+              "CAM2"
+            ],
+            "title": "Camera Role",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "camera_role",
+          "status"
+        ],
+        "title": "RecentClip",
+        "type": "object"
+      },
+      "RecentOut": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RecentSession"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "RecentOut",
+        "type": "object"
+      },
+      "RecentSession": {
+        "properties": {
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/RecentClip"
+            },
+            "title": "Clips",
+            "type": "array"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "status",
+          "flags",
+          "started_at",
+          "ended_at",
+          "clips"
+        ],
+        "title": "RecentSession",
+        "type": "object"
+      },
+      "RefreshIn": {
+        "properties": {
+          "client": {
+            "enum": [
+              "STATION",
+              "DASHBOARD"
+            ],
+            "title": "Client",
+            "type": "string"
+          }
+        },
+        "required": [
+          "client"
+        ],
+        "title": "RefreshIn",
+        "type": "object"
+      },
+      "Roi": {
+        "properties": {
+          "h": {
+            "maximum": 1.0,
+            "minimum": 0.05,
+            "title": "H",
+            "type": "number"
+          },
+          "w": {
+            "maximum": 1.0,
+            "minimum": 0.05,
+            "title": "W",
+            "type": "number"
+          },
+          "x": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "X",
+            "type": "number"
+          },
+          "y": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Y",
+            "type": "number"
+          }
+        },
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "title": "Roi",
+        "type": "object"
+      },
+      "RowErrorOut": {
+        "properties": {
+          "column": {
+            "title": "Column",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "row": {
+            "title": "Row",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "row",
+          "column",
+          "message"
+        ],
+        "title": "RowErrorOut",
+        "type": "object"
+      },
+      "SampleRow": {
+        "properties": {
+          "action": {
+            "enum": [
+              "NEW",
+              "UPDATE",
+              "SKIP"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "platform_order_sn": {
+            "title": "Platform Order Sn",
+            "type": "string"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "row": {
+            "title": "Row",
+            "type": "integer"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "variation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variation"
+          }
+        },
+        "required": [
+          "row",
+          "tracking_number",
+          "platform_order_sn",
+          "product_name",
+          "variation",
+          "quantity",
+          "action"
+        ],
+        "title": "SampleRow",
+        "type": "object"
+      },
+      "ScanIn": {
+        "properties": {
+          "client_scan_id": {
+            "format": "uuid",
+            "title": "Client Scan Id",
+            "type": "string"
+          },
+          "code": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "client_scan_id"
+        ],
+        "title": "ScanIn",
+        "type": "object"
+      },
+      "ScanOut": {
+        "properties": {
+          "alert": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AlertOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "enum": [
+              "SESSION_OPENED",
+              "SESSION_COMPLETED",
+              "MISMATCH",
+              "ALERT",
+              "IGNORED"
+            ],
+            "title": "Outcome",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/StationStateOut"
+          }
+        },
+        "required": [
+          "outcome",
+          "alert",
+          "state"
+        ],
+        "title": "ScanOut",
+        "type": "object"
+      },
+      "SessionDetail": {
+        "properties": {
+          "cancel_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Reason"
+          },
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/ClipDetail"
+            },
+            "title": "Clips",
+            "type": "array"
+          },
+          "duration_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration S"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "station_name": {
+            "title": "Station Name",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "station_name",
+          "started_at",
+          "ended_at",
+          "duration_s",
+          "flags",
+          "cancel_reason",
+          "note",
+          "clips"
+        ],
+        "title": "SessionDetail",
+        "type": "object"
+      },
+      "SessionOut": {
+        "properties": {
+          "abandon_at": {
+            "format": "date-time",
+            "title": "Abandon At",
+            "type": "string"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "mismatch": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MismatchOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "package": {
+            "$ref": "#/components/schemas/PackageBrief"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "warn_at": {
+            "format": "date-time",
+            "title": "Warn At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "started_at",
+          "flags",
+          "package",
+          "mismatch",
+          "warn_at",
+          "abandon_at"
+        ],
+        "title": "SessionOut",
+        "type": "object"
+      },
+      "SettingsIn": {
+        "properties": {
+          "retention_clip_days": {
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Retention Clip Days",
+            "type": "integer"
+          },
+          "retention_raw_days": {
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Retention Raw Days",
+            "type": "integer"
+          },
+          "session_abandon_minutes": {
+            "maximum": 1440.0,
+            "minimum": 1.0,
+            "title": "Session Abandon Minutes",
+            "type": "integer"
+          },
+          "session_warn_minutes": {
+            "maximum": 1440.0,
+            "minimum": 1.0,
+            "title": "Session Warn Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "retention_raw_days",
+          "retention_clip_days",
+          "session_warn_minutes",
+          "session_abandon_minutes"
+        ],
+        "title": "SettingsIn",
+        "type": "object"
+      },
+      "SettingsOut": {
+        "properties": {
+          "retention_clip_days": {
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Retention Clip Days",
+            "type": "integer"
+          },
+          "retention_raw_days": {
+            "maximum": 365.0,
+            "minimum": 1.0,
+            "title": "Retention Raw Days",
+            "type": "integer"
+          },
+          "session_abandon_minutes": {
+            "maximum": 1440.0,
+            "minimum": 1.0,
+            "title": "Session Abandon Minutes",
+            "type": "integer"
+          },
+          "session_warn_minutes": {
+            "maximum": 1440.0,
+            "minimum": 1.0,
+            "title": "Session Warn Minutes",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "retention_raw_days",
+          "retention_clip_days",
+          "session_warn_minutes",
+          "session_abandon_minutes",
+          "updated_at"
+        ],
+        "title": "SettingsOut",
+        "type": "object"
+      },
+      "ShopList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ShopOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ShopList",
+        "type": "object"
+      },
+      "ShopOut": {
+        "properties": {
+          "auth_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Expires At"
+          },
+          "auth_status": {
+            "title": "Auth Status",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_synced_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Synced At"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          },
+          "today_synced_orders": {
+            "title": "Today Synced Orders",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "platform",
+          "name",
+          "auth_status",
+          "auth_expires_at",
+          "last_synced_at",
+          "today_synced_orders",
+          "last_error"
+        ],
+        "title": "ShopOut",
+        "type": "object"
+      },
+      "StateOnlyOut": {
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/StationStateOut"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "StateOnlyOut",
+        "type": "object"
+      },
+      "StationCreateIn": {
+        "properties": {
+          "account_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account User Id"
+          },
+          "name": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "StationCreateIn",
+        "type": "object"
+      },
+      "StationDaily": {
+        "properties": {
+          "cameras": {
+            "items": {
+              "$ref": "#/components/schemas/CameraBrief"
+            },
+            "title": "Cameras",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_scan_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Scan At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          },
+          "tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Number"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "state",
+          "cameras",
+          "last_scan_at",
+          "tracking_number"
+        ],
+        "title": "StationDaily",
+        "type": "object"
+      },
+      "StationList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StationOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "StationList",
+        "type": "object"
+      },
+      "StationOut": {
+        "properties": {
+          "account": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AccountRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cameras": {
+            "items": {
+              "$ref": "#/components/schemas/CameraOut"
+            },
+            "title": "Cameras",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "is_active",
+          "account",
+          "cameras"
+        ],
+        "title": "StationOut",
+        "type": "object"
+      },
+      "StationPatchIn": {
+        "properties": {
+          "account_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account User Id"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "StationPatchIn",
+        "type": "object"
+      },
+      "StationRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "StationRef",
+        "type": "object"
+      },
+      "StationStateOut": {
+        "properties": {
+          "approval_request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cameras": {
+            "items": {
+              "$ref": "#/components/schemas/CameraState"
+            },
+            "title": "Cameras",
+            "type": "array"
+          },
+          "server_time": {
+            "format": "date-time",
+            "title": "Server Time",
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "READY",
+              "PACKING",
+              "MISMATCH",
+              "WAITING_APPROVAL"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "station": {
+            "$ref": "#/components/schemas/StationRef"
+          },
+          "today_count": {
+            "title": "Today Count",
+            "type": "integer"
+          },
+          "tray": {
+            "$ref": "#/components/schemas/TrayOut"
+          }
+        },
+        "required": [
+          "station",
+          "state",
+          "cameras",
+          "tray",
+          "session",
+          "approval_request",
+          "today_count",
+          "server_time"
+        ],
+        "title": "StationStateOut",
+        "type": "object"
+      },
+      "SyncHealth": {
+        "properties": {
+          "last_error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "shop_id": {
+            "format": "uuid",
+            "title": "Shop Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "shop_id",
+          "last_success_at",
+          "last_error"
+        ],
+        "title": "SyncHealth",
+        "type": "object"
+      },
+      "TimelineItem": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "from_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Status"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "to_status": {
+            "title": "To Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "source",
+          "from_status",
+          "to_status",
+          "actor"
+        ],
+        "title": "TimelineItem",
+        "type": "object"
+      },
+      "TokenOut": {
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_in"
+        ],
+        "title": "TokenOut",
+        "type": "object"
+      },
+      "TrayOut": {
+        "properties": {
+          "codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Codes",
+            "type": "array"
+          },
+          "match": {
+            "enum": [
+              "MATCH",
+              "NOT_SEEN",
+              "DIFFERENT",
+              "MULTIPLE",
+              "UNAVAILABLE"
+            ],
+            "title": "Match",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "codes",
+          "match",
+          "updated_at"
+        ],
+        "title": "TrayOut",
+        "type": "object"
+      },
+      "UserBrief": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "UserBrief",
+        "type": "object"
+      },
+      "UserCreateIn": {
+        "properties": {
+          "display_name": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Display Name",
+            "type": "string"
+          },
+          "password": {
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Password",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "ADMIN",
+              "SUPERVISOR",
+              "CSKH",
+              "STATION"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "username": {
+            "pattern": "^[a-z0-9._-]{3,32}$",
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "display_name",
+          "role",
+          "password"
+        ],
+        "title": "UserCreateIn",
+        "type": "object"
+      },
+      "UserListItem": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "role": {
+            "enum": [
+              "ADMIN",
+              "SUPERVISOR",
+              "CSKH",
+              "STATION"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "station": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StationRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "display_name",
+          "role",
+          "is_active",
+          "created_at"
+        ],
+        "title": "UserListItem",
+        "type": "object"
+      },
+      "UserOut": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "ADMIN",
+              "SUPERVISOR",
+              "CSKH",
+              "STATION"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "station": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StationRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "display_name",
+          "role"
+        ],
+        "title": "UserOut",
+        "type": "object"
+      },
+      "UserPatchIn": {
+        "properties": {
+          "display_name": {
+            "anyOf": [
+              {
+                "maxLength": 80,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Display Name"
+          },
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "minLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "enum": [
+                  "ADMIN",
+                  "SUPERVISOR",
+                  "CSKH",
+                  "STATION"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          }
+        },
+        "title": "UserPatchIn",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "aicam__modules__imports__schemas__Counts": {
+        "properties": {
+          "error": {
+            "default": 0,
+            "title": "Error",
+            "type": "integer"
+          },
+          "new": {
+            "default": 0,
+            "title": "New",
+            "type": "integer"
+          },
+          "skipped": {
+            "default": 0,
+            "title": "Skipped",
+            "type": "integer"
+          },
+          "updated": {
+            "default": 0,
+            "title": "Updated",
+            "type": "integer"
+          }
+        },
+        "title": "Counts",
+        "type": "object"
+      },
+      "aicam__modules__reports__service__Counts": {
+        "properties": {
+          "abandoned": {
+            "title": "Abandoned",
+            "type": "integer"
+          },
+          "cancelled": {
+            "title": "Cancelled",
+            "type": "integer"
+          },
+          "cancelled_after_pack": {
+            "title": "Cancelled After Pack",
+            "type": "integer"
+          },
+          "had_mismatch": {
+            "title": "Had Mismatch",
+            "type": "integer"
+          },
+          "packed": {
+            "title": "Packed",
+            "type": "integer"
+          },
+          "packed_not_handed_over": {
+            "title": "Packed Not Handed Over",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "packed",
+          "had_mismatch",
+          "abandoned",
+          "cancelled",
+          "packed_not_handed_over",
+          "cancelled_after_pack"
+        ],
+        "title": "Counts",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Hệ thống X API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/approval-requests": {
+      "get": {
+        "description": "API-20: danh sách yêu cầu (mặc định PENDING), cũ nhất trước.",
+        "operationId": "list_requests_api_v1_approval_requests_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "PENDING",
+                    "RESOLVED",
+                    "WITHDRAWN"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": "PENDING",
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ApprovalItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Requests",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/approval-requests/{approval_id}/decision": {
+      "post": {
+        "description": "API-21: duyệt / từ chối (UC-08, AC-19).",
+        "operationId": "decide_api_v1_approval_requests__approval_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecisionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecisionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/audit-logs": {
+      "get": {
+        "operationId": "audit_logs_api_v1_audit_logs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "user_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Action"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AuditLogOut_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Audit Logs",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/auth/login": {
+      "post": {
+        "operationId": "login_api_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "logout_api_v1_auth_logout_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "rt_station",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rt Station"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "rt_dashboard",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rt Dashboard"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "operationId": "refresh_api_v1_auth_refresh_post",
+        "parameters": [
+          {
+            "in": "cookie",
+            "name": "rt_station",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rt Station"
+            }
+          },
+          {
+            "in": "cookie",
+            "name": "rt_dashboard",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rt Dashboard"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Refresh",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/cameras/test": {
+      "post": {
+        "operationId": "probe_camera_api_v1_cameras_test_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CameraIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CameraTestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Probe Camera",
+        "tags": [
+          "stations"
+        ]
+      }
+    },
+    "/api/v1/cameras/{camera_id}/roi": {
+      "put": {
+        "operationId": "set_roi_api_v1_cameras__camera_id__roi_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "camera_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Camera Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Roi"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CameraOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Roi",
+        "tags": [
+          "stations"
+        ]
+      }
+    },
+    "/api/v1/cameras/{camera_id}/snapshot": {
+      "get": {
+        "operationId": "snapshot_api_v1_cameras__camera_id__snapshot_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "camera_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Camera Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Snapshot",
+        "tags": [
+          "stations"
+        ]
+      }
+    },
+    "/api/v1/clips/{clip_id}/hold": {
+      "put": {
+        "description": "API-42: giữ / bỏ giữ clip (FR-02.09).",
+        "operationId": "hold_api_v1_clips__clip_id__hold_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "clip_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Clip Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HoldIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HoldOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Hold",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/api/v1/clips/{clip_id}/play-url": {
+      "get": {
+        "description": "API-40: URL phát ký HMAC, hạn 10 phút. STATION: chỉ phiên station mình trong ngày.",
+        "operationId": "play_url_api_v1_clips__clip_id__play_url_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "clip_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Clip Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlayUrlOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Play Url",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/api/v1/exports/{export_id}": {
+      "get": {
+        "description": "API-44: trạng thái + link tải ký HMAC (người tạo hoặc ADMIN).",
+        "operationId": "get_export_api_v1_exports__export_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Export Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Export",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/api/v1/imports": {
+      "get": {
+        "description": "API-52: lịch sử nhập, mới nhất trước.",
+        "operationId": "history_api_v1_imports_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ImportItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "History",
+        "tags": [
+          "imports"
+        ]
+      },
+      "post": {
+        "description": "API-50: multipart field `file` (.csv UTF-8 / .xlsx, ≤ 5 MB, ≤ 5.000 dòng) → bản xem trước 30 phút.",
+        "operationId": "upload_api_v1_imports_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_api_v1_imports_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportPreviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload",
+        "tags": [
+          "imports"
+        ]
+      }
+    },
+    "/api/v1/imports/template": {
+      "get": {
+        "description": "API-53: file mẫu (UTF-8 có BOM để Excel đọc đúng tiếng Việt).",
+        "operationId": "template_api_v1_imports_template_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Template",
+        "tags": [
+          "imports"
+        ]
+      }
+    },
+    "/api/v1/imports/{import_id}/commit": {
+      "post": {
+        "description": "API-51: chỉ người tạo; từ chối khi còn dòng lỗi / quá 30 phút (EX-P11).",
+        "operationId": "commit_api_v1_imports__import_id__commit_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportCommitOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Commit",
+        "tags": [
+          "imports"
+        ]
+      }
+    },
+    "/api/v1/imports/{import_id}/file": {
+      "get": {
+        "description": "API-54: tải file gốc (giữ 90 ngày, sau đó 410 FILE_EXPIRED).",
+        "operationId": "original_file_api_v1_imports__import_id__file_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "import_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Import Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Original File",
+        "tags": [
+          "imports"
+        ]
+      }
+    },
+    "/api/v1/live": {
+      "get": {
+        "operationId": "live_api_v1_live_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Live",
+        "tags": [
+          "stations"
+        ]
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "operationId": "me_api_v1_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Me",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v1/media/clips/{clip_id}": {
+      "get": {
+        "description": "API-41: video/mp4 hỗ trợ Range (206); xác thực bằng chữ ký, không cần Bearer.",
+        "operationId": "clip_media_api_v1_media_clips__clip_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "clip_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Clip Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "uid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Uid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exp",
+            "required": true,
+            "schema": {
+              "title": "Exp",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sig",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "title": "Sig",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clip Media",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/api/v1/media/exports/{export_id}/{file}": {
+      "get": {
+        "description": "API-45: tải `video.mp4` / `info.json` bằng chữ ký.",
+        "operationId": "export_media_api_v1_media_exports__export_id___file__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "export_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Export Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "file",
+            "required": true,
+            "schema": {
+              "title": "File",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "uid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Uid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exp",
+            "required": true,
+            "schema": {
+              "title": "Exp",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sig",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "title": "Sig",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Media",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/api/v1/packages": {
+      "get": {
+        "description": "API-30: tra cứu kiện (FR-07.01, 07.03).",
+        "operationId": "search_packages_api_v1_packages_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "station_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Station Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "warehouse_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "NEW",
+                    "PACKING",
+                    "PACKED",
+                    "HANDED_OVER",
+                    "DELIVERED",
+                    "CANCELLED",
+                    "CANCELLED_AFTER_PACK"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warehouse Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session_status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "OPEN",
+                    "MISMATCH",
+                    "WAITING_APPROVAL",
+                    "COMPLETED",
+                    "CANCELLED",
+                    "ABANDONED",
+                    "SUPERSEDED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session_flag",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "UNVERIFIED",
+                    "CAM2_UNVERIFIED",
+                    "LABEL_ON_TRAY",
+                    "VIDEO_INCOMPLETE",
+                    "REPACK",
+                    "HAD_MISMATCH",
+                    "CLOSED_BY_SUPERVISOR"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Flag"
+            }
+          },
+          {
+            "in": "query",
+            "name": "source",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "API",
+                    "CSV"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Source"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PackageItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Packages",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/v1/packages/{package_id}": {
+      "get": {
+        "description": "API-31: chi tiết kiện, phiên, clip, dòng thời gian (FR-07.02).",
+        "operationId": "package_detail_api_v1_packages__package_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PackageDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Package Detail",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/v1/reports/daily": {
+      "get": {
+        "description": "Số liệu ngày (giờ VN) + trạng thái station + mục cần xử lý (FR-09.01).",
+        "operationId": "daily_api_v1_reports_daily_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DailyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Daily",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/sessions/{session_id}/clips/rebuild": {
+      "post": {
+        "description": "API-46: cắt lại clip FAILED.",
+        "operationId": "rebuild_api_v1_sessions__session_id__clips_rebuild_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RebuildOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rebuild",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/api/v1/sessions/{session_id}/exports": {
+      "post": {
+        "description": "API-43: tạo bản xuất (bất đồng bộ, J-03).",
+        "operationId": "create_export_api_v1_sessions__session_id__exports_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Export",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "description": "API-80 GET: retention, ngưỡng phiên.",
+        "operationId": "get_settings_api_api_v1_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Settings Api",
+        "tags": [
+          "settings"
+        ]
+      },
+      "put": {
+        "description": "API-80 PUT (FR-02.06, BR-16).",
+        "operationId": "put_settings_api_v1_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/v1/shops": {
+      "get": {
+        "description": "API-70: trạng thái kết nối sàn.",
+        "operationId": "list_shops_api_v1_shops_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShopList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Shops",
+        "tags": [
+          "shops"
+        ]
+      }
+    },
+    "/api/v1/shops/shopee/auth-url": {
+      "post": {
+        "description": "API-71: URL ủy quyền Shopee; `state` chống CSRF lưu Redis 10 phút + cookie HttpOnly băm `state` gắn\ntrình duyệt (G3-N7). Chưa cấu hình → 503.",
+        "operationId": "auth_url_api_v1_shops_shopee_auth_url_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthUrlOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Auth Url",
+        "tags": [
+          "shops"
+        ]
+      }
+    },
+    "/api/v1/shops/shopee/callback": {
+      "get": {
+        "description": "API-72 (công khai + `state`): đổi code → token, lưu shop, J-04 ngay; 302 về D7 `?result=`.",
+        "operationId": "callback_api_v1_shops_shopee_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Callback",
+        "tags": [
+          "shops"
+        ]
+      }
+    },
+    "/api/v1/shops/{shop_id}/sync": {
+      "post": {
+        "description": "API-73: đồng bộ ngay (J-04 queue `sync`); đang chạy → 409 SYNC_IN_PROGRESS.",
+        "operationId": "sync_api_v1_shops__shop_id__sync_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shop_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Shop Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueuedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync",
+        "tags": [
+          "shops"
+        ]
+      }
+    },
+    "/api/v1/station/approval-requests": {
+      "post": {
+        "description": "API-13: gửi yêu cầu duyệt MISMATCH / ASSIST / REPACK (FR-03.10, 03.12).",
+        "operationId": "create_request_api_v1_station_approval_requests_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalRequestIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalCreatedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Request",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/station/approval-requests/{approval_id}/withdraw": {
+      "post": {
+        "description": "API-14: rút yêu cầu của station mình.",
+        "operationId": "withdraw_request_api_v1_station_approval_requests__approval_id__withdraw_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateOnlyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Withdraw Request",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/v1/station/scan": {
+      "post": {
+        "operationId": "scan_api_v1_station_scan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Scan",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/sessions/recent": {
+      "get": {
+        "operationId": "recent_sessions_api_v1_station_sessions_recent_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Recent Sessions",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/sessions/{session_id}/cancel": {
+      "post": {
+        "operationId": "cancel_session_api_v1_station_sessions__session_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateOnlyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Session",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/state": {
+      "get": {
+        "operationId": "station_state_api_v1_station_state_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StationStateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Station State",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/stations": {
+      "get": {
+        "operationId": "list_stations_api_v1_stations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StationList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Stations",
+        "tags": [
+          "stations"
+        ]
+      },
+      "post": {
+        "operationId": "create_station_api_v1_stations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StationCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Station",
+        "tags": [
+          "stations"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}": {
+      "get": {
+        "operationId": "get_station_api_v1_stations__station_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Station Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Station",
+        "tags": [
+          "stations"
+        ]
+      },
+      "patch": {
+        "operationId": "patch_station_api_v1_stations__station_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Station Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StationPatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Station",
+        "tags": [
+          "stations"
+        ]
+      }
+    },
+    "/api/v1/stations/{station_id}/cameras/{role}": {
+      "put": {
+        "operationId": "set_camera_api_v1_stations__station_id__cameras__role__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "station_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Station Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "role",
+            "required": true,
+            "schema": {
+              "enum": [
+                "CAM1",
+                "CAM2"
+              ],
+              "title": "Role",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CameraIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CameraOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Camera",
+        "tags": [
+          "stations"
+        ]
+      }
+    },
+    "/api/v1/system/health": {
+      "get": {
+        "description": "API-81 (FR-01.02, 01.06, NFR-30).",
+        "operationId": "system_health_api_v1_system_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "System Health",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "operationId": "list_users_api_v1_users_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "role",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "ADMIN",
+                    "SUPERVISOR",
+                    "CSKH",
+                    "STATION"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Role"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_UserListItem_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Users",
+        "tags": [
+          "users"
+        ]
+      },
+      "post": {
+        "operationId": "create_user_api_v1_users_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserListItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create User",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/{user_id}": {
+      "patch": {
+        "operationId": "patch_user_api_v1_users__user_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserPatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserListItem"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch User",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/api/v1/users/{user_id}/revoke-sessions": {
+      "post": {
+        "operationId": "revoke_sessions_api_v1_users__user_id__revoke_sessions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "User Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Sessions",
+        "tags": [
+          "users"
+        ]
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Liveness, không cần đăng nhập (02a §10).",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Healthz Healthz Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz",
+        "tags": [
+          "system"
+        ]
+      }
+    }
+  }
+}

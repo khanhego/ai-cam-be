@@ -12,9 +12,12 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+
+from aicam.core.settings import Settings, get_settings
 
 ROOT = Path(__file__).resolve().parents[2]
 TEST_DATABASE_URL = os.environ.get(
@@ -46,8 +49,6 @@ def _alembic_config() -> Config:
 def migrated_database_url() -> str:
     asyncio.run(_ensure_database(TEST_DATABASE_URL))
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
-    from aicam.core.settings import get_settings
-
     get_settings.cache_clear()
     cfg = _alembic_config()
     command.downgrade(cfg, "base")
@@ -73,3 +74,40 @@ async def db(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         finally:
             await session.close()
             await trans.rollback()
+
+
+# ---------------------------------------------------------------- API client (T-7+)
+
+TEST_REDIS_URL = os.environ.get("TEST_REDIS_URL", "redis://localhost:56379/15")
+
+
+@pytest.fixture
+async def redis_client() -> AsyncIterator[object]:
+    from aicam.core.redis import close_redis, init_redis
+
+    client = init_redis(TEST_REDIS_URL)
+    await client.flushdb()
+    yield client
+    await client.flushdb()
+    await close_redis()
+
+
+@pytest.fixture
+def test_settings() -> Settings:
+    return Settings(app_env="test", log_json=False, database_url=TEST_DATABASE_URL, redis_url=TEST_REDIS_URL)
+
+
+@pytest.fixture
+async def api(db: AsyncSession, redis_client: object, test_settings: Settings) -> AsyncIterator[AsyncClient]:
+    """httpx client gọi app thật; DB là session của test (rollback sau test).
+
+    Base https để cookie Secure được gửi kèm.
+    """
+    from aicam.core.db import get_session
+    from aicam.main import create_app
+
+    app = create_app(test_settings)
+    app.dependency_overrides[get_session] = lambda: db
+    app.dependency_overrides[get_settings] = lambda: test_settings
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="https://testserver") as client:
+        yield client

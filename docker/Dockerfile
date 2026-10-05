@@ -30,10 +30,18 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src ./src
 COPY README.md ./
+# Migration chạy trong container trước khi api khởi động (architecture §14.2).
+COPY alembic.ini ./
+COPY alembic ./alembic
 RUN uv sync --frozen --no-dev
 
 RUN useradd --create-home --uid 10001 aicam
 USER aicam
 
+# IP thật của client cho rate-limit đăng nhập (BR-13) khi chạy sau reverse proxy: đặt FORWARDED_ALLOW_IPS = IP proxy
+# lúc deploy (checklist T-19). Mặc định chỉ tin 127.0.0.1 — header X-Forwarded-For từ nơi khác bị bỏ qua (review M1 #3).
+ENV FORWARDED_ALLOW_IPS=127.0.0.1
 EXPOSE 8000
-CMD ["uvicorn", "aicam.entrypoints.api:app", "--host", "0.0.0.0", "--port", "8000"]
+# Không bật access log của uvicorn (G3-F3): path kèm query lộ `sig` URL ký và `token` WS. Caddy đã ghi access log
+# có che query; logger stdlib còn lại đi qua bộ che `RedactQueryFilter` (core/logging.py).
+CMD ["uvicorn", "aicam.entrypoints.api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--no-access-log"]

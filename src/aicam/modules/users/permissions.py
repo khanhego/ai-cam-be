@@ -1,0 +1,35 @@
+"""Quyền theo vai trò (01 §5.1). FE chỉ dùng để ẩn/hiện; server kiểm bằng `require_roles`."""
+
+PERMISSIONS: dict[str, list[str]] = {
+    "ADMIN": [
+        "station.manage",
+        "camera.manage",
+        "shop.manage",
+        "settings.manage",
+        "users.manage",
+        "audit.read",
+        "packages.read",
+        "clips.read",
+        "clips.export",
+        "clips.hold",
+        "clips.rebuild",
+        "approvals.decide",
+        "imports.write",
+        "live.read",
+        "reports.read",
+    ],
+    "SUPERVISOR": [
+        "packages.read",
+        "clips.read",
+        "clips.export",
+        "clips.hold",
+        "clips.rebuild",
+        "approvals.decide",
+        "imports.write",
+        "live.read",
+        "reports.read",
+        "settings.read",
+    ],
+    "CSKH": ["packages.read", "clips.read", "clips.export", "clips.hold", "reports.read"],
+    "STATION": ["station.scan", "clips.read.own_station_today"],
+}

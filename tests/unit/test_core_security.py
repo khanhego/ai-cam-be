@@ -86,3 +86,20 @@ def test_signature_detects_tampering() -> None:
     assert verify_signature("media-key", message, signature)
     assert not verify_signature("media-key", "clip:0192:uid-2:1790000000", signature)
     assert not verify_signature("other-key", message, signature)
+
+
+def test_verify_dummy_takes_comparable_time() -> None:
+    """Review M1 #21: username không tồn tại vẫn tốn một lần Argon2 verify."""
+    import time
+
+    from aicam.core.security import hash_password, verify_dummy, verify_password
+
+    verify_dummy("x")  # lần đầu tạo hash giả
+    real = hash_password("matkhau123")
+    t0 = time.perf_counter()
+    verify_password(real, "sai")
+    t_real = time.perf_counter() - t0
+    t0 = time.perf_counter()
+    verify_dummy("sai")
+    t_dummy = time.perf_counter() - t0
+    assert t_dummy > t_real / 3

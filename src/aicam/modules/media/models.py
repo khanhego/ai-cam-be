@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import BigInteger, ForeignKey, Index, Numeric, Text, UniqueConstraint, func, text
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from aicam.core.db import Base, UUIDPk, enum_check, utcnow
@@ -55,6 +56,9 @@ class Clip(UUIDPk, Base):
     held_at: Mapped[datetime | None]
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
+    # 0002 (DEC-102): thời điểm retention xóa file; ánh xạ giây trong clip → giờ thực từng đoạn.
+    deleted_at: Mapped[datetime | None]
+    timeline: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
 
 
 class Export(UUIDPk, Base):

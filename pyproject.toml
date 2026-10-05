@@ -17,6 +17,14 @@ dependencies = [
     "argon2-cffi>=23.1",
     "pyjwt>=2.9",
     "cryptography>=43",
+    "httpx>=0.27",
+    "celery[redis]>=5.4",
+    "zxing-cpp>=3.1.1",
+    "opencv-python-headless>=5.0.0.93",
+    "numpy>=2.5.3",
+    "python-multipart>=0.0.32",
+    "openpyxl>=3.1.5",
+    "defusedxml>=0.7.1",
 ]
 
 [project.scripts]
@@ -26,10 +34,11 @@ aicam = "aicam.entrypoints.cli:main"
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    "httpx>=0.27",
     "ruff>=0.6",
     "mypy>=1.11",
     "import-linter>=2.1",
+    "respx>=0.23.1",
+    "types-openpyxl>=3.1.5.20260827",
 ]
 
 [build-system]
@@ -59,11 +68,19 @@ mypy_path = "src"
 packages = ["aicam"]
 plugins = ["pydantic.mypy"]
 
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra"
-markers = ["integration: cần PostgreSQL thật (TEST_DATABASE_URL)"]
+markers = [
+    "integration: cần PostgreSQL thật (TEST_DATABASE_URL)",
+    "qa: QA trên stack dev thật (QA_BASE_URL)",
+    "perf: hiệu năng dữ liệu lớn, chạy riêng (RUN_PERF=1)",
+]
 filterwarnings = ["ignore::DeprecationWarning:fastapi.testclient", "ignore::DeprecationWarning:starlette.testclient"]
 
 [tool.importlinter]

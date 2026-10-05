@@ -7,6 +7,7 @@ from typing import Any, ClassVar
 
 from sqlalchemy import CheckConstraint, DateTime, MetaData, event
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
@@ -104,6 +105,16 @@ async def commit(session: AsyncSession) -> None:
     await session.commit()
     for callback in pop_after_commit(session):
         await callback()
+
+
+LOCK_CONFLICT_SQLSTATES = frozenset({"40P01", "55P03"})  # deadlock_detected, lock_not_available
+
+
+def is_lock_conflict(exc: DBAPIError) -> bool:
+    """Postgres hủy transaction vì khóa chéo (40P01) / hết `lock_timeout` (55P03) — DEC-162 (G3-V1)."""
+    orig = exc.orig
+    code = getattr(orig, "pgcode", None) or getattr(orig, "sqlstate", None)
+    return code in LOCK_CONFLICT_SQLSTATES
 
 
 @event.listens_for(Session, "after_soft_rollback")

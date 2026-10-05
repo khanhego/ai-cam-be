@@ -14,6 +14,11 @@ rtspTransports: [tcp]
 
 webrtc: yes
 webrtcAddress: :8889
+# ICE: UDP 8189 (LAN kho) + TCP 8189 (máy dev qua Docker/Colima không chuyển tiếp UDP). Trình duyệt chạy trên host
+# nên quảng bá thêm 127.0.0.1; production đặt IP LAN của server (T-19).
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts: [127.0.0.1]
 
 rtmp: no
 hls: no
@@ -39,13 +44,17 @@ pathDefaults:
   recordFormat: fmp4
   recordPartDuration: 1s
   recordSegmentDuration: 60s
-  # Xóa do J-02 đảm nhận theo setting (02a §7), MediaMTX không tự xóa.
-  recordDeleteAfter: 0s
+  # Stack dev: chỉ giữ 1 giờ video thô (camera giả ghi 24/7 từng làm đầy 64 GB ổ máy dev, 2026-10-05).
+  # Production: J-02 xóa theo retention 30/90 ngày (BR-09) — compose production đặt lại giá trị này (T-19).
+  recordDeleteAfter: 1h
 
 paths:
   # Camera giả (docker/fake-cams) publish vào đây.
+  # Không ghi path camera giả: camera thật trong DB trỏ tới đây qua path cam-{id} (tránh ghi trùng).
   cam-fake1:
     source: publisher
+    record: no
   cam-fake2:
     source: publisher
+    record: no
   all_others:

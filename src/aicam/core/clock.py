@@ -34,3 +34,14 @@ def reset() -> None:
     global _frozen, _offset
     _frozen = None
     _offset = timedelta(0)
+
+
+def iso_z(at: datetime) -> str:
+    """ISO-8601 UTC hậu tố `Z` (02 §6 "Thời gian") — cùng dạng Pydantic xuất cho response API.
+
+    Dùng cho mốc giờ tự ghép vào JSON ngoài schema Pydantic: WS `at`, `alert.data`, `error.details`,
+    jsonb `last_error`.
+    """
+    if at.tzinfo is None:
+        raise ValueError("at phải có tzinfo")
+    return at.astimezone(UTC).isoformat().replace("+00:00", "Z")
