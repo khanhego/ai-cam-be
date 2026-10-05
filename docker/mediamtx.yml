@@ -39,8 +39,9 @@ pathDefaults:
   recordFormat: fmp4
   recordPartDuration: 1s
   recordSegmentDuration: 60s
-  # Xóa do J-02 đảm nhận theo setting (02a §7), MediaMTX không tự xóa.
-  recordDeleteAfter: 0s
+  # Stack dev: chỉ giữ 1 giờ video thô (camera giả ghi 24/7 từng làm đầy 64 GB ổ máy dev, 2026-10-05).
+  # Production: J-02 xóa theo retention 30/90 ngày (BR-09) — compose production đặt lại giá trị này (T-19).
+  recordDeleteAfter: 1h
 
 paths:
   # Camera giả (docker/fake-cams) publish vào đây.
