@@ -10,17 +10,13 @@ from aicam.core.db import get_session
 from aicam.core.deps import Principal, require_roles
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.platforms.base import PlatformAdapter
-from aicam.modules.platforms.service import get_adapter
+from aicam.modules.platforms.router import get_platform_adapter
 from aicam.modules.sessions import service
 from aicam.modules.sessions.schemas import CancelIn, RecentOut, ScanIn, ScanOut, StateOnlyOut, StationStateOut
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 StationOnly = Annotated[Principal, Depends(require_roles("STATION"))]
-
-
-def get_platform_adapter(settings: AppSettings) -> PlatformAdapter:
-    return get_adapter(settings)
 
 
 router = APIRouter(prefix="/station", tags=["station"])

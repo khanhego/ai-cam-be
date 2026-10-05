@@ -1,6 +1,6 @@
 """Interface adapter sàn (architecture §10.1, ADR-007). Lõi nghiệp vụ chỉ dùng model chung ở đây."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
@@ -36,11 +36,23 @@ class PlatformOrder:
 
 @dataclass(frozen=True)
 class ShippingStatus:
-    """Gợi ý trạng thái kho từ trạng thái vận chuyển sàn: HANDED_OVER | DELIVERED | None."""
+    """Gợi ý trạng thái kho từ trạng thái vận chuyển sàn: HANDED_OVER | DELIVERED | None.
+
+    `order_status`: trạng thái đơn trên sàn lúc tra (để J-06 bắt đơn hủy sau khi đóng — EX-P10).
+    """
 
     tracking_number: str
     raw_status: str
     warehouse_hint: str | None
+    order_status: str | None = None
+
+
+@dataclass(frozen=True)
+class ShipmentRef:
+    """Một kiện cần tra vận chuyển (J-06)."""
+
+    platform_order_sn: str
+    tracking_number: str
 
 
 @dataclass(frozen=True)
@@ -52,11 +64,23 @@ class ShopCredentials:
 
 
 class PlatformError(Exception):
-    """Lỗi tạm (mạng, 5xx, rate limit) — job retry (02a §7)."""
+    """Lỗi gọi sàn (mạng, 5xx, rate limit đã hết lượt thử lại, lỗi tham số) — job ghi `shop.last_error`."""
+
+
+class PlatformAuthError(PlatformError):
+    """Token không hợp lệ / hết hạn / bị thu hồi: refresh một lần, hỏng nữa → shop `EXPIRED`."""
 
 
 class PlatformAdapter(Protocol):
     code: str
+
+    def build_auth_url(self, redirect_url: str) -> str: ...
+
+    async def exchange_code(self, code: str, shop_id: str) -> ShopCredentials: ...
+
+    async def refresh(self, creds: ShopCredentials) -> ShopCredentials: ...
+
+    async def shop_name(self, creds: ShopCredentials) -> str | None: ...
 
     async def get_order(self, creds: ShopCredentials | None, order_sn: str) -> PlatformOrder | None: ...
 
@@ -68,6 +92,6 @@ class PlatformAdapter(Protocol):
         self, creds: ShopCredentials | None, since: datetime
     ) -> AsyncIterator[PlatformOrder]: ...
 
-    async def get_shipping_status(
-        self, creds: ShopCredentials | None, tracking_number: str
-    ) -> ShippingStatus | None: ...
+    async def get_shipping_statuses(
+        self, creds: ShopCredentials | None, refs: Sequence[ShipmentRef]
+    ) -> list[ShippingStatus]: ...

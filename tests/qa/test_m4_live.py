@@ -53,7 +53,9 @@ def client() -> Iterator[httpx.Client]:
 def tokens(client: httpx.Client) -> dict[str, str]:
     out = {}
     for role, username in [("ADMIN", "tst_admin"), ("SUPERVISOR", "tst_sup"), ("CSKH", "tst_cskh")]:
-        res = client.post("/auth/login", json={"username": username, "password": PASSWORD, "client": "DASHBOARD"})
+        res = client.post(
+            "/auth/login", json={"username": username, "password": PASSWORD, "client": "DASHBOARD"}
+        )
         assert res.status_code == 200, res.text
         out[role] = res.json()["access_token"]
     return out
@@ -99,7 +101,7 @@ def test_csv_ok_500(client: httpx.Client, tokens: dict[str, str]) -> None:
     expected = hashlib.sha256((FIXTURES / "ok_500.csv").read_bytes()).hexdigest()
     assert hashlib.sha256(res.content).hexdigest() == expected
     # File gốc lưu trong volume imports, đường dẫn tương đối (DEC-105).
-    rel = _psql(f"SELECT file_path FROM csv_import WHERE id = '{body['id']}'")
+    rel = _psql(f"SELECT file_path FROM csv_import WHERE id = '{body['id']}'")  # noqa: S608 — id là UUID
     assert not rel.startswith("/"), rel
 
 
@@ -145,3 +147,33 @@ def test_csv_permissions_and_template(client: httpx.Client, tokens: dict[str, st
     res = client.get("/imports/template", headers=_h(tokens["ADMIN"]))
     assert res.status_code == 200
     assert res.content.decode("utf-8-sig").startswith("platform_order_sn,tracking_number")
+
+
+# ---------------------------------------------------------------- Shopee (T-16, adapter mock)
+
+
+def _shopee_enabled(client: httpx.Client, tokens: dict[str, str]) -> httpx.Response:
+    return client.post("/shops/shopee/auth-url", headers=_h(tokens["ADMIN"]))
+
+
+def test_shopee_connect_or_not_configured(client: httpx.Client, tokens: dict[str, str]) -> None:
+    """TC-05.03 khi `SHOPEE_ENABLED=false` (mặc định stack dev); khi bật + adapter mock: TC-05.01 phần API
+    (auth-url → callback → shop CONNECTED). Shopee thật: chưa test — thiếu tài khoản partner (T-3)."""
+    assert client.get("/shops", headers=_h(tokens["SUPERVISOR"])).status_code == 403
+    res = _shopee_enabled(client, tokens)
+    if res.status_code == 503:
+        assert res.json()["error"]["code"] == "PLATFORM_NOT_CONFIGURED"
+        assert client.get("/shops", headers=_h(tokens["ADMIN"])).json() == {"items": []}
+        pytest.skip(
+            "SHOPEE_ENABLED=false: đã kiểm TC-05.03; chạy lại với SHOPEE_ENABLED=true cho luồng kết nối"
+        )
+    assert res.status_code == 200, res.text
+    url = httpx.URL(res.json()["url"])
+    redirect = client.get(f"{BASE}{url.raw_path.decode()}", follow_redirects=False)
+    assert redirect.status_code == 302
+    assert redirect.headers["location"] == "/admin/settings/shopee?result=connected"
+    items = client.get("/shops", headers=_h(tokens["ADMIN"])).json()["items"]
+    assert [(s["auth_status"], s["name"]) for s in items] == [("CONNECTED", "TST Shop (mock)")]
+    assert _psql("SELECT count(*) FROM audit_log WHERE action = 'SHOP_CONNECT'") == "1"
+    # Token lưu mã hóa (Fernet), không có chữ rõ.
+    assert _psql("SELECT position('mock-access' in convert_from(access_token_enc, 'UTF8')) FROM shop") == "0"

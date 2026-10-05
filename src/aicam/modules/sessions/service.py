@@ -23,6 +23,7 @@ from aicam.modules.media import jobs as media_jobs
 from aicam.modules.media.queries import clips_of_session
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Package
+from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms.base import PlatformAdapter, PlatformError
 from aicam.modules.sessions.models import ACTIVE_STATUSES, PackSession, ScanDedup, SessionEvent
 from aicam.modules.sessions.schemas import (
@@ -223,11 +224,19 @@ async def lock_station(session: AsyncSession, station_id: uuid.UUID) -> None:
 
 
 async def _lookup_platform(
-    session: AsyncSession, code: str, adapter: PlatformAdapter, timeout_s: float
+    session: AsyncSession, code: str, adapter: PlatformAdapter, settings: Settings
 ) -> Package | None:
-    """BR-04: tra sàn tối đa `timeout_s`; có → ghi đơn; không / quá hạn → None."""
+    """BR-04: tra sàn tối đa `PLATFORM_LOOKUP_TIMEOUT_S` (2 giây); có → ghi đơn; không / quá hạn / lỗi → None.
+
+    Gọi ngoài lock station; ghi đơn trong savepoint (station khác có thể vừa ghi cùng đơn — review M1 #5).
+    """
+    target = await platforms.lookup_target(session, adapter, settings)
+    if target is None:
+        return None
     try:
-        found = await asyncio.wait_for(adapter.find_by_tracking(None, code), timeout=timeout_s)
+        found = await asyncio.wait_for(
+            adapter.find_by_tracking(target.creds, code), timeout=settings.platform_lookup_timeout_s
+        )
     except (TimeoutError, PlatformError) as exc:
         log.info("platform_lookup_failed", code=code, error=type(exc).__name__)
         return None
@@ -236,7 +245,7 @@ async def _lookup_platform(
     try:
         # Station khác vừa ghi cùng đơn (tra ngoài lock): bỏ qua, bước mở phiên đọc lại từ DB (review #5).
         async with session.begin_nested():
-            result = await orders.upsert_platform_order(session, found)
+            result = await orders.upsert_platform_order(session, found, shop_id=target.shop_id)
     except IntegrityError:
         return None
     return next((p for p in result.packages if p.tracking_number == code), None)
@@ -399,7 +408,7 @@ async def scan(
         and await active_session(session, station.id) is None
         and await orders.find_package(session, code) is None
     ):
-        await _lookup_platform(session, code, adapter, settings.platform_lookup_timeout_s)
+        await _lookup_platform(session, code, adapter, settings)
         await session.flush()
 
     await lock_station(session, station.id)

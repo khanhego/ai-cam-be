@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     shopee_partner_key: str = ""
     shopee_redirect_url: str = ""
     shopee_base_url: str = "https://partner.shopeemobile.com"
+    # T-16 / T-22 (02a §7, FR-05.08). Chưa đo với Shopee thật (thiếu tài khoản partner — T-3).
+    shopee_timeout_s: float = 10.0  # mỗi request HTTP
+    shopee_max_attempts: int = 5  # thử lại giãn cách mũ 0,5 / 1 / 2 / 4 giây (hoặc theo Retry-After)
+    shopee_backoff_s: float = 0.5
+    shopee_lookup_lookback_min: int = 60  # tra khi quét: dò đơn cập nhật trong 60 phút gần nhất
+    shopee_initial_sync_days: int = 3  # lần đồng bộ đầu sau khi kết nối
 
     @property
     def is_production(self) -> bool:

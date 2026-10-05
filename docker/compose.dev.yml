@@ -69,6 +69,10 @@ services:
       LOG_JSON: "true"
       MEDIAMTX_API_URL: http://mediamtx:9997
       MEDIAMTX_RTSP_URL: rtsp://mediamtx:8554
+      # Shopee (T-16): mặc định tắt (TC-05.03). QA luồng kết nối bằng adapter mock:
+      # `SHOPEE_ENABLED=true docker compose -f docker/compose.dev.yml up -d api worker beat`.
+      SHOPEE_ENABLED: ${SHOPEE_ENABLED:-false}
+      PLATFORM_ADAPTER: ${PLATFORM_ADAPTER:-mock}
     ports: ["8180:8000"]
     volumes: [video:/data/video, imports:/data/imports]
     depends_on:
