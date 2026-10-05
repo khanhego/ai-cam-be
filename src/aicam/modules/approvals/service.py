@@ -213,10 +213,12 @@ async def withdraw(
     if approval.status != "PENDING":
         raise await _already_resolved(session, approval)
     approval.status = "WITHDRAWN"
+    approval.decided_at = clock.now()  # mốc kết thúc chờ duyệt: đồng hồ quá giờ tính lại từ đây (DEC-60)
     pack = await _locked_session(session, approval.session_id)
     if pack is not None and pack.status == "WAITING_APPROVAL":
         pack.status = pack.status_before_approval or "OPEN"
         pack.status_before_approval = None
+        pack.warn_notified = False  # cảnh báo 15 phút tính lại từ lúc hết chờ (DEC-60)
         sessions.record_event(session, pack, "APPROVAL_WITHDRAWN", approval_id=str(approval.id))
         # Trong lúc chờ khay có thể đã đổi (bỏ / đặt phiếu sai).
         sessions.apply_tray(session, pack, await read_tray(get_redis(), station.id, pack.open_code))
@@ -292,6 +294,7 @@ async def _decide_on_session(
         raise _not_eligible("Phiên không còn chờ duyệt.")
     tray = await read_tray(get_redis(), station.id, pack.open_code)
     pack.status_before_approval = None
+    pack.warn_notified = False  # cảnh báo 15 phút tính lại từ lúc hết chờ (DEC-60)
     if action == "CONTINUE":
         # Về OPEN rồi đánh giá lại Cam 2 ngay: khay còn phiếu sai → MISMATCH (02 API-21, TC-03.44).
         pack.status = "OPEN"

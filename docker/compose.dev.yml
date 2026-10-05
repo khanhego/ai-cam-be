@@ -42,6 +42,8 @@ services:
     ports:
       - "58554:8554"   # RTSP
       - "58889:8889"   # WebRTC / WHEP
+      - "8189:8189/udp" # WebRTC ICE (cổng phải trùng trong và ngoài vì nằm trong candidate)
+      - "8189:8189"     # WebRTC ICE-TCP (dự phòng khi UDP không qua được)
       - "59997:9997"   # API
 
   fake-cam1:

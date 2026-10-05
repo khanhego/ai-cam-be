@@ -14,6 +14,11 @@ rtspTransports: [tcp]
 
 webrtc: yes
 webrtcAddress: :8889
+# ICE: UDP 8189 (LAN kho) + TCP 8189 (máy dev qua Docker/Colima không chuyển tiếp UDP). Trình duyệt chạy trên host
+# nên quảng bá thêm 127.0.0.1; production đặt IP LAN của server (T-19).
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts: [127.0.0.1]
 
 rtmp: no
 hls: no

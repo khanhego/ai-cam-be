@@ -17,7 +17,7 @@ from aicam.core.db import after_commit, commit, rollback
 from aicam.core.errors import AppError
 from aicam.core.redis import get_redis
 from aicam.core.settings import Settings, get_settings
-from aicam.modules.approvals.queries import pending_for_station, set_tray_match
+from aicam.modules.approvals.queries import last_resolved_at, pending_for_station, set_tray_match
 from aicam.modules.approvals.views import approval_item
 from aicam.modules.media import jobs as media_jobs
 from aicam.modules.media.queries import clips_of_session
@@ -156,8 +156,9 @@ async def build_state(session: AsyncSession, station: Station, settings: Setting
             flags=list(current.flags),
             package=await _package_brief(session, package),
             mismatch=MismatchOut(**current.mismatch) if current.mismatch else None,
-            warn_at=current.started_at + timedelta(minutes=cfg.session_warn_minutes),
-            abandon_at=current.started_at + timedelta(minutes=cfg.session_abandon_minutes),
+            warn_at=(base := await timer_base(session, current))
+            + timedelta(minutes=cfg.session_warn_minutes),
+            abandon_at=base + timedelta(minutes=cfg.session_abandon_minutes),
         )
     if pending is not None:
         state = "WAITING_APPROVAL"
@@ -585,6 +586,16 @@ async def recent(session: AsyncSession, station: Station, settings: Settings, li
     return RecentOut(items=items)
 
 
+async def timer_base(session: AsyncSession, pack: PackSession) -> datetime:
+    """Mốc tính quá giờ (BR-16): lúc mở phiên, hoặc lúc yêu cầu duyệt gần nhất kết thúc nếu muộn hơn.
+
+    Thời gian chờ quản lý không tính vào thời gian đóng gói: phiên vừa được "Cho tiếp tục" sau 40 phút chờ
+    không bị cảnh báo / bỏ dở ngay (RB-14 → DEC-60).
+    """
+    resolved = await last_resolved_at(session, pack.id)
+    return max(pack.started_at, resolved) if resolved else pack.started_at
+
+
 async def check_timeouts(session: AsyncSession, settings: Settings) -> dict[str, int]:
     """J-07 (BR-16): mở quá `warn` phút → cảnh báo một lần; quá `abandon` phút → ABANDONED.
 
@@ -616,7 +627,7 @@ async def check_timeouts(session: AsyncSession, settings: Settings) -> dict[str,
             if pack is None or pack.status not in ("OPEN", "MISMATCH"):
                 await rollback(session)
                 continue
-            age = clock.now() - pack.started_at
+            age = clock.now() - await timer_base(session, pack)
             if age >= abandon_after:
                 station = await stations.get_station(session, station_id)
                 await end_without_packing(

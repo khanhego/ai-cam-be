@@ -299,7 +299,10 @@ async def test_withdraw_restores_previous_state(
     late = await _decide(api, ctx["sup"], apr_id, "CONTINUE")
     assert late.status_code == 409
     assert late.json()["error"]["code"] == "ALREADY_RESOLVED"
-    assert late.json()["error"]["details"] == {"status": "WITHDRAWN", "decided_by": None, "decided_at": None}
+    details = late.json()["error"]["details"]
+    # DEC-60: rút yêu cầu cũng ghi mốc kết thúc chờ (`decided_at`), không có người duyệt.
+    assert (details["status"], details["decided_by"]) == ("WITHDRAWN", None)
+    assert details["decided_at"] is not None
     assert (await api.get("/api/v1/approval-requests", headers=ctx["sup"])).json()["total"] == 0
     withdrawn = await api.get("/api/v1/approval-requests?status=WITHDRAWN", headers=ctx["sup"])
     assert withdrawn.json()["items"][0]["status"] == "WITHDRAWN"
@@ -528,3 +531,35 @@ async def test_two_supervisors_decide_at_once(committed: AsyncEngine, test_setti
         pack = await db.get(PackSession, uuid.UUID(opened["state"]["session"]["id"]))
         assert pack is not None
         assert pack.status == ("OPEN" if winner["decision"] == "CONTINUE" else "CANCELLED")
+
+
+async def test_timer_restarts_after_approval_resolved(
+    api: AsyncClient, db: AsyncSession, ctx: dict[str, Any], test_settings: Settings
+) -> None:
+    """DEC-60 (RB-14): chờ duyệt 40 phút rồi "Cho tiếp tục" → không bỏ dở ngay; tính giờ lại từ lúc duyệt."""
+    from datetime import UTC, datetime, timedelta
+
+    from aicam.modules.sessions import service as sessions
+
+    t0 = datetime(2026, 10, 5, 2, 0, tzinfo=UTC)
+    clock.freeze(t0)
+    st = await _login(api, "tst_station01", "STATION")
+    opened = await _scan(api, st, "SPXTST0000005")
+    await _request(api, st, type="ASSIST", session_id=opened["state"]["session"]["id"])
+
+    clock.freeze(t0 + timedelta(minutes=40))
+    sup = await _login(api, "tst_sup", "DASHBOARD")
+    pending = (await api.get("/api/v1/approval-requests", headers=sup)).json()["items"][0]
+    res = await _decide(api, sup, pending["id"], "CONTINUE")
+    assert res.status_code == 200, res.text
+
+    assert await sessions.check_timeouts(db, test_settings) == {"warned": 0, "abandoned": 0}
+    st = await _login(api, "tst_station01", "STATION")
+    state = (await api.get("/api/v1/station/state", headers=st)).json()
+    resumed = t0 + timedelta(minutes=40)
+    assert datetime.fromisoformat(state["session"]["abandon_at"]) == resumed + timedelta(minutes=30)
+
+    clock.freeze(resumed + timedelta(minutes=15))
+    assert await sessions.check_timeouts(db, test_settings) == {"warned": 1, "abandoned": 0}
+    clock.freeze(resumed + timedelta(minutes=30))
+    assert await sessions.check_timeouts(db, test_settings) == {"warned": 0, "abandoned": 1}
