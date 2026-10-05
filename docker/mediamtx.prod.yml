@@ -1,0 +1,53 @@
+# MediaMTX production (T-19): relay RTSP camera thật, ghi fMP4 60 giây, live view WHEP qua Caddy (ADR-003, 02a §2).
+# Path camera `cam-{camera_id}` do api thêm qua API MediaMTX (T-8) — file này không khai báo camera.
+# Biến môi trường do compose.yml đặt (ghi đè giá trị dưới đây): MTX_WEBRTCADDITIONALHOSTS (IP LAN server),
+# MTX_WEBRTCLOCALUDPADDRESS / MTX_WEBRTCLOCALTCPADDRESS (cổng ICE, mặc định :8189).
+
+logLevel: info
+
+# API + metric chỉ trong mạng compose: compose.yml KHÔNG publish 9997 / 9998 ra host; quyền `api` / `metrics`
+# dưới đây chỉ cho dải IP private Docker (172.16.0.0/12).
+api: yes
+apiAddress: :9997
+metrics: yes
+metricsAddress: :9998
+
+rtsp: yes
+rtspAddress: :8554
+rtspTransports: [tcp]
+
+webrtc: yes
+webrtcAddress: :8889
+# ICE: UDP 8189 cho LAN kho; TCP 8189 dự phòng khi UDP bị chặn. Cổng trong = cổng ngoài (nằm trong candidate).
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts: []
+
+rtmp: no
+hls: no
+srt: no
+
+# Không ai publish vào MediaMTX ở production (camera được kéo về bằng `source: rtsp://…`).
+# read: vision / worker (RTSP), Caddy (WHEP — đã kiểm JWT bằng forward_auth). api / metrics: api, Prometheus nội bộ.
+authInternalUsers:
+  - user: any
+    pass:
+    ips: ["127.0.0.1/32", "::1/128", "172.16.0.0/12"]
+    permissions:
+      - action: read
+      - action: playback
+      - action: api
+      - action: metrics
+
+pathDefaults:
+  record: yes
+  # Giờ trong tên file là UTC (container không đặt TZ); J-10 đọc tên file theo UTC.
+  recordPath: /data/video/raw/%path/%Y/%m/%d/%H-%M-%S-%f
+  recordFormat: fmp4
+  recordPartDuration: 1s
+  recordSegmentDuration: 60s
+  # MediaMTX không tự xóa: J-02 xóa video thô theo retention 30 ngày / clip 90 ngày (BR-09, API-80).
+  recordDeleteAfter: 0s
+
+paths:
+  all_others:

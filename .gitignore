@@ -14,3 +14,6 @@ build/
 .idea/
 .vscode/
 /data/
+
+# Stack kho: file sao lưu mặc định (docker/compose.yml BACKUP_DIR)
+docker/backups/

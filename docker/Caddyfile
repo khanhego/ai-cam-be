@@ -1,0 +1,82 @@
+# Caddy — cổng duy nhất mở ra LAN kho (architecture §11, §14; T-19).
+# SITE_ADDRESS: tên miền LAN (vd `aicam.kho.lan`) hoặc IP server (vd `192.168.10.5`). HTTPS bằng CA nội bộ của
+# Caddy (`tls internal`): cookie refresh có cờ Secure (02 §6) nên bắt buộc HTTPS. Máy station / dashboard cài
+# chứng chỉ gốc `root.crt` (docs/ops.md §3) để trình duyệt tin.
+
+{
+	admin localhost:2019
+}
+
+{$SITE_ADDRESS} {
+	tls internal
+
+	encode zstd gzip
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		# URL ký (API-41/45 `sig`) và token WS nằm trong query: không gửi Referer ra ngoài.
+		Referrer-Policy no-referrer
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		Cross-Origin-Opener-Policy same-origin
+		-Server
+	}
+
+	# Access log JSON ra stdout (Docker giữ, giới hạn kích thước ở compose). Không ghi chữ ký URL media, token WS
+	# (02 §8 "Bảo mật video"); header Authorization / Cookie Caddy đã che sẵn.
+	log {
+		output stdout
+		format filter {
+			request>uri query {
+				replace sig REDACTED
+				replace token REDACTED
+			}
+		}
+	}
+
+	# Source map FE không phục vụ (DEC-53): build giữ map "hidden" để debug nội bộ, không lộ mã nguồn.
+	@sourcemap path *.map
+	handle @sourcemap {
+		respond 404
+	}
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	# WS-01 / WS-02. Client ping 20 giây nên không bị ngắt khi rảnh (RB-8).
+	handle /ws/* {
+		reverse_proxy api:8000
+	}
+
+	handle /healthz {
+		reverse_proxy api:8000
+	}
+
+	# Live view (API-65 `whep_url` = /live/cam-<id>/whep; 02b-admin DEC-22, DEC-83). Chỉ cho WHEP (không WHIP /
+	# trang web của MediaMTX); kiểm JWT + quyền ADMIN / SUPERVISOR bằng forward_auth tới API-65 (cùng quyền với
+	# màn D11) trước khi chuyển tới MediaMTX.
+	@whep path_regexp ^/live/cam-[0-9a-fA-F-]+/whep(/[0-9a-zA-Z-]+)?$
+	handle @whep {
+		forward_auth api:8000 {
+			uri /api/v1/live
+		}
+		uri strip_prefix /live
+		reverse_proxy mediamtx:8889
+	}
+
+	handle /live/* {
+		respond 404
+	}
+
+	# FE tĩnh (build `ai-cam-fe/dist`), SPA fallback về index.html.
+	handle {
+		root * /srv/fe
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+		@html not path /assets/*
+		header @html Cache-Control "no-cache"
+		try_files {path} /index.html
+		file_server
+	}
+}

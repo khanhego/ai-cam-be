@@ -1,0 +1,221 @@
+# Stack production tại kho (architecture §14.2, T-19) — nguồn chuẩn của stack kho.
+# Chạy (từ thư mục ai-cam-be):
+#   docker compose --env-file docker/.env -f docker/compose.yml up -d --build
+# Cấu hình: chép docker/.env.production.example → docker/.env, điền secret thật (không commit .env).
+# Hướng dẫn vận hành đầy đủ: docs/ops.md.
+#
+# Khác compose.dev.yml: không có camera giả; chỉ Caddy mở cổng HTTP/HTTPS (api, postgres, redis, API MediaMTX
+# không publish ra host); migration chạy trong service `migrate` trước api; secret bắt buộc; MediaMTX không tự
+# xóa video (J-02 lo retention); sao lưu Postgres hằng ngày; restart, healthcheck, giới hạn log.
+
+name: aicam
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "5" }
+
+x-app: &app
+  image: ${AICAM_IMAGE:-aicam-be:local}
+  restart: unless-stopped
+  logging: *logging
+  networks: [aicam]
+  environment: &app_env
+    APP_ENV: ${APP_ENV:-production}
+    LOG_JSON: "true"
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    TZ_DISPLAY: Asia/Ho_Chi_Minh
+    DATABASE_URL: postgresql+asyncpg://aicam:${POSTGRES_PASSWORD:?đặt POSTGRES_PASSWORD trong .env}@postgres:5432/aicam
+    REDIS_URL: redis://redis:6379/0
+    JWT_SECRET: ${JWT_SECRET:?đặt JWT_SECRET trong .env}
+    FERNET_KEY: ${FERNET_KEY:?đặt FERNET_KEY trong .env}
+    MEDIA_SIGNING_KEY: ${MEDIA_SIGNING_KEY:?đặt MEDIA_SIGNING_KEY trong .env}
+    MEDIAMTX_API_URL: http://mediamtx:9997
+    MEDIAMTX_RTSP_URL: rtsp://mediamtx:8554
+    VIDEO_ROOT: /data/video
+    IMPORT_ROOT: /data/imports
+    CORS_ORIGINS: "[]"
+    PLATFORM_ADAPTER: ${PLATFORM_ADAPTER:-shopee}
+    SHOPEE_ENABLED: ${SHOPEE_ENABLED:-false}
+    SHOPEE_PARTNER_ID: ${SHOPEE_PARTNER_ID:-}
+    SHOPEE_PARTNER_KEY: ${SHOPEE_PARTNER_KEY:-}
+    SHOPEE_REDIRECT_URL: ${SHOPEE_REDIRECT_URL:-}
+    SHOPEE_BASE_URL: ${SHOPEE_BASE_URL:-https://partner.shopeemobile.com}
+    EXPORT_PRESET: ${EXPORT_PRESET:-veryfast}
+    EXPORT_SIDE_SCALE: ${EXPORT_SIDE_SCALE:-1280:720}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [aicam]
+    environment:
+      POSTGRES_DB: aicam
+      POSTGRES_USER: aicam
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?đặt POSTGRES_PASSWORD trong .env}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aicam -d aicam"]
+      interval: 10s
+      retries: 10
+
+  # Broker Celery: bật AOF để job đang chờ (cắt clip, xuất) không mất khi Redis khởi động lại (architecture §12).
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    logging: *logging
+    networks: [aicam]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 10
+
+  # Volume video / imports thuộc uid 10001 (user `aicam` trong image; MediaMTX chạy cùng uid — DEC-102 (8)).
+  volume-init:
+    image: alpine:3
+    command: ["sh", "-c", "mkdir -p /data/video/raw /data/video/clips /data/video/exports && chown -R 10001:10001 /data/video /data/imports"]
+    volumes: [video:/data/video, imports:/data/imports]
+    networks: [aicam]
+
+  mediamtx:
+    image: bluenviron/mediamtx:1
+    user: "10001:10001"
+    restart: unless-stopped
+    logging: *logging
+    networks: [aicam]
+    depends_on:
+      volume-init: { condition: service_completed_successfully }
+    environment:
+      # IP LAN của server: trình duyệt dashboard nhận candidate này để nối ICE (live view D11).
+      MTX_WEBRTCADDITIONALHOSTS: ${LAN_IP:?đặt LAN_IP (IP LAN của server) trong .env}
+      MTX_WEBRTCLOCALUDPADDRESS: :${WEBRTC_ICE_PORT:-8189}
+      MTX_WEBRTCLOCALTCPADDRESS: :${WEBRTC_ICE_PORT:-8189}
+    volumes:
+      - ./mediamtx.prod.yml:/mediamtx.yml:ro
+      - video:/data/video
+    # Chỉ cổng ICE ra host (cổng trong = cổng ngoài vì nằm trong candidate). RTSP, WHEP, API, metric chỉ trong
+    # mạng compose: WHEP đi qua Caddy (/live/*, kiểm JWT).
+    ports:
+      - "${WEBRTC_ICE_PORT:-8189}:${WEBRTC_ICE_PORT:-8189}/udp"
+      - "${WEBRTC_ICE_PORT:-8189}:${WEBRTC_ICE_PORT:-8189}"
+
+  # Migration Alembic chạy trước api (architecture §14.2); chạy xong thoát.
+  migrate:
+    <<: *app
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *app
+    environment:
+      <<: *app_env
+      # Chỉ tin X-Forwarded-For từ Caddy (rate-limit đăng nhập theo IP thật — DEC-53, review M1 #3).
+      FORWARDED_ALLOW_IPS: ${CADDY_IP:-172.30.10.10}
+    volumes: [video:/data/video, imports:/data/imports]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+      mediamtx: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  vision:
+    <<: *app
+    command: ["python", "-m", "aicam.entrypoints.vision"]
+    depends_on:
+      api: { condition: service_healthy }
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "default,video,sync", "--loglevel", "info"]
+    volumes: [video:/data/video, imports:/data/imports]
+    depends_on:
+      api: { condition: service_healthy }
+
+  # Encode bản xuất tách riêng, mỗi lần 1 job: không chặn cắt clip (DEC-32).
+  worker-export:
+    <<: *app
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "export", "-c", "1", "-n", "export@%h", "--loglevel", "info"]
+    volumes: [video:/data/video]
+    depends_on:
+      api: { condition: service_healthy }
+
+  beat:
+    <<: *app
+    command: ["celery", "-A", "aicam.entrypoints.beat", "beat", "--loglevel", "info", "--schedule", "/tmp/celerybeat-schedule"]
+    depends_on:
+      api: { condition: service_healthy }
+
+  # Reverse proxy duy nhất mở ra LAN (architecture §11): HTTPS (CA nội bộ của Caddy), FE tĩnh, /api, /ws, /live.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks:
+      aicam:
+        ipv4_address: ${CADDY_IP:-172.30.10.10}
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?đặt SITE_ADDRESS (tên miền LAN hoặc IP server) trong .env}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${FE_DIST_DIR:-../../ai-cam-fe/dist}:/srv/fe:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      retries: 3
+
+  # Sao lưu Postgres + file nhập CSV hằng ngày lúc BACKUP_HOUR giờ VN, giữ BACKUP_KEEP_DAYS ngày (02 §10).
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    logging: *logging
+    networks: [aicam]
+    entrypoint: ["/bin/sh", "/pg-backup.sh"]
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      PGHOST: postgres
+      PGUSER: aicam
+      PGDATABASE: aicam
+      PGPASSWORD: ${POSTGRES_PASSWORD:?đặt POSTGRES_PASSWORD trong .env}
+      BACKUP_HOUR: ${BACKUP_HOUR:-01}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./backup/pg-backup.sh:/pg-backup.sh:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+      - imports:/imports:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+
+networks:
+  aicam:
+    ipam:
+      config:
+        - subnet: ${AICAM_SUBNET:-172.30.10.0/24}
+
+# Video: đặt Docker data-root trên ổ dữ liệu lớn, hoặc gắn volume `video` vào NAS / RAID bằng compose.override.yml
+# (docs/ops.md §2). Xóa volume = mất bằng chứng — không chạy `down -v` ở production.
+volumes:
+  pgdata:
+  redisdata:
+  video:
+  imports:
+  caddy_data:
+  caddy_config:
