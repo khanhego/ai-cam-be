@@ -79,3 +79,9 @@ def index_segments() -> dict[str, int]:
         return out
 
     return _run(_job)
+
+
+@app.task(name="media.enforce_retention", soft_time_limit=1800)  # type: ignore[untyped-decorator]
+def enforce_retention() -> dict[str, int]:
+    """J-02 (02:00 giờ VN): xóa video thô / clip quá hạn theo setting lúc chạy (BR-09, AC-15, AC-20)."""
+    return _run(lambda db: media.enforce_retention(db, get_settings()))

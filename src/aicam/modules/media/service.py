@@ -23,9 +23,9 @@ from aicam.core.db import after_commit, commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings
-from aicam.modules.media import ffmpeg, signing
+from aicam.modules.media import ffmpeg, jobs, signing
 from aicam.modules.media.models import Clip, VideoSegment
-from aicam.modules.media.schemas import PlayUrlOut
+from aicam.modules.media.schemas import HoldOut, PlayUrlOut, RebuildOut, UserBrief
 from aicam.modules.media.segments import (
     Segment,
     candidates,
@@ -33,6 +33,7 @@ from aicam.modules.media.segments import (
     is_closed,
     is_incomplete,
     list_segment_files,
+    parse_start,
     plan_cut,
     timeline_bounds,
 )
@@ -41,6 +42,7 @@ from aicam.modules.sessions.models import PackSession
 from aicam.modules.settings import service as settings_service
 from aicam.modules.stations import service as stations
 from aicam.modules.stations.models import Camera
+from aicam.modules.users.queries import get_user_ref
 
 log = structlog.get_logger()
 
@@ -474,3 +476,144 @@ async def open_clip_media(
                      data={"session_id": str(clip.session_id), "camera_role": clip.camera_role})  # fmt: skip
         await commit(db)
     return path
+
+
+# ---------------------------------------------------------------- API-42 / 46
+
+
+async def set_hold(db: AsyncSession, clip_id: uuid.UUID, held: bool, p: Principal) -> HoldOut:
+    """API-42 (FR-02.09, BR-09): clip giữ không bị retention xóa. Khóa dòng để không tranh với J-02."""
+    clip = await db.scalar(
+        select(Clip).where(Clip.id == clip_id).with_for_update().execution_options(populate_existing=True)
+    )
+    if clip is None:
+        raise AppError("NOT_FOUND", "Không tìm thấy clip.", 404)
+    cfg = await settings_service.get(db)
+    if clip.status == "DELETED":
+        error = _clip_unavailable(clip, cfg.retention_clip_days)
+        assert error is not None  # noqa: S101
+        raise error
+    if clip.held != held:
+        clip.held = held
+        clip.held_by = p.user_id if held else None
+        clip.held_at = clock.now() if held else None
+        audit.record(db, "HOLD_CLIP" if held else "UNHOLD_CLIP", user_id=p.user_id, object_type="CLIP",
+                     object_id=clip.id, ip=p.ip, data={"session_id": str(clip.session_id)})  # fmt: skip
+    holder = await get_user_ref(db, clip.held_by) if clip.held_by else None
+    out = HoldOut(
+        id=clip.id,
+        held=clip.held,
+        held_by=UserBrief(id=holder.id, display_name=holder.display_name) if holder else None,
+        held_at=clip.held_at,
+        retention_until=retention_until(clip, cfg.retention_clip_days),
+    )
+    await commit(db)
+    return out
+
+
+async def rebuild(db: AsyncSession, session_id: uuid.UUID, p: Principal) -> RebuildOut:
+    """API-46: clip FAILED → PENDING rồi chạy lại J-01 (FR-02.02)."""
+    pack = await db.get(PackSession, session_id)
+    if pack is None:
+        raise AppError("NOT_FOUND", "Không tìm thấy phiên.", 404)
+    failed = (
+        await db.scalars(
+            select(Clip)
+            .where(Clip.session_id == session_id, Clip.status == "FAILED")
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    if not failed:
+        raise AppError("CLIP_NOT_FAILED", "Clip không ở trạng thái lỗi.", 409)
+    for clip in failed:
+        clip.status = "PENDING"
+        clip.error = None
+    audit.record(db, "REBUILD_CLIP", user_id=p.user_id, object_type="SESSION", object_id=session_id, ip=p.ip,
+                 data={"clip_ids": [str(c.id) for c in failed]})  # fmt: skip
+    jobs.enqueue_build_clips(db, session_id, pack.ended_at or clock.now())
+    await commit(db)
+    return RebuildOut(queued=True)
+
+
+# ---------------------------------------------------------------- J-02 retention
+
+
+def _unlink(path: Path) -> None:
+    path.unlink(missing_ok=True)
+
+
+def sweep_raw_files(video_root: Path, cutoff: datetime) -> int:
+    """Xóa file video thô có giờ bắt đầu trước `cutoff − 2 phút` (segment ≤ 60 giây đã kết thúc trước mốc).
+
+    Quét theo đĩa, không theo index: dọn cả video của camera đã xóa khỏi DB (ổ dev đầy 2026-10-05).
+    """
+    raw = video_root / "raw"
+    if not raw.is_dir():
+        return 0
+    limit = cutoff - timedelta(minutes=2)
+    removed = 0
+    for f in raw.glob("*/*/*/*/*.mp4"):
+        start = parse_start(f)
+        if start is not None and start < limit:
+            _unlink(f)
+            removed += 1
+    for day in sorted(raw.glob("*/*/*/*"), reverse=True):  # dọn thư mục ngày / tháng / năm rỗng
+        for d in (day, day.parent, day.parent.parent):
+            try:
+                d.rmdir()
+            except OSError:
+                break
+    return removed
+
+
+async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, int]:
+    """J-02 (02:00 giờ VN): video thô quá `retention_raw_days`; clip không giữ quá `retention_clip_days`.
+
+    Setting đọc lúc chạy (DEC-30, AC-20). Clip: khóa dòng → kiểm lại (API-42 vừa giữ thì bỏ qua — BR-09) →
+    xóa file → `DELETED` + audit `DELETE_CLIP` (actor hệ thống), commit từng clip.
+    """
+    cfg = await settings_service.get(db)
+    now = clock.now()
+    raw_cutoff = now - timedelta(days=cfg.retention_raw_days)
+    clip_cutoff = now - timedelta(days=cfg.retention_clip_days)
+    await db.commit()
+
+    raw_files = sweep_raw_files(settings.video_root, raw_cutoff)
+    rows = await db.execute(delete(VideoSegment).where(VideoSegment.end_at < raw_cutoff))
+    await db.commit()
+
+    candidates_ = (
+        await db.scalars(
+            select(Clip.id).where(Clip.held.is_(False), Clip.status == "READY", Clip.end_at < clip_cutoff)
+        )
+    ).all()
+    await db.commit()
+    deleted = 0
+    for clip_id in candidates_:
+        try:
+            clip = await db.scalar(
+                select(Clip)
+                .where(Clip.id == clip_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if clip is None or clip.held or clip.status != "READY" or clip.end_at >= clip_cutoff:
+                await db.rollback()
+                continue
+            if clip.path:
+                _unlink(absolute(settings, clip.path))
+            clip.status = "DELETED"
+            clip.deleted_at = now
+            audit.record(db, "DELETE_CLIP", user_id=None, object_type="CLIP", object_id=clip.id,
+                         data={"session_id": str(clip.session_id), "camera_role": clip.camera_role,
+                               "sha256": clip.sha256, "reason": "RETENTION",
+                               "retention_clip_days": cfg.retention_clip_days})  # fmt: skip
+            await db.commit()
+            deleted += 1
+        except Exception:
+            await db.rollback()
+            log.exception("retention_clip_failed", clip_id=str(clip_id))
+    result = {"raw_files": raw_files, "segment_rows": rows.rowcount or 0, "clips": deleted}  # type: ignore[attr-defined]
+    log.info("retention_done", **result)
+    return result
