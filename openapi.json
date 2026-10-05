@@ -5111,7 +5111,7 @@
     },
     "/api/v1/shops/shopee/auth-url": {
       "post": {
-        "description": "API-71: URL ủy quyền Shopee; `state` chống CSRF lưu Redis 10 phút. Chưa cấu hình → 503.",
+        "description": "API-71: URL ủy quyền Shopee; `state` chống CSRF lưu Redis 10 phút + cookie HttpOnly băm `state` gắn\ntrình duyệt (G3-N7). Chưa cấu hình → 503.",
         "operationId": "auth_url_api_v1_shops_shopee_auth_url_post",
         "responses": {
           "200": {
