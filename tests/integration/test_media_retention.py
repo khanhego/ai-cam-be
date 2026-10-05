@@ -242,6 +242,35 @@ async def test_retention_keeps_raw_video_of_failed_clip(db: AsyncSession, media_
     assert (await media.enforce_retention(db, media_settings))["raw_files"] == 2
 
 
+async def test_retention_failed_clip_protection_expires_with_clip_days(
+    db: AsyncSession, media_settings: Settings
+) -> None:
+    """G3-V2 (DEC-163): phiên có clip FAILED kết thúc quá `retention_clip_days` (đọc lúc chạy) → video thô
+    không còn được giữ; còn trong hạn → giữ."""
+    clock.freeze(T0)
+    _, station = await make_station_account(db)
+    cam = (await make_cameras(db, station))["CAM1"]
+    ended = T0 - timedelta(days=40)
+    await _clip(db, media_settings, station, "SPXTST0000033", ended, status="PENDING")
+    start = ended - timedelta(seconds=30)
+    f = media_settings.video_root / "raw" / cam.mediamtx_path / f"{start:%Y/%m/%d/%H-%M-%S-%f}.mp4"
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(b"x")
+
+    # Trong hạn lưu clip (90 ngày) → giữ.
+    assert (await media.enforce_retention(db, media_settings))["raw_files"] == 0
+    assert f.exists()
+    assert cam.mediamtx_path in await media.protected_raw_ranges(db, 0, T0 - timedelta(days=90))
+
+    # Hạ hạn lưu clip xuống 30 ngày (setting đọc lúc chạy) → phiên 40 ngày trước hết được bảo vệ.
+    await db.execute(
+        update(Setting).where(Setting.id == 1).values(retention_raw_days=7, retention_clip_days=30)
+    )
+    assert (await media.enforce_retention(db, media_settings))["raw_files"] == 1
+    assert not f.exists()
+    assert await media.protected_raw_ranges(db, 0, T0 - timedelta(days=30)) == {}
+
+
 async def test_retention_commits_before_unlink_and_retries_file(
     db: AsyncSession, media_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:

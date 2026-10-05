@@ -613,15 +613,23 @@ def sweep_raw_files(video_root: Path, cutoff: datetime, keep: Protected | None =
     return removed
 
 
-async def protected_raw_ranges(db: AsyncSession, padding_s: float) -> Protected:
-    """Khoảng `[started_at − đệm, ended_at + đệm]` theo camera của phiên có clip FAILED / PENDING (G3-F7)."""
+async def protected_raw_ranges(db: AsyncSession, padding_s: float, ended_after: datetime) -> Protected:
+    """Khoảng `[started_at − đệm, ended_at + đệm]` theo camera của phiên có clip FAILED / PENDING (G3-F7).
+
+    Chỉ phiên kết thúc sau `ended_after` (= now − `retention_clip_days`, DEC-163 / G3-V2): clip hỏng quá
+    hạn lưu clip thì video thô theo retention thường, không giữ vô hạn.
+    """
     pad = timedelta(seconds=padding_s)
     rows = await db.execute(
         select(Camera.mediamtx_path, PackSession.started_at, PackSession.ended_at)
         .select_from(Clip)
         .join(PackSession, PackSession.id == Clip.session_id)
         .join(Camera, (Camera.station_id == PackSession.station_id) & (Camera.role == Clip.camera_role))
-        .where(Clip.status.in_(("FAILED", "PENDING")), PackSession.ended_at.is_not(None))
+        .where(
+            Clip.status.in_(("FAILED", "PENDING")),
+            PackSession.ended_at.is_not(None),
+            PackSession.ended_at >= ended_after,
+        )
     )
     out: Protected = {}
     for path, started, ended in rows.all():
@@ -656,7 +664,8 @@ def _remove_clip_file(settings: Settings, clip: Clip) -> bool:
 async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, int]:
     """J-02 (02:00 giờ VN): video thô quá `retention_raw_days`; clip không giữ quá `retention_clip_days`.
 
-    Setting đọc lúc chạy (DEC-30, AC-20). Video thô của phiên có clip FAILED / PENDING được giữ (G3-F7).
+    Setting đọc lúc chạy (DEC-30, AC-20). Video thô của phiên có clip FAILED / PENDING được giữ (G3-F7)
+    — chỉ khi phiên kết thúc trong `retention_clip_days` (DEC-163).
     Clip: khóa dòng → kiểm lại (API-42 vừa giữ thì bỏ qua — BR-09) → `DELETED` + audit `DELETE_CLIP`
     (actor hệ thống) → commit → **rồi** xóa file (G3-F8: DB không bao giờ nói READY cho file đã mất).
     Xóa file lỗi → lượt sau dọn lại các clip `DELETED` còn file.
@@ -665,7 +674,7 @@ async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, i
     now = clock.now()
     raw_cutoff = now - timedelta(days=cfg.retention_raw_days)
     clip_cutoff = now - timedelta(days=cfg.retention_clip_days)
-    keep = await protected_raw_ranges(db, settings.clip_padding_s)
+    keep = await protected_raw_ranges(db, settings.clip_padding_s, clip_cutoff)
     await db.commit()
 
     raw_files = sweep_raw_files(settings.video_root, raw_cutoff, keep)
