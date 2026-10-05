@@ -11,4 +11,30 @@ docker run --rm -v aicam-dev_video:/v alpine sh -c 'rm -rf /v/raw/* /v/clips/* /
 $COMPOSE exec -T api sh -c 'alembic downgrade base && alembic upgrade head && aicam seed-demo' | tail -3
 # Bỏ đếm đăng nhập sai theo IP và khay Cam 2 còn sót trong Redis.
 $COMPOSE exec -T redis sh -c 'redis-cli --scan --pattern "login_fail_ip:*" | xargs -r redis-cli del >/dev/null; redis-cli --scan --pattern "tray:*" | xargs -r redis-cli del >/dev/null'
+# Chờ camera seed (cam-<uuid> của TST Station 01) có luồng thật trên MediaMTX: ngay sau reset path mới cần vài giây,
+# test chụp ảnh / live / cắt clip chạy sớm hơn sẽ chập chờn (QA G4). Tối đa 45 giây, không chặn nếu MediaMTX không có.
+paths=$(python3 - <<'PY' 2>/dev/null || true
+import json, urllib.request
+api = "http://localhost:8180/api/v1"
+req = urllib.request.Request(f"{api}/auth/login", json.dumps({"username": "tst_admin", "password": "matkhau123",
+      "client": "DASHBOARD"}).encode(), {"Content-Type": "application/json"})
+token = json.load(urllib.request.urlopen(req))["access_token"]
+req = urllib.request.Request(f"{api}/stations", headers={"Authorization": f"Bearer {token}"})
+data = json.load(urllib.request.urlopen(req))
+items = data["items"] if isinstance(data, dict) else data
+print(" ".join(f"cam-{c['id']}" for s in items if s["name"] == "TST Station 01" for c in s.get("cameras", [])))
+PY
+)
+i=0
+ready=0
+while [ -n "$paths" ] && [ $i -lt 45 ]; do
+  ready=$(curl -sf http://localhost:59997/v3/paths/list 2>/dev/null | PATHS="$paths" python3 -c '
+import json, os, sys
+want = set(os.environ["PATHS"].split())
+print(sum(1 for p in json.load(sys.stdin)["items"] if p["name"] in want and p.get("ready")))' 2>/dev/null || echo 0)
+  [ "${ready:-0}" -ge 2 ] && break
+  i=$((i + 1)); sleep 1
+done
+echo "Camera seed sẵn sàng: ${ready:-0}/2 sau ${i:-0} giây"
+[ "${ready:-0}" -ge 2 ] || echo "Cảnh báo: camera seed chưa sẵn sàng sau 45 giây" >&2
 echo "QA reset xong"
