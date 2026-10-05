@@ -182,7 +182,11 @@ async def test_api_overwrites_csv_order_keeps_history(
     order = await db.scalar(select(Order).where(Order.platform_order_sn == "2410TST00040"))
     assert order is not None
     assert order.source == "API"
-    log = await db.scalar(select(AuditLog).where(AuditLog.action == "ORDER_OVERWRITTEN_BY_API"))
+    log = await db.scalar(  # audit_log không xóa được: test commit thật khác có thể để lại dòng cùng action
+        select(AuditLog).where(
+            AuditLog.action == "ORDER_OVERWRITTEN_BY_API", AuditLog.object_id == str(order.id)
+        )
+    )
     assert log is not None
     assert log.data is not None
     assert log.data["items"][0]["product_name"] == "Hàng nhập file"

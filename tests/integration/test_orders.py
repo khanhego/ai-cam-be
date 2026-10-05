@@ -99,7 +99,11 @@ async def test_api_overwrites_csv_order_and_keeps_snapshot(db: AsyncSession) -> 
 
     assert result.order.id == csv_order.id
     assert result.order.source == "API"
-    log = await db.scalar(select(AuditLog).where(AuditLog.action == "ORDER_OVERWRITTEN_BY_API"))
+    log = await db.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "ORDER_OVERWRITTEN_BY_API", AuditLog.object_id == str(csv_order.id)
+        )
+    )
     assert log is not None
     assert log.data is not None
     assert log.data["items"][0]["product_name"] == "Tên từ file"
