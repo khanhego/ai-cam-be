@@ -93,6 +93,11 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"Môi trường {self.app_env} cần đặt secret thật cho: {', '.join(dev_values)}"
                 )
+        if self.platform_adapter not in ("shopee", "mock"):
+            raise ValueError("PLATFORM_ADAPTER phải là shopee hoặc mock")
+        if self.is_production and self.platform_adapter == "mock":
+            # Adapter mock trả đơn giả cho mọi mã quét → kiện "đã xác minh" sai (G3-N13).
+            raise ValueError("Production không được dùng PLATFORM_ADAPTER=mock")
         return self
 
 

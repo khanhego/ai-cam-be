@@ -51,10 +51,24 @@ def test_production_accepts_real_secrets() -> None:
         jwt_secret="a" * 40,
         media_signing_key="b" * 40,
         fernet_key="c2VjcmV0LWZlcm5ldC1rZXktZm9yLXRlc3QtMzJiISE=",
+        platform_adapter="shopee",
     )
 
     assert settings.is_production
     assert not settings.fake_clock_allowed
+
+
+def test_production_rejects_mock_platform_adapter() -> None:
+    """G3-N13: adapter mock ở production trả đơn giả cho mọi mã quét."""
+    with pytest.raises(ValueError, match="PLATFORM_ADAPTER=mock"):
+        Settings(
+            app_env="production",
+            jwt_secret="a" * 40,
+            media_signing_key="b" * 40,
+            fernet_key="c2VjcmV0LWZlcm5ldC1rZXktZm9yLXRlc3QtMzJiISE=",
+            platform_adapter="mock",
+        )
+    assert Settings(app_env="dev", platform_adapter="mock").platform_adapter == "mock"
 
 
 def test_log_redacts_secrets_and_url_credentials() -> None:

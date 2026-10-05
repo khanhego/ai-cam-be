@@ -3,6 +3,7 @@
 TC-09.01 (API), TC-02.09 / 02.16 / 02.17 / 02.18 (API), TC-P.03, TC-P.08.
 """
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -230,11 +231,12 @@ async def test_housekeeping_pieces(db: AsyncSession, tmp_path: Path, test_settin
     stuck = await _session(db, station.id, 2, "CANCELLED", clock.now() - timedelta(minutes=6))
     done = await _session(db, station.id, 3, "COMPLETED", clock.now() - timedelta(minutes=6))
     await _session(db, station.id, 4, "COMPLETED", clock.now() - timedelta(minutes=2))
-    for pack, status in ((stuck, "PENDING"), (done, "READY")):
+    # G3-F1: phiên đủ khi có dòng clip của mọi vai (CAM1 + CAM2) và không còn PENDING.
+    for pack, role, status in ((stuck, "CAM1", "PENDING"), (done, "CAM1", "READY"), (done, "CAM2", "READY")):
         db.add(
             Clip(
                 session_id=pack.id,
-                camera_role="CAM1",
+                camera_role=role,
                 status=status,
                 start_at=clock.now(),
                 end_at=clock.now(),
@@ -250,3 +252,18 @@ async def test_housekeeping_pieces(db: AsyncSession, tmp_path: Path, test_settin
     assert set(missing) == {lost.id, stuck.id}
     remaining: Any = (await db.scalars(select(ScanDedup.client_scan_id))).all()
     assert list(remaining) == [fresh.client_scan_id]
+
+
+async def test_health_db_ping_timeout_does_not_break_session(db: AsyncSession) -> None:
+    """G3-N11: ping DB quá giờ bị hủy trên connection riêng — session chung của API-81 vẫn truy vấn được."""
+    from sqlalchemy import text
+
+    from aicam.modules.settings import service as settings_service
+
+    async def slow_ping(session: AsyncSession) -> None:
+        await settings_service._ping_db(session)
+        await asyncio.sleep(1)
+
+    assert await settings_service._check(slow_ping(db), limit_s=0.05) == "ERROR"
+    assert await db.scalar(text("SELECT 1")) == 1
+    assert await settings_service._check(settings_service._ping_db(db)) == "OK"

@@ -5,7 +5,7 @@ from typing import Any
 
 import structlog
 from sqlalchemy import select, text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 from aicam.core import audit
 from aicam.core.db import commit
@@ -73,12 +73,23 @@ async def _check(coro: Any, limit_s: float = 3.0) -> str:
     return "OK"
 
 
+async def _ping_db(session: AsyncSession) -> None:
+    """Ping DB trên connection riêng (G3-N11): `wait_for` hủy giữa câu lệnh trên session dùng chung làm hỏng
+    transaction của các truy vấn sau trong API-81."""
+    bind = session.bind
+    engine = bind.engine if isinstance(bind, AsyncConnection) else bind
+    if not isinstance(engine, AsyncEngine):
+        raise TypeError("Session chưa gắn engine")
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
+
+
 async def health(session: AsyncSession, *, mediamtx_check: Any, disk: dict[str, int] | None) -> HealthOut:
     """API-81: DB, Redis, MediaMTX, ổ đĩa video, camera, đồng bộ sàn. Luôn 200, từng phần OK / ERROR."""
     from aicam.modules.orders.models import Shop
     from aicam.modules.stations.models import Camera, Station
 
-    db_status = await _check(session.execute(text("SELECT 1")))
+    db_status = await _check(_ping_db(session))
     redis_status = await _check(get_redis().ping())
     mediamtx_status = await _check(mediamtx_check)
     cameras: list[CameraHealth] = []
