@@ -1,8 +1,13 @@
 """Celery app + lịch beat (02a §7). Queue: default, video, export, sync (DEC-46)."""
 
+import logging
+from typing import Any
+
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import after_setup_logger, after_setup_task_logger
 
+from aicam.core.logging import install_stdlib_redaction
 from aicam.core.settings import get_settings
 
 settings = get_settings()
@@ -34,3 +39,12 @@ app.conf.update(
         "j02-enforce-retention": {"task": "media.enforce_retention", "schedule": crontab(hour=19, minute=0)},
     },
 )
+
+
+def _redact_logs(logger: logging.Logger | None = None, **_: Any) -> None:
+    """Worker / beat: httpx / httpcore lên WARNING + che query (token / sign Shopee) — G3-N1."""
+    install_stdlib_redaction(*([logger] if logger is not None else []))
+
+
+after_setup_logger.connect(_redact_logs, weak=False)
+after_setup_task_logger.connect(_redact_logs, weak=False)

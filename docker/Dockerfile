@@ -42,4 +42,6 @@ USER aicam
 # lúc deploy (checklist T-19). Mặc định chỉ tin 127.0.0.1 — header X-Forwarded-For từ nơi khác bị bỏ qua (review M1 #3).
 ENV FORWARDED_ALLOW_IPS=127.0.0.1
 EXPOSE 8000
-CMD ["uvicorn", "aicam.entrypoints.api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+# Không bật access log của uvicorn (G3-F3): path kèm query lộ `sig` URL ký và `token` WS. Caddy đã ghi access log
+# có che query; logger stdlib còn lại đi qua bộ che `RedactQueryFilter` (core/logging.py).
+CMD ["uvicorn", "aicam.entrypoints.api:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--no-access-log"]
