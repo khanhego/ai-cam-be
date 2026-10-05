@@ -86,7 +86,16 @@ services:
 
   worker:
     image: aicam-dev
-    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "default,video,export,sync", "--loglevel", "info"]
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "default,video,sync", "--loglevel", "info"]
+    env_file: [../.env.example]
+    environment: *app_env
+    volumes: [video:/data/video]
+    depends_on: [api]
+
+  # Encode bản xuất tách riêng, mỗi lần 1 job: không chặn cắt clip (DEC-32).
+  worker-export:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "export", "-c", "1", "-n", "export@%h", "--loglevel", "info"]
     env_file: [../.env.example]
     environment: *app_env
     volumes: [video:/data/video]

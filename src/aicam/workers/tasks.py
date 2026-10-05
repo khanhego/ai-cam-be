@@ -12,6 +12,7 @@ import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại g
 from aicam.core.db import dispose_engine, init_engine, sessionmaker
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import get_settings
+from aicam.modules.media import exports
 from aicam.modules.media import service as media
 from aicam.modules.sessions import service as sessions
 from aicam.modules.stations import service as stations
@@ -76,6 +77,7 @@ def index_segments() -> dict[str, int]:
         except MediaMTXError as exc:
             log.warning("mediamtx_unreachable", error=str(exc))
         out["indexed"] = await media.index_segments(db, settings)
+        out["exports_expired"] = await exports.cleanup_expired(db, settings)
         return out
 
     return _run(_job)
@@ -85,3 +87,9 @@ def index_segments() -> dict[str, int]:
 def enforce_retention() -> dict[str, int]:
     """J-02 (02:00 giờ VN): xóa video thô / clip quá hạn theo setting lúc chạy (BR-09, AC-15, AC-20)."""
     return _run(lambda db: media.enforce_retention(db, get_settings()))
+
+
+@app.task(name="media.render_export", soft_time_limit=660, time_limit=700)  # type: ignore[untyped-decorator]
+def render_export(export_id: str) -> str:
+    """J-03 (queue `export`, worker riêng concurrency 1 — DEC-32): encode bản xuất có overlay."""
+    return _run(lambda db: exports.render_export(db, uuid.UUID(export_id), get_settings()))

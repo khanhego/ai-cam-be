@@ -10,8 +10,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core.db import get_session
 from aicam.core.deps import Principal, require_roles
 from aicam.core.settings import Settings, get_settings
-from aicam.modules.media import service
-from aicam.modules.media.schemas import HoldIn, HoldOut, PlayUrlOut, RebuildOut
+from aicam.modules.media import exports, service
+from aicam.modules.media.schemas import (
+    ExportCreated,
+    ExportIn,
+    ExportOut,
+    HoldIn,
+    HoldOut,
+    PlayUrlOut,
+    RebuildOut,
+)
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
@@ -56,3 +64,37 @@ async def hold(clip_id: uuid.UUID, body: HoldIn, p: Staff, db: DbSession) -> Hol
 async def rebuild(session_id: uuid.UUID, p: Manager, db: DbSession) -> RebuildOut:
     """API-46: cắt lại clip FAILED."""
     return await service.rebuild(db, session_id, p)
+
+
+@router.post("/sessions/{session_id}/exports", response_model=ExportCreated, status_code=202)
+async def create_export(
+    session_id: uuid.UUID, body: ExportIn, p: Staff, db: DbSession, settings: AppSettings
+) -> ExportCreated:
+    """API-43: tạo bản xuất (bất đồng bộ, J-03)."""
+    return await exports.create_export(db, session_id, body.layout, p, settings)
+
+
+@router.get("/exports/{export_id}", response_model=ExportOut)
+async def get_export(export_id: uuid.UUID, p: Staff, db: DbSession, settings: AppSettings) -> ExportOut:
+    """API-44: trạng thái + link tải ký HMAC (người tạo hoặc ADMIN)."""
+    return await exports.get_export(db, export_id, p, settings)
+
+
+@router.get("/media/exports/{export_id}/{file}", response_class=FileResponse)
+async def export_media(
+    export_id: uuid.UUID,
+    file: str,
+    request: Request,
+    db: DbSession,
+    settings: AppSettings,
+    uid: Annotated[uuid.UUID, Query()],
+    exp: Annotated[int, Query()],
+    sig: Annotated[str, Query(max_length=128)],
+) -> FileResponse:
+    """API-45: tải `video.mp4` / `info.json` bằng chữ ký."""
+    path, filename = await exports.open_export_file(
+        db, export_id, file, uid=uid, exp=exp, sig=sig, range_header=request.headers.get("range"),
+        ip=request.client.host if request.client else None, settings=settings,
+    )  # fmt: skip
+    media_type = "video/mp4" if file == "video.mp4" else "application/json"
+    return FileResponse(path, media_type=media_type, filename=filename)

@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     clip_gap_tolerance_s: float = 1.5  # khe hở lớn hơn → VIDEO_INCOMPLETE
     clip_cut_timeout_s: int = 90
     segment_closed_after_s: float = 15.0  # file không đổi quá lâu = segment đã đóng (camera ngừng)
+    export_preset: str = "veryfast"  # DEC-101: hạ "superfast" nếu server kho encode > 20 giây (AC-08)
+    export_side_scale: str = "1280:720"  # kích thước mỗi camera trong bản xuất; dự phòng "960:540"
     export_ttl_hours: int = 24  # 02a API-44/45: file xuất giữ ≤ 24 giờ (J-10 dọn)
     export_timeout_s: int = 600
     export_font_file: Path = Path("/usr/share/fonts/truetype/bevietnampro/BeVietnamPro-SemiBold.ttf")

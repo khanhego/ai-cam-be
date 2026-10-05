@@ -68,22 +68,23 @@ def sha256_file(path: Path, chunk: int = 1024 * 1024) -> str:
 
 # ---------------------------------------------------------------- bản xuất (J-03)
 
-_SCALE = "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1"
 _BOX = "fontcolor=white:fontsize=30:box=1:boxcolor=black@0.55:boxborderw=8"
 
 
 def _font(font_file: Path | None) -> str:
-    if font_file is None:
-        return ""
-    return "fontfile=" + str(font_file).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'") + ":"
+    return "" if font_file is None else f"fontfile={_filter_path(font_file)}:"
 
 
 def _filter_path(path: Path) -> str:
-    return str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    """Escape giá trị tùy chọn filter không đặt trong nháy (`\\`, `:`, `'`, `,`)."""
+    out = str(path)
+    for ch in ("\\", ":", "'", ",", ";", "[", "]"):
+        out = out.replace(ch, "\\" + ch)
+    return out
 
 
 def clock_overlays(
-    pieces: list[tuple[float, float, int]], font_file: Path | None, x: str = "24", y: str = "72"
+    pieces: list[tuple[float, float, float]], font_file: Path | None, x: str = "24", y: str = "72"
 ) -> list[str]:
     """Một drawtext giờ thực cho mỗi đoạn liền mạch `(từ giây, tới giây, epoch giờ hiển thị)`.
 
@@ -92,11 +93,12 @@ def clock_overlays(
     """
     out = []
     for start, end, epoch in pieces:
-        base = round(epoch - start)
+        base = epoch - start
         enable = f":enable='between(t,{start:.3f},{end:.3f})'" if len(pieces) > 1 else ""
         out.append(
             f"drawtext={_font(font_file)}"
-            f"text='%{{pts\\:gmtime\\:{base}\\:%d/%m/%Y %H\\\\\\:%M\\\\\\:%S}}':x={x}:y={y}:{_BOX}{enable}"
+            f"text='%{{pts\\:gmtime\\:{base:.3f}\\:%d/%m/%Y %H\\\\\\:%M\\\\\\:%S}}'"
+            f":x={x}:y={y}:{_BOX}{enable}"
         )
     return out
 
@@ -110,25 +112,27 @@ def export_command(
     clock: list[str],
     font_file: Path | None,
     duration: float,
+    preset: str = "veryfast",
+    side_scale: str = "1280:720",
 ) -> list[str]:
     """H.264 720p mỗi camera (`veryfast`, CRF 26), overlay chữ tĩnh + giờ thực; 2 đầu vào → `hstack`.
 
     `inputs`: (file clip, giây bỏ qua ở đầu để hai camera khớp giờ). Âm thanh lấy từ đầu vào đầu tiên nếu có.
     """
-    static = (
-        f"drawtext={_font(font_file)}textfile='{_filter_path(text_file)}':expansion=none:x=24:y=24:{_BOX}"
-    )
+    w, _, h = side_scale.partition(":")
+    scale = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    static = f"drawtext={_font(font_file)}textfile={_filter_path(text_file)}:expansion=none:x=24:y=24:{_BOX}"
     overlay = ",".join([static, *clock])
     if len(inputs) == 2:
-        graph = f"[0:v]{_SCALE}[a];[1:v]{_SCALE}[b];[a][b]hstack=inputs=2,{overlay}[v]"
+        graph = f"[0:v]{scale}[a];[1:v]{scale}[b];[a][b]hstack=inputs=2,{overlay}[v]"
     else:
-        graph = f"[0:v]{_SCALE},{overlay}[v]"
+        graph = f"[0:v]{scale},{overlay}[v]"
     cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
     for path, skip in inputs:
         cmd += ["-ss", f"{skip:.3f}", "-i", str(path)]
     cmd += [
         "-filter_complex", graph, "-map", "[v]", "-map", "0:a?",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", "-pix_fmt", "yuv420p",
+        "-c:v", "libx264", "-preset", preset, "-crf", "26", "-pix_fmt", "yuv420p",
         "-profile:v", "high", "-c:a", "aac", "-b:a", "96k",
         "-t", f"{duration:.3f}", "-movflags", "+faststart",
         "-progress", "pipe:1", "-nostats", str(out),
