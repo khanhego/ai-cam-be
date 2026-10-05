@@ -44,7 +44,7 @@ SHIPPING_MAX = 1000
 
 
 def _error(code: str, exc: Exception) -> dict[str, Any]:
-    return {"code": code, "message": str(exc)[:500], "at": clock.now().isoformat()}
+    return {"code": code, "message": str(exc)[:500], "at": clock.iso_z(clock.now())}
 
 
 def _report_updated(session: AsyncSession, settings: Settings) -> None:

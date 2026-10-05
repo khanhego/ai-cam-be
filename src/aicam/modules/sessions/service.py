@@ -284,7 +284,7 @@ async def _open_session_unsafe(
         return "ALERT", _alert(
             "ALREADY_PACKED",
             f"{code} đã đóng gói{when}" + (f" tại {station_name}." if station_name else "."),
-            packed_at=done.ended_at.isoformat() if done and done.ended_at else None,
+            packed_at=clock.iso_z(done.ended_at) if done and done.ended_at else None,
             station_name=station_name,
             can_request_repack=True,
         )

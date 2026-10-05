@@ -186,7 +186,7 @@ async def test_j04_platform_error_sets_last_error(
         )
     ).json()["access_token"]
     report = (await api.get("/api/v1/reports/daily", headers={"Authorization": f"Bearer {token}"})).json()
-    assert {"kind": "SYNC_ERROR", "shop_id": str(shop.id), "at": NOW.isoformat()} in report["attention"]
+    assert {"kind": "SYNC_ERROR", "shop_id": str(shop.id), "at": clock.iso_z(NOW)} in report["attention"]
 
     # Lượt sau thành công → xóa lỗi.
     mock.fail_list_times = 0

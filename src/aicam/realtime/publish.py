@@ -14,7 +14,7 @@ from aicam.core.redis import get_redis
 
 
 def _message(event_type: str, data: Any) -> str:
-    return json.dumps({"type": event_type, "data": data, "at": clock.now().isoformat()}, default=str)
+    return json.dumps({"type": event_type, "data": data, "at": clock.iso_z(clock.now())}, default=str)
 
 
 async def to_station(station_id: uuid.UUID, event_type: str, data: Any) -> None:

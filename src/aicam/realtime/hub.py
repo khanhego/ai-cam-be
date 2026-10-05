@@ -66,7 +66,7 @@ async def _receive(ws: WebSocket) -> None:
         raw = await ws.receive_text()
         with contextlib.suppress(json.JSONDecodeError, AttributeError):
             if json.loads(raw).get("type") == "ping":
-                await ws.send_text(json.dumps({"type": "pong", "data": None, "at": clock.now().isoformat()}))
+                await ws.send_text(json.dumps({"type": "pong", "data": None, "at": clock.iso_z(clock.now())}))
 
 
 async def _serve(ws: WebSocket, path: str) -> None:

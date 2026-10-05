@@ -66,7 +66,7 @@ async def _already_resolved(session: AsyncSession, approval: ApprovalRequest) ->
         {
             "status": approval.status,
             "decided_by": brief.model_dump(mode="json") if brief else None,
-            "decided_at": approval.decided_at.isoformat() if approval.decided_at else None,
+            "decided_at": clock.iso_z(approval.decided_at) if approval.decided_at else None,
         },
     )
 

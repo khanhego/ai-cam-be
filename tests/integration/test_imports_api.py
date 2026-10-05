@@ -93,7 +93,10 @@ async def test_ok_500_preview_commit_history(api: AsyncClient, db: AsyncSession,
     assert item["created_by"]["display_name"] == "tst_sup"
     assert item["counts"]["new"] == 500
     assert item["committed_at"] is not None
-    audit = await db.scalar(select(AuditLog).where(AuditLog.action == "IMPORT_COMMIT"))
+    # Lọc theo object: test commit thật (song song) để lại audit IMPORT_COMMIT khác, không xóa được.
+    audit = await db.scalar(
+        select(AuditLog).where(AuditLog.action == "IMPORT_COMMIT", AuditLog.object_id == body["id"])
+    )
     assert audit is not None
     assert audit.object_id == body["id"]
 

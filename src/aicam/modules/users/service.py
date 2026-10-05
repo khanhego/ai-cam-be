@@ -142,7 +142,7 @@ async def login(
             "ACCOUNT_LOCKED",
             "Đăng nhập sai quá nhiều lần. Thử lại sau.",
             423,
-            {"until": user.locked_until.isoformat()},
+            {"until": clock.iso_z(user.locked_until)},
         )
     if user is None:
         verify_dummy(password)
