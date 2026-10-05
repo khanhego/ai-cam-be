@@ -221,6 +221,8 @@ async def commit_import(
 
     counts = Counts()
     try:
+        # Khóa mọi mã đơn sẽ ghi một lần, theo thứ tự (G3-F4) — tránh khóa chéo với J-04 / quét.
+        await orders.lock_orders(session, [sn for sn, g in result.groups.items() if g.action != "SKIP"])
         for sn, group in result.groups.items():
             if group.action == "SKIP":
                 counts.skipped += 1
@@ -233,7 +235,12 @@ async def commit_import(
                 tracking_numbers=tuple(dict.fromkeys(r.tracking_number for r in group.rows)),
             )
             created = await orders.apply_csv_order(
-                session, data, import_id=row.id, shop_id=None, actor_user_id=p.user_id
+                session,
+                data,
+                import_id=row.id,
+                shop_id=None,
+                actor_user_id=p.user_id,
+                expect_new=group.action == "NEW",
             )
             if created is None:
                 counts.skipped += 1
@@ -241,8 +248,9 @@ async def commit_import(
                 counts.new += 1
             else:
                 counts.updated += 1
-    except IntegrityError as exc:
-        # Đồng bộ Shopee / quét tạo cùng đơn hoặc mã vận đơn đúng lúc nhập: không nhập phần nào.
+    except (IntegrityError, orders.CsvWriteConflict) as exc:
+        # Đồng bộ Shopee / quét tạo cùng đơn hoặc mã vận đơn, hoặc kiện vừa được gắn vào đơn khác (G3-F5)
+        # đúng lúc nhập: không nhập phần nào; bấm Nhập lại → phân loại lại báo lỗi dòng.
         await rollback(session)
         raise AppError(
             "IMPORT_CONFLICT", "Dữ liệu đơn vừa thay đổi trong lúc nhập. Bấm Nhập lại.", 409

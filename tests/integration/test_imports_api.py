@@ -8,6 +8,7 @@ import io
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from httpx import AsyncClient, Response
@@ -306,3 +307,41 @@ async def test_permissions_and_template(api: AsyncClient, db: AsyncSession, sup:
     assert res.content.decode("utf-8-sig").strip() == HEADER.strip()
     assert (await api.get("/api/v1/imports/template", headers=cskh)).status_code == 403
     assert await db.scalar(select(func.count()).select_from(Package)) == 0
+
+
+async def test_commit_does_not_steal_package_claimed_after_classify(
+    api: AsyncClient, db: AsyncSession, sup: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-F5 (BR-17): sau bước phân loại lại, đồng bộ sàn gắn mã vận đơn vào đơn API khác → lúc ghi khóa dòng
+    kiện, thấy đã thuộc đơn khác → 409 IMPORT_CONFLICT, không nhập phần nào; bấm lại → lỗi dòng."""
+    from aicam.modules.imports import service as imports_service
+    from aicam.modules.platforms.base import PlatformItem, PlatformOrder
+
+    csv = HEADER + "2410CSY00001,SPXCSY0000001,,Áo,,1,\n2410CSY00002,SPXCSY0000002,,Quần,,1,\n"
+    body = (await _upload(api, sup, csv.encode())).json()
+    assert body["counts"]["new"] == 2
+    original = imports_service.classify
+
+    async def classify_then_platform_claims(session: AsyncSession, parsed: Any) -> Any:
+        result = await original(session, parsed)
+        await orders.upsert_platform_order(
+            session,
+            PlatformOrder("2410APIY0001", "READY_TO_SHIP", ("SPXCSY0000002",), (PlatformItem("Quần", 1),)),
+        )
+        return result
+
+    monkeypatch.setattr(imports_service, "classify", classify_then_platform_claims)
+    res = await api.post(f"/api/v1/imports/{body['id']}/commit", headers=sup)
+
+    assert (res.status_code, res.json()["error"]["code"]) == (409, "IMPORT_CONFLICT")
+    assert await db.scalar(select(Order).where(Order.platform_order_sn == "2410CSY00001")) is None
+    monkeypatch.setattr(imports_service, "classify", original)
+    await orders.upsert_platform_order(
+        db, PlatformOrder("2410APIY0001", "READY_TO_SHIP", ("SPXCSY0000002",), (PlatformItem("Quần", 1),))
+    )
+    again = await api.post(f"/api/v1/imports/{body['id']}/commit", headers=sup)
+    assert (again.status_code, again.json()["error"]["code"]) == (409, "IMPORT_HAS_ERRORS")
+    package = await orders.find_package(db, "SPXCSY0000002")
+    owner = await db.get(Order, package.order_id) if package and package.order_id else None
+    assert owner is not None
+    assert owner.platform_order_sn == "2410APIY0001"

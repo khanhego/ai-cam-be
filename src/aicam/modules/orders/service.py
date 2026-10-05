@@ -4,7 +4,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
@@ -62,11 +62,27 @@ async def transition(
     return True
 
 
-async def find_package(session: AsyncSession, code: str) -> Package | None:
-    result: Package | None = await session.scalar(
-        select(Package).where(func.upper(Package.tracking_number) == code.strip().upper())
-    )
+async def find_package(session: AsyncSession, code: str, *, for_update: bool = False) -> Package | None:
+    query = select(Package).where(func.upper(Package.tracking_number) == code.strip().upper())
+    if for_update:
+        query = query.with_for_update().execution_options(populate_existing=True)
+    result: Package | None = await session.scalar(query)
     return result
+
+
+async def lock_orders(session: AsyncSession, platform_order_sns: Sequence[str]) -> None:
+    """Khóa advisory theo mã đơn sàn tới hết transaction (G3-F4).
+
+    Mọi đường ghi đơn (J-04 / tra sàn khi quét / J-05 / nhập file) tuần tự hóa theo đơn: không nhân đôi
+    `order_item`, không đụng unique khi cùng tạo đơn. Nhiều mã → khóa theo thứ tự sắp xếp để hai transaction
+    không khóa chéo nhau."""
+    for sn in sorted(set(platform_order_sns)):
+        await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"order:{sn}"})
+
+
+class CsvWriteConflict(Exception):
+    """Lúc ghi (sau khi khóa) dữ liệu đã khác bước phân loại: kiện đã thuộc đơn khác (G3-F5), hoặc đơn
+    phân loại NEW vừa được nơi khác tạo."""
 
 
 async def get_order(session: AsyncSession, order_id: uuid.UUID) -> Order | None:
@@ -119,8 +135,14 @@ async def upsert_platform_order(
     """Ghi đơn từ API sàn (source=API). Đơn nguồn CSV bị ghi đè, giữ bản cũ trong audit (BR-17, FR-05.10).
 
     Đơn hủy trên sàn: kiện NEW → CANCELLED, kiện PACKED → CANCELLED_AFTER_PACK (EX-P10).
+    Khóa theo mã đơn trước khi đọc (G3-F4).
     """
-    order = await session.scalar(select(Order).where(Order.platform_order_sn == data.platform_order_sn))
+    await lock_orders(session, [data.platform_order_sn])
+    order = await session.scalar(
+        select(Order)
+        .where(Order.platform_order_sn == data.platform_order_sn)
+        .execution_options(populate_existing=True)
+    )
     created = order is None
     if order is None:
         order = Order(platform_order_sn=data.platform_order_sn, source="API")
@@ -213,15 +235,23 @@ async def apply_csv_order(
     import_id: uuid.UUID,
     shop_id: uuid.UUID | None,
     actor_user_id: uuid.UUID,
+    expect_new: bool = False,
 ) -> bool | None:
     """Ghi một đơn từ file nhập (API-51). Trả True = tạo mới, False = cập nhật đơn CSV, None = bỏ qua.
 
     BR-17: đơn nguồn API không bị file ghi đè. Kiện đã có giữ nguyên `warehouse_status`; kiện chưa xác minh
-    (BR-04) được gắn vào đơn.
+    (BR-04) được gắn vào đơn. Kiện đã thuộc đơn khác (đọc lại `FOR UPDATE` lúc ghi — G3-F5) hoặc đơn
+    `expect_new` đã có → `CsvWriteConflict`: người gọi rollback cả lần nhập (409 `IMPORT_CONFLICT`).
     """
+    await lock_orders(session, [data.platform_order_sn])
     order = await session.scalar(
-        select(Order).where(Order.platform_order_sn == data.platform_order_sn).with_for_update()
+        select(Order)
+        .where(Order.platform_order_sn == data.platform_order_sn)
+        .with_for_update()
+        .execution_options(populate_existing=True)
     )
+    if order is not None and expect_new:
+        raise CsvWriteConflict(f"Đơn {data.platform_order_sn} vừa được tạo trong lúc nhập")
     if order is not None and order.source == "API":
         return None
     created = order is None
@@ -243,7 +273,9 @@ async def apply_csv_order(
             )
         )
     for code in data.tracking_numbers:
-        package = await find_package(session, code)
+        package = await find_package(session, code, for_update=True)
+        if package is not None and package.order_id is not None and package.order_id != order.id:
+            raise CsvWriteConflict(f"Mã vận đơn {code} đã thuộc đơn khác")
         if package is None:
             package = Package(tracking_number=code.upper(), order_id=order.id)
             session.add(package)
