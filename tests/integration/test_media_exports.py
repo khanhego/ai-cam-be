@@ -227,3 +227,110 @@ async def test_render_export_fails_cleanly(
     assert reloaded is not None
     assert reloaded.error
     assert not (media_settings.video_root / f"exports/{export.id}").exists()
+
+
+# ---------------------------------------------------------------- G3-F2: ghép 2 camera khi clip có khe hở
+
+
+def _wall_at(parts: list[Any], timeline: list[dict[str, Any]], w0: datetime, x: float) -> datetime | None:
+    """Giờ thực của khung ở giây `x` trên nửa hình dựng từ `parts` (None = khung đen của khe hở)."""
+    pos = 0.0
+    for part in parts:
+        if pos <= x < pos + part.duration:
+            if part.kind == "GAP":
+                return None
+            clip_t = part.start + (x - pos)
+            piece = max((p for p in timeline if float(p["t"]) <= clip_t), key=lambda p: float(p["t"]))
+            return datetime.fromisoformat(piece["wall"]) + timedelta(seconds=clip_t - float(piece["t"]))
+        pos += part.duration
+    raise AssertionError(f"giây {x} ngoài bản xuất")
+
+
+def test_align_parts_lines_up_wall_clock() -> None:
+    """TC-07.11: CAM1 mất 20 giây giữa phiên, CAM2 liền mạch → mỗi giây hai nửa cùng giờ thực (≤ 0,5 s)."""
+    cam1 = [{"t": 0.0, "wall": clock.iso_z(T0)}, {"t": 10.0, "wall": clock.iso_z(T0 + timedelta(seconds=30))}]
+    cam2 = [{"t": 0.0, "wall": clock.iso_z(T0 - timedelta(seconds=2))}]
+    w0, w1 = T0, T0 + timedelta(seconds=40)  # chung: CAM1 T0..T0+40 (có khe), CAM2 T0−2..T0+48
+
+    p1 = exports.align_parts(cam1, T0, 20.0, w0, w1)
+    p2 = exports.align_parts(cam2, T0 - timedelta(seconds=2), 50.0, w0, w1)
+
+    assert [(p.kind, round(p.duration, 3)) for p in p1] == [("VIDEO", 10.0), ("GAP", 20.0), ("VIDEO", 10.0)]
+    assert [(p.kind, p.start, p.end) for p in p2] == [("VIDEO", 2.0, 42.0)]
+    assert sum(p.duration for p in p1) == sum(p.duration for p in p2) == 40.0
+    for x in (0.0, 5.5, 9.9, 15.0, 30.0, 39.9):
+        expected = w0 + timedelta(seconds=x)
+        a, b = _wall_at(p1, cam1, w0, x), _wall_at(p2, cam2, w0, x)
+        assert b is not None
+        assert abs((b - expected).total_seconds()) <= 0.5
+        if a is not None:  # khe hở CAM1 (10..30) là khung đen
+            assert abs((a - b).total_seconds()) <= 0.5
+        else:
+            assert 10.0 <= x < 30.0
+    gaps = exports.wall_gaps(p1, w0)
+    assert gaps == [(T0 + timedelta(seconds=10), T0 + timedelta(seconds=30))]
+    assert exports.wall_gaps(p2, w0) == []
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="máy không có ffmpeg/ffprobe")
+async def test_aligned_export_command_runs(tmp_path: Path) -> None:
+    """Lệnh ghép căn giờ chạy với FFmpeg thật (bỏ chữ: máy test có thể thiếu drawtext); độ dài = cửa sổ."""
+    from aicam.modules.media import ffmpeg
+
+    sample = make_sample(tmp_path)
+    parts1 = [ffmpeg.Part("VIDEO", 0.0, 3.0), ffmpeg.Part("GAP", 0.0, 2.0), ffmpeg.Part("VIDEO", 5.0, 8.0)]
+    parts2 = [ffmpeg.Part("VIDEO", 1.0, 9.0)]
+    out = tmp_path / "out.mp4"
+    cmd = ffmpeg.aligned_export_command(
+        shutil.which("ffmpeg") or "ffmpeg", [(sample, parts1), (sample, parts2)], out,
+        text_file=None, gap_text_file=None, clock=[], font_file=None, duration=8.0,
+        preset="ultrafast", side_scale="320:240",
+    )  # fmt: skip
+    await ffmpeg.run(cmd, 60)
+    duration = await ffmpeg.probe_duration(shutil.which("ffprobe") or "ffprobe", out)
+    assert duration == pytest.approx(8.0, abs=0.2)
+
+
+async def test_render_side_by_side_with_gap_aligns_and_reports(
+    db: AsyncSession, redis_client: object, media_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """J-03 với CAM1 có khe hở: dùng lệnh căn giờ (khung đen + 1 đồng hồ từ giờ chung), info.json ghi
+    `video_gaps`, mốc giờ ISO-8601 'Z' (G3-F10)."""
+    from aicam.modules.media import ffmpeg
+
+    user = await make_user(db, "tst_cskh", "CSKH")
+    _, station = await make_station_account(db)
+    session_id = await _session_with_clips(db, media_settings, station, {"CAM1": "READY", "CAM2": "READY"})
+    (media_settings.video_root / "clips").mkdir(exist_ok=True)
+    for role in ("CAM1", "CAM2"):
+        (media_settings.video_root / f"clips/{session_id}-{role}.mp4").write_bytes(b"x")
+    clips = {c.camera_role: c for c in (await db.scalars(select(Clip).where(Clip.session_id == session_id)))}
+    clips["CAM1"].timeline = [
+        {"t": 0.0, "wall": clock.iso_z(T0 - timedelta(seconds=5))},
+        {"t": 4.0, "wall": clock.iso_z(T0 + timedelta(seconds=2))},  # mất 3 giây
+    ]
+    clips["CAM1"].duration_s = 7  # T0−5 … T0−1, T0+2 … T0+5
+    export = Export(session_id=session_id, layout="SIDE_BY_SIDE", created_by=user.id,
+                    expires_at=clock.now() + timedelta(hours=1))  # fmt: skip
+    db.add(export)
+    await db.flush()
+    seen: list[list[str]] = []
+
+    async def fake_run(cmd: list[str], *_: Any) -> None:
+        seen.append(cmd)
+        Path(cmd[-1]).write_bytes(b"video")  # noqa: ASYNC240
+
+    monkeypatch.setattr(ffmpeg, "run_with_progress", fake_run)
+
+    assert await exports.render_export(db, export.id, media_settings) == "READY"
+
+    graph = seen[0][seen[0].index("-filter_complex") + 1]
+    assert "concat=n=3" in graph  # CAM1: video, khung đen, video
+    assert "color=c=black" in graph
+    assert seen[0][seen[0].index("-t") + 1] == "10.000"
+    info = json.loads((media_settings.video_root / f"exports/{export.id}/info.json").read_text())
+    assert info["video_gaps"] == [{"camera_role": "CAM1", "from": clock.iso_z(T0 - timedelta(seconds=1)),
+                                   "to": clock.iso_z(T0 + timedelta(seconds=2)), "seconds": 3.0}]  # fmt: skip
+    for key in ("session_started_at", "session_ended_at", "video_start_at", "video_end_at", "exported_at"):
+        assert info[key].endswith("Z"), key
+    assert info["video_start_at"] == clock.iso_z(T0 - timedelta(seconds=5))

@@ -6,6 +6,7 @@ Hàm dựng lệnh là hàm thuần (unit test so chuỗi lệnh); hàm chạy d
 import asyncio
 import hashlib
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -119,8 +120,7 @@ def export_command(
 
     `inputs`: (file clip, giây bỏ qua ở đầu để hai camera khớp giờ). Âm thanh lấy từ đầu vào đầu tiên nếu có.
     """
-    w, _, h = side_scale.partition(":")
-    scale = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+    scale = _scale(side_scale)
     static = f"drawtext={_font(font_file)}textfile={_filter_path(text_file)}:expansion=none:x=24:y=24:{_BOX}"
     overlay = ",".join([static, *clock])
     if len(inputs) == 2:
@@ -135,6 +135,104 @@ def export_command(
         "-c:v", "libx264", "-preset", preset, "-crf", "26", "-pix_fmt", "yuv420p",
         "-profile:v", "high", "-c:a", "aac", "-b:a", "96k",
         "-t", f"{duration:.3f}", "-movflags", "+faststart",
+        "-progress", "pipe:1", "-nostats", str(out),
+    ]  # fmt: skip
+    return cmd
+
+
+@dataclass(frozen=True)
+class Part:
+    """Một đoạn của nửa hình bản xuất ghép: video giây `start`→`end` của clip, hoặc khe hở (khung đen)."""
+
+    kind: str  # VIDEO | GAP
+    start: float
+    end: float
+
+    @property
+    def duration(self) -> float:
+        return self.end - self.start
+
+
+EXPORT_FPS = 25  # mọi đoạn đưa về cùng fps trước concat (khung đen của khe hở dùng cùng nhịp)
+
+
+def _side_chain(index: int, parts: list[Part], scale: str, gap_label: str, label: str) -> str:
+    """Một nửa hình căn giờ thực: tách đầu vào theo đoạn video, chèn khung đen vào khe hở, nối lại."""
+    video_parts = [p for p in parts if p.kind == "VIDEO"]
+    chains: list[str] = []
+    sources = [f"s{index}_{j}" for j in range(len(video_parts))]
+    if video_parts:
+        split = f"split={len(video_parts)}" + "".join(f"[{x}]" for x in sources)
+        chains.append(f"[{index}:v]setpts=PTS-STARTPTS,{split}")
+    w, _, h = scale.partition(":")
+    norm = f"fps={EXPORT_FPS},format=yuv420p"
+    names, vi = [], 0
+    for j, part in enumerate(parts):
+        name = f"p{index}_{j}"
+        names.append(f"[{name}]")
+        if part.kind == "VIDEO":
+            chains.append(
+                f"[{sources[vi]}]trim=start={part.start:.3f}:end={part.end:.3f},setpts=PTS-STARTPTS,"
+                f"{_scale(scale)},{norm}[{name}]"
+            )
+            vi += 1
+        else:
+            label_filter = f",{gap_label}" if gap_label else ""
+            chains.append(
+                f"color=c=black:s={w}x{h}:r={EXPORT_FPS}:d={part.duration:.3f},setsar=1,{norm}{label_filter}[{name}]"
+            )
+    chains.append("".join(names) + f"concat=n={len(parts)}:v=1:a=0[{label}]")
+    return ";".join(chains)
+
+
+def _scale(side_scale: str) -> str:
+    w, _, h = side_scale.partition(":")
+    return f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1"
+
+
+def aligned_export_command(
+    ffmpeg: str,
+    inputs: list[tuple[Path, list[Part]]],
+    out: Path,
+    *,
+    text_file: Path | None,
+    gap_text_file: Path | None,
+    clock: list[str],
+    font_file: Path | None,
+    duration: float,
+    preset: str = "veryfast",
+    side_scale: str = "1280:720",
+) -> list[str]:
+    """Bản xuất ghép 2 camera khi clip có khe hở (G3-F2): mỗi nửa được dựng lại theo **giờ thực** — đoạn video
+    đặt đúng vị trí, khe hở lấp khung đen "Không có video" — nên hai nửa thẳng hàng giờ thực từng khung và một
+    đồng hồ chung (bắt đầu ở giờ đầu cửa sổ chung) đúng cho cả hai nửa. Không lấy âm thanh (đã bị cắt khúc).
+
+    `text_file` / `gap_text_file` = None → bỏ chữ (test máy không có drawtext).
+    """
+    gap_label = (
+        f"drawtext={_font(font_file)}textfile={_filter_path(gap_text_file)}:expansion=none"
+        f":x=(w-text_w)/2:y=(h-text_h)/2:{_BOX}"
+        if gap_text_file is not None
+        else ""
+    )
+    chains = [_side_chain(i, parts, side_scale, gap_label, f"side{i}") for i, (_, parts) in enumerate(inputs)]
+    overlays = list(clock)
+    if text_file is not None:
+        overlays.insert(
+            0,
+            f"drawtext={_font(font_file)}textfile={_filter_path(text_file)}:expansion=none:x=24:y=24:{_BOX}",
+        )
+    tail = "," + ",".join(overlays) if overlays else ""
+    stacked = "".join(f"[side{i}]" for i in range(len(inputs)))
+    stack = f"hstack=inputs={len(inputs)}" if len(inputs) > 1 else "null"
+    graph = ";".join(chains) + f";{stacked}{stack}{tail}[v]"
+    cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
+    for path, _ in inputs:
+        cmd += ["-i", str(path)]
+    cmd += [
+        "-filter_complex", graph, "-map", "[v]", "-an",
+        "-c:v", "libx264", "-preset", preset, "-crf", "26", "-pix_fmt", "yuv420p",
+        "-profile:v", "high", "-t", f"{duration:.3f}", "-movflags", "+faststart",
         "-progress", "pipe:1", "-nostats", str(out),
     ]  # fmt: skip
     return cmd

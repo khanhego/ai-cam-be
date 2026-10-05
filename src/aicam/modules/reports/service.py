@@ -178,7 +178,7 @@ async def _attention(db: AsyncSession, counts: Counts, settings: Settings) -> li
         items.append({"kind": "APPROVAL_PENDING", "count": int(pending)})
     for shop in (await db.scalars(select(Shop).where(Shop.last_error.is_not(None)))).all():
         at = (shop.last_error or {}).get("at") or (
-            shop.last_synced_at.isoformat() if shop.last_synced_at else None
+            clock.iso_z(shop.last_synced_at) if shop.last_synced_at else None
         )
         items.append({"kind": "SYNC_ERROR", "shop_id": str(shop.id), "at": at})
     failed = await db.scalar(

@@ -83,8 +83,8 @@ def test_timeline_maps_clip_seconds_to_wall_clock() -> None:
     plan = plan_cut([_seg(0, 60), _seg(80, 60)], T + timedelta(seconds=50), T + timedelta(seconds=100))
     timeline = plan.timeline(actual_duration=31.5)
     assert timeline == [
-        {"t": 0.0, "wall": (T + timedelta(seconds=48.5)).isoformat()},
-        {"t": 11.5, "wall": (T + timedelta(seconds=80)).isoformat()},
+        {"t": 0.0, "wall": "2026-10-05T03:00:48.500000Z"},  # ISO-8601 UTC hậu tố Z (G3-F10)
+        {"t": 11.5, "wall": "2026-10-05T03:01:20Z"},
     ]
     start, end = timeline_bounds(timeline, 31.5)
     assert (start, end) == (T + timedelta(seconds=48.5), T + timedelta(seconds=100))

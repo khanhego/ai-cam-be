@@ -10,6 +10,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from aicam.core import clock
+
 # Spike S3: ranh giới segment MediaMTX lệch −0,09 … 0 giây → coi là liền mạch nếu lệch ≤ 0,5 giây.
 _CONTIGUOUS_S = 0.5
 _NAME_RE = re.compile(r"(\d{4})/(\d{2})/(\d{2})/(\d{2})-(\d{2})-(\d{2})-(\d{6})\.mp4$")
@@ -139,7 +141,7 @@ class CutPlan:
                 drift = (wall - prev_wall).total_seconds() - (t - prev_t)
                 if abs(drift) <= _CONTIGUOUS_S:  # segment nối tiếp liền mạch → cùng một đoạn giờ
                     continue
-            pieces.append({"t": round(t, 3), "wall": wall.isoformat()})
+            pieces.append({"t": round(t, 3), "wall": clock.iso_z(wall)})
         return pieces
 
 

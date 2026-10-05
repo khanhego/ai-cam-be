@@ -142,3 +142,34 @@ async def test_error_envelope(api: AsyncClient, db: AsyncSession) -> None:
         assert isinstance(err["message"], str)
         assert err["message"]
     assert "fields" in cases[3][0].json()["error"]["details"]
+
+
+async def test_hand_built_timestamps_use_z(api: AsyncClient, db: AsyncSession) -> None:
+    """G3-F10/F13: mốc giờ ghép tay ngoài schema Pydantic — `error.details.deleted_at` (CLIP_DELETED, API-40)
+    và `attention[].at` của SYNC_ERROR (API-32, lấy từ `last_synced_at` khi `last_error` không có `at`)."""
+    from datetime import UTC, datetime, timedelta
+
+    from aicam.modules.media.models import Clip
+    from aicam.modules.orders.models import Shop
+    from tests.integration.media_fixtures import make_closed_session
+
+    await make_user(db, "tst_admin_contract_z", "ADMIN")
+    adm = await _login(api, "tst_admin_contract_z", "DASHBOARD")
+    _, station = await make_station_account(db)
+    at = datetime(2026, 10, 1, 3, 0, tzinfo=UTC)
+    pack = await make_closed_session(db, station, "SPXTSTZ000001", at, at + timedelta(seconds=30))
+    clip = Clip(session_id=pack.id, camera_role="CAM1", status="DELETED", start_at=at, end_at=at,
+                deleted_at=at + timedelta(days=90), flags=[])  # fmt: skip
+    db.add(clip)
+    db.add(Shop(platform="SHOPEE", platform_shop_id="999", auth_status="CONNECTED", last_synced_at=at,
+                last_error={"code": "SYNC_FAILED", "message": "x"}))  # fmt: skip
+    await db.flush()
+
+    gone = await api.get(f"/api/v1/clips/{clip.id}/play-url", headers=adm)
+    assert gone.status_code == 410
+    assert gone.json()["error"]["details"]["deleted_at"] == "2026-12-30T03:00:00Z"
+    report = await api.get("/api/v1/reports/daily", headers=adm)
+    sync = [a for a in report.json()["attention"] if a["kind"] == "SYNC_ERROR"]
+    assert sync
+    assert sync[0]["at"] == "2026-10-01T03:00:00Z"
+    _assert_utc_z(report.json(), "API-32")

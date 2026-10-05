@@ -66,7 +66,7 @@ async def create_export(
         clip = clips.get(role)
         if clip is None:
             raise AppError("CLIP_NOT_READY", "Clip đang được cắt, sẵn sàng trong khoảng 1 phút.", 409,
-                           {"camera_role": role, "status": None})  # fmt: skip
+                           {"camera_role": role, "status": "PENDING"})  # fmt: skip
         error = _clip_unavailable(clip, cfg.retention_clip_days)
         if error is not None:
             error.details["camera_role"] = role
@@ -179,7 +179,7 @@ def clock_pieces(
 
     Epoch cộng chênh múi giờ hiển thị để drawtext dùng `gmtime` ra đúng giờ VN.
     """
-    pieces = timeline or [{"t": 0.0, "wall": start_at.isoformat()}]
+    pieces = timeline or [{"t": 0.0, "wall": clock.iso_z(start_at)}]
     out: list[tuple[float, float, float]] = []
     for i, piece in enumerate(pieces):
         t = float(piece["t"]) - skip
@@ -192,6 +192,54 @@ def clock_pieces(
             t = 0.0
         offset = wall.astimezone(ZoneInfo(tz)).utcoffset() or timedelta(0)
         out.append((t, min(t_end, duration), wall.timestamp() + offset.total_seconds()))
+    return out
+
+
+GAP_MIN_S = 0.5  # TC-07.11: lệch ≤ 0,5 giây — khe hở ngắn hơn coi như liền mạch
+
+
+def align_parts(
+    timeline: list[dict[str, Any]] | None,
+    start_at: datetime,
+    media_duration: float,
+    w0: datetime,
+    w1: datetime,
+) -> list[ffmpeg.Part]:
+    """Dựng lại một camera trên cửa sổ giờ thực `[w0, w1]` (G3-F2): đoạn video (giây clip) + khe hở (giây).
+
+    Giây thứ x của kết quả ứng với giờ thực `w0 + x` — mọi camera dựng theo cùng `w0` thì thẳng hàng giờ thực.
+    """
+    pieces = timeline or [{"t": 0.0, "wall": clock.iso_z(start_at)}]
+    parts: list[ffmpeg.Part] = []
+    cursor = w0
+    for i, piece in enumerate(pieces):
+        t = float(piece["t"])
+        t_end = float(pieces[i + 1]["t"]) if i + 1 < len(pieces) else media_duration
+        if t_end <= t:
+            continue
+        ws = datetime.fromisoformat(piece["wall"])
+        a = max(ws, cursor)
+        b = min(ws + timedelta(seconds=t_end - t), w1)
+        if b <= a:
+            continue
+        gap = (a - cursor).total_seconds()
+        if gap > 0.001:
+            parts.append(ffmpeg.Part("GAP", 0.0, gap))
+        parts.append(ffmpeg.Part("VIDEO", t + (a - ws).total_seconds(), t + (b - ws).total_seconds()))
+        cursor = b
+    tail = (w1 - cursor).total_seconds()
+    if tail > 0.001:
+        parts.append(ffmpeg.Part("GAP", 0.0, tail))
+    return parts
+
+
+def wall_gaps(parts: list[ffmpeg.Part], w0: datetime) -> list[tuple[datetime, datetime]]:
+    """Khe hở > `GAP_MIN_S` (giờ thực) trong kết quả `align_parts`."""
+    out, pos = [], 0.0
+    for part in parts:
+        if part.kind == "GAP" and part.duration > GAP_MIN_S:
+            out.append((w0 + timedelta(seconds=pos), w0 + timedelta(seconds=pos + part.duration)))
+        pos += part.duration
     return out
 
 
@@ -230,20 +278,35 @@ async def render_export(db: AsyncSession, export_id: uuid.UUID, settings: Settin
                 raise ffmpeg.FFmpegError(f"Clip {c.camera_role} không còn sẵn sàng")
         bounds = [_clip_bounds(c) for c in sources]
         media = [float(c.duration_s or 0) for c in sources]
-        if len(sources) == 2 and all(len(c.timeline or []) <= 1 for c in sources):
-            # Ghép: bỏ phần đầu của camera bắt đầu sớm hơn để hai hình cùng giờ (TC-07.11, ≤ 0,5 giây).
+        skips = [0.0] * len(sources)
+        aligned = len(sources) == 2 and any(len(c.timeline or []) > 1 for c in sources)
+        if len(sources) == 2:
+            # Cửa sổ giờ thực chung của hai camera (TC-07.11, lệch ≤ 0,5 giây).
             common_start = max(b[0] for b in bounds)
-            skips = [(common_start - b[0]).total_seconds() for b in bounds]
-            duration = min(m - s for m, s in zip(media, skips, strict=True))
+            common_end = min(b[1] for b in bounds)
+            if aligned:
+                # Clip có khe hở (G3-F2): dựng lại từng nửa theo giờ thực, khe hở lấp khung đen.
+                duration = (common_end - common_start).total_seconds()
+            else:
+                skips = [(common_start - b[0]).total_seconds() for b in bounds]
+                duration = min(m - s for m, s in zip(media, skips, strict=True))
+                common_end = common_start + timedelta(seconds=duration)
         else:
-            # 1 camera, hoặc clip có khe hở (dòng thời gian không tuyến tính): không dịch, giờ theo clip đầu.
-            skips = [0.0] * len(sources)
-            duration = min(media)
+            # 1 camera: giữ nguyên clip; đồng hồ theo từng đoạn của timeline (đúng giờ sau khe hở).
+            duration = media[0]
+            common_start, common_end = bounds[0]
         if duration <= 0:
             raise ffmpeg.FFmpegError("Hai camera không có khoảng thời gian chung")
-        common_start = bounds[0][0] + timedelta(seconds=skips[0])
-        linear = len(sources[0].timeline or []) <= 1
-        common_end = common_start + timedelta(seconds=duration) if linear else bounds[0][1]
+        layouts = [
+            align_parts(c.timeline, b[0], m, common_start, common_end)
+            for c, b, m in zip(sources, bounds, media, strict=True)
+        ]
+        gaps = [
+            {"camera_role": c.camera_role, "from": clock.iso_z(a), "to": clock.iso_z(b),
+             "seconds": round((b - a).total_seconds(), 1)}
+            for c, parts in zip(sources, layouts, strict=True)
+            for a, b in wall_gaps(parts, common_start)
+        ]  # fmt: skip
         out_dir.mkdir(parents=True, exist_ok=True)
         video = out_dir / "video.mp4"
         font = settings.export_font_file if settings.export_font_file.is_file() else None
@@ -251,6 +314,8 @@ async def render_export(db: AsyncSession, export_id: uuid.UUID, settings: Settin
         if order is not None:
             lines.append(f"Đơn {order.platform_order_sn}")
         lines.append(station.name if station else "")
+        if gaps:
+            lines.append("Có đoạn không có video")  # cảnh báo khe hở cho mọi layout (G3-F2)
         last_pct = -10
 
         async def _progress(pct: int) -> None:
@@ -264,20 +329,43 @@ async def render_export(db: AsyncSession, export_id: uuid.UUID, settings: Settin
         with tempfile.TemporaryDirectory(prefix="aicam-export-") as tmp:
             text_file = Path(tmp) / "overlay.txt"
             text_file.write_text(" · ".join(x for x in lines if x))
-            clock_ = ffmpeg.clock_overlays(
-                clock_pieces(sources[0].timeline, bounds[0][0], skips[0], duration, settings.tz_display), font
-            )
-            cmd = ffmpeg.export_command(
-                settings.ffmpeg_bin,
-                [(absolute(settings, c.path or ""), s) for c, s in zip(sources, skips, strict=True)],
-                video,
-                text_file=text_file,
-                clock=clock_,
-                font_file=font,
-                duration=duration,
-                preset=settings.export_preset,
-                side_scale=settings.export_side_scale,
-            )
+            if aligned:
+                gap_file = Path(tmp) / "gap.txt"
+                gap_file.write_text("Không có video")
+                clock_ = ffmpeg.clock_overlays(
+                    clock_pieces(None, common_start, 0.0, duration, settings.tz_display), font
+                )
+                cmd = ffmpeg.aligned_export_command(
+                    settings.ffmpeg_bin,
+                    [
+                        (absolute(settings, c.path or ""), parts)
+                        for c, parts in zip(sources, layouts, strict=True)
+                    ],
+                    video,
+                    text_file=text_file,
+                    gap_text_file=gap_file,
+                    clock=clock_,
+                    font_file=font,
+                    duration=duration,
+                    preset=settings.export_preset,
+                    side_scale=settings.export_side_scale,
+                )
+            else:
+                clock_ = ffmpeg.clock_overlays(
+                    clock_pieces(sources[0].timeline, bounds[0][0], skips[0], duration, settings.tz_display),
+                    font,
+                )
+                cmd = ffmpeg.export_command(
+                    settings.ffmpeg_bin,
+                    [(absolute(settings, c.path or ""), s) for c, s in zip(sources, skips, strict=True)],
+                    video,
+                    text_file=text_file,
+                    clock=clock_,
+                    font_file=font,
+                    duration=duration,
+                    preset=settings.export_preset,
+                    side_scale=settings.export_side_scale,
+                )
             await ffmpeg.run_with_progress(cmd, duration, settings.export_timeout_s, _progress)
         sha = ffmpeg.sha256_file(video)
         creator = await get_user_ref(db, export.created_by)
@@ -288,17 +376,19 @@ async def render_export(db: AsyncSession, export_id: uuid.UUID, settings: Settin
             "tracking_number": package.tracking_number if package else None,
             "platform_order_sn": order.platform_order_sn if order else None,
             "station_name": station.name if station else None,
-            "session_started_at": pack.started_at.isoformat(),
-            "session_ended_at": pack.ended_at.isoformat() if pack.ended_at else None,
-            "video_start_at": common_start.isoformat(),
-            "video_end_at": common_end.isoformat(),
+            "session_started_at": clock.iso_z(pack.started_at),
+            "session_ended_at": clock.iso_z(pack.ended_at) if pack.ended_at else None,
+            "video_start_at": clock.iso_z(common_start),
+            "video_end_at": clock.iso_z(common_end),
+            # Khoảng giờ thực không có video trong bản xuất (> 0,5 giây), mọi layout (G3-F2).
+            "video_gaps": gaps,
             "sha256": sha,
             "source_clip_sha256": {c.camera_role: c.sha256 for c in sources},
             "exported_by": {
                 "id": str(export.created_by),
                 "display_name": creator.display_name if creator else None,
             },
-            "exported_at": clock.now().isoformat(),
+            "exported_at": clock.iso_z(clock.now()),
             "generator": f"Hệ thống X (aicam {__version__})",
         }
         (out_dir / "info.json").write_text(json.dumps(info, ensure_ascii=False, indent=2))
