@@ -1,4 +1,4 @@
-"""Tiến trình `worker`: `celery -A aicam.entrypoints.worker worker -Q default,video,export,sync`."""
+"""Worker Celery: `worker` (-Q default,video), `worker-sync` (-Q sync), `worker-export` (-Q export)."""
 
 from aicam.workers.celery_app import app
 

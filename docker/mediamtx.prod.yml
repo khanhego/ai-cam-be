@@ -6,7 +6,8 @@
 logLevel: info
 
 # API + metric chỉ trong mạng compose: compose.yml KHÔNG publish 9997 / 9998 ra host; quyền `api` / `metrics`
-# dưới đây chỉ cho dải IP private Docker (172.16.0.0/12).
+# dưới đây chỉ cho dải mạng compose của stack — compose.yml ghi đè `ips` bằng `MTX_AUTHINTERNALUSERS_0_IPS`
+# = 127.0.0.1, ::1, `AICAM_SUBNET` (G3-N9). Giá trị trong file này chỉ là mặc định khi chạy tay.
 api: yes
 apiAddress: :9997
 metrics: yes
@@ -32,7 +33,7 @@ srt: no
 authInternalUsers:
   - user: any
     pass:
-    ips: ["127.0.0.1/32", "::1/128", "172.16.0.0/12"]
+    ips: ["127.0.0.1/32", "::1/128", "172.30.10.0/24"]
     permissions:
       - action: read
       - action: playback

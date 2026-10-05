@@ -104,3 +104,4 @@ def test_dockerfile_disables_uvicorn_access_log() -> None:
     dockerfile = Path(__file__).resolve().parents[2] / "docker" / "Dockerfile"
     cmd = next(line for line in dockerfile.read_text().splitlines() if line.startswith("CMD"))
     assert "--no-access-log" in cmd
+    assert "--workers" not in cmd  # G3-F12: api một tiến trình (bus Redis nghe ở mọi tiến trình api)

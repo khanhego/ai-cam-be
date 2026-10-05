@@ -29,7 +29,15 @@ services:
   video-init:
     image: alpine:3
     # Volume imports: file CSV / xlsx gốc (T-17, API-50/54; J-11 xóa sau 90 ngày).
-    command: ["sh", "-c", "mkdir -p /data/video/raw /data/video/clips /data/video/exports && chown -R 10001:10001 /data/video /data/imports"]
+    # Chỉ chown cấp 1–2 chưa đúng chủ, lỗi chown không chặn mediamtx (G3-P2-7, như compose.yml).
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /data/video/raw /data/video/clips /data/video/exports /data/imports;
+        find /data/video /data/imports -maxdepth 2 ! -user 10001 -exec chown 10001:10001 {} + ||
+        echo "CẢNH BÁO video-init: không chown được volume" >&2;
+        exit 0
     volumes: [video:/data/video, imports:/data/imports]
 
   mediamtx:
@@ -59,6 +67,7 @@ services:
     depends_on: [mediamtx]
     restart: unless-stopped
 
+  # Một tiến trình uvicorn (G3-F12, docs/ops.md §8).
   api:
     build:
       context: ..
@@ -94,10 +103,18 @@ services:
 
   worker:
     image: aicam-dev
-    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "default,video,sync", "--loglevel", "info"]
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "default,video", "--loglevel", "info"]
     env_file: [../.env.example]
     environment: *app_env
     volumes: [video:/data/video, imports:/data/imports]
+    depends_on: [api]
+
+  # Queue `sync` (Shopee) tách khỏi cắt clip (G3-F11, NFR-03).
+  worker-sync:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync", "-c", "2", "-n", "sync@%h", "--loglevel", "info"]
+    env_file: [../.env.example]
+    environment: *app_env
     depends_on: [api]
 
   # Encode bản xuất tách riêng, mỗi lần 1 job: không chặn cắt clip (DEC-32).

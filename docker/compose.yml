@@ -73,9 +73,19 @@ services:
       retries: 10
 
   # Volume video / imports thuộc uid 10001 (user `aicam` trong image; MediaMTX chạy cùng uid — DEC-102 (8)).
+  # Chỉ chown thư mục gốc + con cấp 1–2 chưa đúng chủ (G3-P2-7): `chown -R` trên ~170.000 file video mỗi lần `up`
+  # làm mediamtx chờ hàng phút (không ghi hình); NFS root_squash làm chown lỗi → không chặn mediamtx, chỉ cảnh báo
+  # (quyền NAS: docs/ops.md §2).
   volume-init:
     image: alpine:3
-    command: ["sh", "-c", "mkdir -p /data/video/raw /data/video/clips /data/video/exports && chown -R 10001:10001 /data/video /data/imports"]
+    command:
+      - sh
+      - -c
+      - >-
+        mkdir -p /data/video/raw /data/video/clips /data/video/exports /data/imports;
+        find /data/video /data/imports -maxdepth 2 ! -user 10001 -exec chown 10001:10001 {} + ||
+        echo "CẢNH BÁO volume-init: không chown được /data/video hoặc /data/imports (NFS root_squash?) — xem docs/ops.md §2" >&2;
+        exit 0
     volumes: [video:/data/video, imports:/data/imports]
     networks: [aicam]
 
@@ -88,6 +98,9 @@ services:
     depends_on:
       volume-init: { condition: service_completed_successfully }
     environment:
+      # Quyền đọc RTSP / API / metric không mật khẩu chỉ cho mạng compose của chính stack (G3-N9) — cùng dải với
+      # `networks.aicam` bên dưới, không mở cả 172.16.0.0/12 (mọi mạng Docker khác trên máy).
+      MTX_AUTHINTERNALUSERS_0_IPS: 127.0.0.1/32,::1/128,${AICAM_SUBNET:-172.30.10.0/24}
       # IP LAN của server: trình duyệt dashboard nhận candidate này để nối ICE (live view D11).
       MTX_WEBRTCADDITIONALHOSTS: ${LAN_IP:?đặt LAN_IP (IP LAN của server) trong .env}
       MTX_WEBRTCLOCALUDPADDRESS: :${WEBRTC_ICE_PORT:-8189}
@@ -112,6 +125,9 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
 
+  # api chạy MỘT tiến trình uvicorn (không `--workers`, không scale) — G3-F12: bus Redis `tray.changed` /
+  # `camera.health` được mọi tiến trình api nghe; nhiều tiến trình = xử lý trùng (cờ, WS lặp). Muốn scale phải
+  # tách listener ra tiến trình riêng trước (docs/ops.md §8).
   api:
     <<: *app
     environment:
@@ -136,10 +152,19 @@ services:
     depends_on:
       api: { condition: service_healthy }
 
+  # Cắt clip (J-01, NFR-03) + việc nội bộ. Gọi Shopee (queue `sync`) chạy ở worker-sync riêng (G3-F11): sàn chậm /
+  # thử lại giãn cách không chiếm tiến trình cắt clip.
   worker:
     <<: *app
-    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "default,video,sync", "--loglevel", "info"]
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "default,video", "--loglevel", "info"]
     volumes: [video:/data/video, imports:/data/imports]
+    depends_on:
+      api: { condition: service_healthy }
+
+  # J-04, J-05, J-06, J-12 (queue `sync`): 2 tiến trình, prefetch 1.
+  worker-sync:
+    <<: *app
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync", "-c", "2", "-n", "sync@%h", "--loglevel", "info"]
     depends_on:
       api: { condition: service_healthy }
 

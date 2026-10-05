@@ -10,8 +10,10 @@ alias dc='docker compose --env-file docker/.env -f docker/compose.yml'
 | Service | Việc | Mở ra LAN |
 |---|---|---|
 | `caddy` | HTTPS, FE tĩnh, chuyển `/api`, `/ws`, `/live` | 80, 443 |
-| `api` | FastAPI (station, dashboard, WS) | không (qua Caddy) |
-| `worker`, `worker-export`, `beat` | Celery: cắt clip, xuất, đồng bộ Shopee, retention | không |
+| `api` | FastAPI (station, dashboard, WS) — **một tiến trình** (mục 8) | không (qua Caddy) |
+| `worker` | Celery queue `default`, `video`: cắt clip (J-01), retention, dọn dẹp | không |
+| `worker-sync` | Celery queue `sync`: đồng bộ Shopee (J-04/05/06/12), 2 tiến trình — tách để Shopee chậm không làm trễ cắt clip (NFR-03) | không |
+| `worker-export`, `beat` | Celery: encode bản xuất (1 job / lần); lịch job | không |
 | `vision` | Theo dõi camera, đọc mã Cam 2 | không |
 | `mediamtx` | Kéo RTSP camera, ghi video 60 giây / file, live view | chỉ ICE 8189 UDP + TCP |
 | `postgres`, `redis` | Dữ liệu, hàng đợi job | không |
@@ -23,6 +25,13 @@ alias dc='docker compose --env-file docker/.env -f docker/compose.yml'
 - Linux x86_64, Docker Engine ≥ 24 + plugin `docker compose`. Ổ dữ liệu lớn cho video (ước tính: 4 camera × 30 ngày video thô + clip 90 ngày — xem RB-7 / NFR dung lượng trong SRS).
 - Giờ: chrony làm NTP cho server, camera, máy station (architecture §12). Lệch > 1 giây → cảnh báo `CLOCK_DRIFT`.
 - Mạng: camera ở VLAN riêng, server thấy được RTSP camera. Tường lửa server chỉ mở cho LAN: 443/tcp, 80/tcp (chuyển hướng sang HTTPS), 8189/udp + 8189/tcp (live view).
+- **Docker bỏ qua UFW / firewalld** cho cổng đã publish (Docker tự chèn rule iptables). Hai cách giới hạn cổng 80/443/8189 chỉ cho LAN kho (G3-N10):
+  - Bind cổng vào IP LAN thay vì mọi giao diện — trong `docker/.env`: `HTTP_PORT=<LAN_IP>:80`, `HTTPS_PORT=<LAN_IP>:443` (và sửa `ports` của mediamtx trong `compose.override.yml` thành `<LAN_IP>:8189:8189/udp`, `<LAN_IP>:8189:8189`).
+  - Hoặc rule chuỗi `DOCKER-USER` (giữ qua reboot bằng `iptables-persistent`), ví dụ LAN `192.168.10.0/24`, card mạng `eth0`:
+    ```sh
+    iptables -I DOCKER-USER -i eth0 ! -s 192.168.10.0/24 -p tcp -m multiport --dports 80,443,8189 -j DROP
+    iptables -I DOCKER-USER -i eth0 ! -s 192.168.10.0/24 -p udp --dport 8189 -j DROP
+    ```
 - UPS ≥ 15 phút + NUT tắt máy an toàn.
 
 ## 2. Cài đặt lần đầu
@@ -46,6 +55,12 @@ alias dc='docker compose --env-file docker/.env -f docker/compose.yml'
        driver_opts: { type: none, o: bind, device: /mnt/video }
    ```
    (khi dùng override, thêm `-f docker/compose.override.yml` vào bí danh `dc`).
+
+   **Quyền thư mục video / NAS (G3-P2-7):** mọi tiến trình ghi video chạy uid **10001** (mediamtx, worker). `volume-init` chỉ chown thư mục gốc + cấp 1–2 chưa đúng chủ (không `chown -R` toàn bộ video mỗi lần `up` — tránh hàng phút không ghi hình) và **không chặn** mediamtx khi chown lỗi. Với NFS `root_squash` (root trong container không chown được), chuẩn bị trước trên NAS / server:
+   ```sh
+   mkdir -p /mnt/video/raw /mnt/video/clips /mnt/video/exports && chown -R 10001:10001 /mnt/video
+   ```
+   (hoặc export NFS `all_squash,anonuid=10001,anongid=10001`). Log `CẢNH BÁO volume-init` trong `dc logs volume-init` = quyền chưa đúng → mediamtx / worker sẽ báo lỗi ghi.
 5. Chạy:
    ```sh
    dc up -d --build
@@ -84,7 +99,9 @@ Trên dashboard bằng tài khoản Admin:
 
 ## 6. Sao lưu và khôi phục
 
-Service `backup` chạy `pg_dump -Fc` + nén thư mục file nhập CSV mỗi ngày lúc `BACKUP_HOUR` (giờ VN), giữ `BACKUP_KEEP_DAYS` ngày, ghi vào `BACKUP_DIR` (mặc định `docker/backups/` — nên trỏ sang NAS / ổ khác).
+Service `backup` chạy `pg_dump -Fc` + nén thư mục file nhập CSV mỗi ngày lúc `BACKUP_HOUR` (giờ VN), ghi vào `BACKUP_DIR` (mặc định `docker/backups/` — nên trỏ sang NAS / ổ khác). Bản mới phải đọc được (`pg_restore -l`) mới được giữ; bản cũ chỉ bị dọn khi lần sao lưu này thành công (`find -mtime +BACKUP_KEEP_DAYS` — với 14 là bản cũ hơn khoảng **15 ngày**). File tạo với quyền `600` (G3-N3).
+
+**Sao lưu `docker/.env` riêng, ra ngoài server (off-site, két / trình quản lý mật khẩu).** `FERNET_KEY` mã hóa token Shopee và mật khẩu camera trong DB: khôi phục DB với `.env` khác → token / mật khẩu camera không giải mã được (shop chuyển "Hết hạn" — `CREDENTIALS_UNREADABLE`, phải Kết nối lại; camera phải nhập lại mật khẩu). `JWT_SECRET` / `MEDIA_SIGNING_KEY` khác chỉ làm mọi người đăng nhập lại.
 
 ```sh
 dc exec backup /bin/sh /pg-backup.sh once     # sao lưu ngay (trước khi nâng cấp)
@@ -96,8 +113,10 @@ Video (`raw/`, `clips/`) **không** nằm trong bản sao lưu DB — là bằng
 
 Khôi phục DB (dừng ghi trước):
 
+Dùng đúng `docker/.env` của lúc sao lưu (cùng `FERNET_KEY`). Dừng cả `backup` để nó không `pg_dump` giữa chừng khi DB đang trống:
+
 ```sh
-dc stop api vision worker worker-export beat
+dc stop api vision worker worker-sync worker-export beat backup
 dc exec -T postgres sh -c 'dropdb -U aicam aicam && createdb -U aicam aicam'
 dc exec -T postgres pg_restore -U aicam -d aicam --no-owner < docker/backups/aicam-<thời điểm>.dump
 dc up -d
@@ -129,9 +148,14 @@ Làm nên lúc ngoài giờ đóng gói: api khởi động lại vài giây, st
 dc ps                                   # trạng thái, healthy
 dc logs -f --since 10m api              # log JSON: request_id, station_id, session_id, tracking_number
 dc logs --since 1h worker | grep -E 'clip_built|clip_failed'
+dc logs --since 1h worker-sync | grep -E 'platform_|shopee_call'
 dc logs --since 1h vision | grep camera
 dc logs caddy | tail                    # access log (chữ ký URL, token WS đã che)
 ```
+
+Log không chứa bí mật trong URL (G3-F3, G3-N1): uvicorn tắt access log (`--no-access-log`, Caddy đã ghi access log có che); mọi log stdlib (uvicorn, httpx, celery) qua bộ che query `token`, `sig`, `exp`, `uid`, `code`, `state`, `access_token`, `refresh_token`, `sign`; `httpx` / `httpcore` chỉ ghi từ WARNING. Kiểm nhanh: `dc logs api worker-sync | grep -E 'token=|sig=|access_token=' | grep -v '\*\*\*'` phải rỗng.
+
+**`api` chạy một tiến trình (G3-F12).** Bus Redis `tray.changed` / `camera.health` (vision → api) được mọi tiến trình api nghe và xử lý: chạy nhiều tiến trình (`uvicorn --workers N`, `dc up --scale api=N`) làm cờ phiên / WS bị xử lý lặp. Một tiến trình đủ cho NFR-01 (đo T-19); muốn scale phải tách listener ra tiến trình riêng trước.
 
 Log Docker giới hạn 20 MB × 5 file / service. Khung **Sức khỏe hệ thống** ở Cài đặt → Lưu trữ (`/admin/settings/storage`, API-81): DB, Redis, MediaMTX, ổ đĩa, từng camera, lần đồng bộ sàn. Tổng quan (`/admin`) có mục "Cần xử lý": camera mất tín hiệu, lệch giờ, clip lỗi, ổ ≥ 80 %, lỗi đồng bộ.
 
@@ -141,6 +165,7 @@ Log Docker giới hạn 20 MB × 5 file / service. Khung **Sức khỏe hệ th�
 - Bản xuất tự xóa sau 24 giờ; file nhập CSV gốc sau 90 ngày.
 - Xem dung lượng: `docker system df -v | grep -E 'aicam_(video|pgdata)'`; trong volume: `docker run --rm -v aicam_video:/v alpine du -sh /v/raw /v/clips /v/exports`.
 - Dọn image cũ sau nâng cấp: `docker image prune -f` (không dùng `docker system prune --volumes`, **không** `dc down -v`).
+- J-02 **giữ** video thô của phiên có clip "Không cắt được" / đang cắt (FAILED / PENDING) để **Thử lại** còn dùng được sau 30 ngày (G3-F7); bấm Thử lại thành công thì lượt J-02 sau mới xóa. Clip quá hạn: DB chuyển "Đã xóa" trước, xóa file sau — xóa file lỗi thì lượt sau dọn tiếp (`retention_clip_unlink_failed` trong log).
 
 ## 10. Sự cố thường gặp
 
@@ -149,7 +174,7 @@ Log Docker giới hạn 20 MB × 5 file / service. Khung **Sức khỏe hệ th�
 | Camera "Mất tín hiệu" (dashboard / station) | Ping camera từ server; `dc logs --since 10m mediamtx \| grep cam-<id>`; ảnh **Thử kết nối** | Nguồn / dây mạng / PoE; mật khẩu camera đổi → nhập lại ở Cài đặt → Station. MediaMTX tự nối lại khi camera lên. Phiên trong lúc mất hình gắn cờ `VIDEO_INCOMPLETE` |
 | Cam 2 không đọc mã (tray `UNAVAILABLE` / `NOT_SEEN`) | `dc logs vision`; ROI; ánh sáng | Vẽ lại ROI; phiên vẫn chạy với cờ `CAM2_UNVERIFIED`. `vision` chết tự khởi động lại |
 | Ổ đầy / cảnh báo ổ ≥ 80 % | API-81; `df -h`; mục 9 | Giảm `retention_raw_days`; bỏ Giữ clip không còn cần; thêm ổ. Ổ đầy → MediaMTX ngừng ghi |
-| Shopee "Hết hạn" / lỗi đồng bộ | Cài đặt → Shopee; `dc logs worker \| grep platform_` | Token hết hạn (J-12 không refresh được) → bấm **Kết nối lại**. Lỗi mạng tạm: tự thử lại; đơn vẫn nhập được bằng CSV. Quét vẫn chạy khi mất Internet (kiện "chưa xác minh", J-05 xác minh lại) |
+| Shopee "Hết hạn" / lỗi đồng bộ | Cài đặt → Shopee; `dc logs worker-sync \| grep platform_` | Token hết hạn (J-12 không refresh được) → bấm **Kết nối lại**. `CREDENTIALS_UNREADABLE` = `FERNET_KEY` khác lúc kết nối (khôi phục sai `.env`) → dùng lại `.env` cũ hoặc Kết nối lại. `error_sign` / `error_permission` = sai partner key / quyền app → sửa `SHOPEE_*` (shop không bị đánh "Hết hạn"). Lỗi mạng tạm: tự thử lại; đơn vẫn nhập được bằng CSV. Quét vẫn chạy khi mất Internet (kiện "chưa xác minh", J-05 xác minh lại) |
 | Clip "Không cắt được" | `dc logs worker \| grep clip_failed` | Thường do thiếu video (camera mất hình); Admin / Supervisor bấm **Thử lại** ở chi tiết kiện |
 | Station không vào được / chứng chỉ lỗi | Máy station đã cài `aicam-root.crt` (mục 3)? Giờ máy station đúng? | Cài lại chứng chỉ; đồng bộ giờ |
 | Live view không lên hình (ICE `failed`) | `LAN_IP` đúng IP server? 8189/udp mở? | Sửa `LAN_IP` → `dc up -d mediamtx`; mở tường lửa |
@@ -162,9 +187,12 @@ Log Docker giới hạn 20 MB × 5 file / service. Khung **Sức khỏe hệ th�
 - [ ] `APP_ENV=production` (mặc định của compose): api từ chối secret dev, `seed-demo` bị chặn, không có tài khoản `tst_*`.
 - [ ] `FORWARDED_ALLOW_IPS` của api = IP Caddy (`CADDY_IP`, cùng dải `AICAM_SUBNET`): `dc exec api env | grep FORWARDED`.
 - [ ] `https://<SITE_ADDRESS>/assets/<file>.js.map` trả 404 (source map không lộ ra ngoài).
-- [ ] Chỉ 80, 443, 8189 mở trên server (`ss -lntup`); api 8000, Postgres, Redis, API MediaMTX 9997 không truy cập được từ LAN.
+- [ ] Chỉ 80, 443, 8189 mở trên server (`ss -lntup`), và chỉ cho dải LAN kho (bind `LAN_IP` hoặc rule `DOCKER-USER` — mục 1); api 8000, Postgres, Redis, API MediaMTX 9997 không truy cập được từ LAN.
+- [ ] MediaMTX chỉ cho đọc / API không mật khẩu từ mạng compose của stack (`MTX_AUTHINTERNALUSERS_0_IPS` = 127.0.0.1, ::1, `AICAM_SUBNET` — G3-N9), không cả `172.16.0.0/12`.
+- [ ] Header CSP có trong response trang (`curl -kI https://<SITE_ADDRESS>/ | grep -i content-security`). FE đổi script chọn theme inline trong `index.html` → tính lại hash `sha256-…` trong `docker/Caddyfile` (trình duyệt báo lỗi CSP ở Console).
+- [ ] Body quá lớn bị chặn: upload nhập đơn > 6 MB, API khác > 1 MB → 413 (Caddy `request_body` + api — G3-N2).
 - [ ] `/live/...` không có token → 401; tài khoản CSKH / STATION → 403.
 - [ ] Admin đầu tiên đổi mật khẩu mạnh; tắt tài khoản không dùng (Người dùng).
-- [ ] Sao lưu chạy (`backup_ok` trong log) và đã thử khôi phục một lần; `BACKUP_DIR` ở ổ khác.
+- [ ] Sao lưu chạy (`backup_ok` trong log) và đã thử khôi phục một lần; `BACKUP_DIR` ở ổ khác; `docker/.env` có bản sao off-site.
 - [ ] Camera ở VLAN riêng; mật khẩu camera không phải mặc định nhà sản xuất.
 - [ ] Truy cập từ xa (nếu cần) chỉ qua Tailscale / tunnel, không mở cổng router.
