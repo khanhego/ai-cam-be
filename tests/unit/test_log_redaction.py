@@ -107,3 +107,19 @@ def test_dockerfile_disables_uvicorn_access_log() -> None:
     cmd = next(line for line in dockerfile.read_text().splitlines() if line.startswith("CMD"))
     assert "--no-access-log" in cmd
     assert "--workers" not in cmd  # G3-F12: api một tiến trình (bus Redis nghe ở mọi tiến trình api)
+
+
+def test_caddy_default_logger_redacts_query() -> None:
+    """G5: log lỗi / cảnh báo của Caddy (reverse_proxy "aborting with incomplete response") ghi `request.uri`
+    đầy đủ — logger `default` phải che `sig` / `token` như access log, không chỉ khối `log` của site."""
+    import re
+    from pathlib import Path
+
+    caddyfile = (Path(__file__).resolve().parents[2] / "docker" / "Caddyfile").read_text()
+    global_block = caddyfile[caddyfile.index("{") : caddyfile.index("\n}\n")]
+    default_log = re.search(r"log default \{(.*?)\n\t\}", global_block, re.S)
+    assert default_log, "thiếu `log default` trong global options"
+    body = default_log.group(1)
+    assert "request>uri query" in body
+    assert "replace sig REDACTED" in body
+    assert "replace token REDACTED" in body

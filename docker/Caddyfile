@@ -5,6 +5,16 @@
 
 {
 	admin localhost:2019
+	# Log lỗi / cảnh báo của Caddy (vd reverse_proxy "aborting with incomplete response" khi trình duyệt huỷ tải
+	# video) cũng ghi `request.uri` đầy đủ: che `sig` (URL media ký) và `token` (WS) như access log bên dưới (G5).
+	log default {
+		format filter {
+			request>uri query {
+				replace sig REDACTED
+				replace token REDACTED
+			}
+		}
+	}
 }
 
 {$SITE_ADDRESS} {
