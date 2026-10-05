@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import structlog
 from sqlalchemy import all_, delete, func, literal, select, text, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import clock
@@ -230,15 +230,20 @@ async def _lookup_platform(
 
     Gọi ngoài lock station; ghi đơn trong savepoint (station khác có thể vừa ghi cùng đơn — review M1 #5).
     """
-    target = await platforms.lookup_target(session, adapter, settings)
-    if target is None:
-        return None
     try:
+        target = await platforms.lookup_target(session, adapter, settings)
+        if target is None:
+            return None
         found = await asyncio.wait_for(
             adapter.find_by_tracking(target.creds, code), timeout=settings.platform_lookup_timeout_s
         )
     except (TimeoutError, PlatformError) as exc:
         log.info("platform_lookup_failed", code=code, error=type(exc).__name__)
+        return None
+    except SQLAlchemyError:
+        raise  # lỗi DB: transaction quét đã hỏng, không giả như "không tìm thấy"
+    except Exception:  # tra sàn lỗi bất ngờ không được làm quét 500 (BR-04 → UNVERIFIED, G3-P2-6)
+        log.exception("platform_lookup_error", code=code)
         return None
     if found is None:
         return None

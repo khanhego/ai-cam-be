@@ -3,6 +3,7 @@
 import json
 import uuid
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -449,3 +450,47 @@ async def test_report_updated_uses_vietnam_date(
     assert msg is not None
     event = json.loads(msg["data"])
     assert (event["type"], event["data"]) == ("report.updated", {"date": "2026-10-05"})
+
+
+# ---------------------------------------------------------------- G3-P2-6: tra sàn lỗi không làm quét 500
+
+
+async def test_unreadable_shop_token_does_not_break_scan(scan: Scan, db: AsyncSession) -> None:
+    """Token shop mã hóa bằng FERNET_KEY khác (khôi phục sai `.env`) → quét mã lạ vẫn 200 SESSION_OPENED /
+    UNVERIFIED; shop chuyển EXPIRED + last_error CREDENTIALS_UNREADABLE."""
+    from cryptography.fernet import Fernet
+    from sqlalchemy import select
+
+    from aicam.core import clock
+    from aicam.core.security import Cipher
+    from aicam.modules.orders.models import Shop
+
+    other = Cipher(Fernet.generate_key().decode())
+    shop = Shop(platform="SHOPEE", platform_shop_id="990777", auth_status="CONNECTED",
+                access_token_enc=other.encrypt("a"), refresh_token_enc=other.encrypt("r"),
+                auth_expires_at=clock.now() + timedelta(hours=3))  # fmt: skip
+    db.add(shop)
+    await db.flush()
+
+    res = await scan("SPXTST9990077")
+
+    assert res.status_code == 200, res.text
+    assert res.json()["outcome"] == "SESSION_OPENED"
+    assert _session(res.json())["flags"] == ["UNVERIFIED"]
+    reloaded = await db.scalar(
+        select(Shop).where(Shop.id == shop.id).execution_options(populate_existing=True)
+    )
+    assert reloaded is not None
+    assert reloaded.auth_status == "EXPIRED"
+    assert reloaded.last_error is not None
+    assert reloaded.last_error["code"] == "CREDENTIALS_UNREADABLE"
+
+
+async def test_unexpected_lookup_error_falls_back_to_unverified(adapter: MockAdapter, scan: Scan) -> None:
+    async def boom(*_: Any) -> Any:
+        raise RuntimeError("adapter hỏng")
+
+    adapter.find_by_tracking = boom  # type: ignore[method-assign]
+    res = await scan("SPXTST0000014")
+    assert res.status_code == 200, res.text
+    assert _session(res.json())["flags"] == ["UNVERIFIED"]

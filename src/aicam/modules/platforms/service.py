@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
+from cryptography.fernet import InvalidToken
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -138,12 +139,26 @@ def get_adapter(settings: Settings) -> PlatformAdapter:
 
 
 def credentials(shop: Shop, cipher: Cipher) -> ShopCredentials | None:
+    """Token đã giải mã; None nếu chưa có. Không giải mã được (FERNET_KEY đổi / khôi phục sai `.env` —
+    G3-P2-6) → shop `EXPIRED` + `last_error.code = CREDENTIALS_UNREADABLE` (D7 hiện "Kết nối lại"),
+    không ném lỗi."""
     if not shop.access_token_enc or not shop.refresh_token_enc or shop.auth_expires_at is None:
+        return None
+    try:
+        access, refresh = cipher.decrypt(shop.access_token_enc), cipher.decrypt(shop.refresh_token_enc)
+    except InvalidToken:
+        log.error("shop_credentials_unreadable", shop_id=str(shop.id))
+        shop.auth_status = "EXPIRED"
+        shop.last_error = {
+            "code": "CREDENTIALS_UNREADABLE",
+            "message": "Không giải mã được token shop (FERNET_KEY khác lúc kết nối). Bấm Kết nối lại.",
+            "at": clock.iso_z(clock.now()),
+        }
         return None
     return ShopCredentials(
         shop_id=shop.platform_shop_id,
-        access_token=cipher.decrypt(shop.access_token_enc),
-        refresh_token=cipher.decrypt(shop.refresh_token_enc),
+        access_token=access,
+        refresh_token=refresh,
         expires_at=shop.auth_expires_at,
     )
 
