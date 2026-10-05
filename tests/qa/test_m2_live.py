@@ -27,10 +27,36 @@ PASSWORD = "matkhau123"
 COMPOSE = ["docker", "compose", "-f", str(ROOT / "docker/compose.dev.yml")]
 
 
+def _psql(sql: str) -> str:
+    out = subprocess.run(  # noqa: S603
+        [*COMPOSE, "exec", "-T", "postgres", "psql", "-U", "aicam", "-d", "aicam", "-tA", "-c", sql],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return (out.stdout + out.stderr).strip()
+
+
+def _mute_cam2() -> None:
+    """Cam 2 (T-12) đọc phiếu thật trên fake-cam2 → BR-06 chặn đóng phiên khi khay có phiếu khác.
+
+    Ngoài phạm vi M1/M2: đặt ROI Cam 2 vào góc khay luôn trống (khay `NOT_SEEN`) rồi báo vision nạp lại.
+    """
+    roi = '{"x":0,"y":0,"w":0.1,"h":0.1}'
+    _psql(f"UPDATE camera SET roi = '{roi}' WHERE role = 'CAM2'")  # noqa: S608
+    subprocess.run(  # noqa: S603
+        [*COMPOSE, "exec", "-T", "redis", "redis-cli", "PUBLISH", "vision.config", "{}"],
+        check=True,
+        capture_output=True,
+    )
+    time.sleep(3)  # vision nạp ROI + khử nhiễu khay trống (4 khung)
+
+
 @pytest.fixture(scope="module", autouse=True)
 def _reset() -> None:
     subprocess.run([str(ROOT / "scripts/qa-reset.sh")], check=True, capture_output=True)  # noqa: S603
     time.sleep(15)  # MediaMTX bắt đầu ghi path camera vừa seed
+    _mute_cam2()
 
 
 @pytest.fixture(scope="module")

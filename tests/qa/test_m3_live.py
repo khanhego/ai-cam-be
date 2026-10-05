@@ -241,3 +241,178 @@ def test_vision_stopped_marks_unavailable(client: httpx.Client, tokens: dict[str
     finally:
         subprocess.run([*COMPOSE, "start", "vision"], check=True, capture_output=True)  # noqa: S603
     _wait(lambda: _state(client, st)["tray"]["match"] != "UNAVAILABLE", 30)
+
+
+# ---------------------------------------------------------------- Duyệt (T-13), TST Station 02 (không camera)
+
+
+def _request(client: httpx.Client, token: str, **body: Any) -> httpx.Response:
+    return client.post("/station/approval-requests", headers=_h(token), json=body)
+
+
+def _decide(
+    client: httpx.Client, token: str, approval_id: str, action: str, note: str | None = None
+) -> httpx.Response:
+    return client.post(
+        f"/approval-requests/{approval_id}/decision", headers=_h(token), json={"action": action, "note": note}
+    )
+
+
+def _wait_event(
+    ws: WsRecorder, kind: str, match: Callable[[dict[str, Any]], bool], timeout: float = 2.0
+) -> float:
+    def found() -> float | None:
+        return next((t for t, e in ws.of_type(kind) if match(e["data"])), None)
+
+    return float(_wait(found, timeout, step=0.02))
+
+
+def test_mismatch_request_continue_within_2s(client: httpx.Client, tokens: dict[str, str]) -> None:
+    """TC-03.40 (API + WS), AC-19: yêu cầu lên dashboard ≤ 2 giây; duyệt → PACKING ≤ 2 giây; audit tên."""
+    st, sup = tokens["STATION2"], tokens["SUPERVISOR"]
+    dash = WsRecorder("dashboard", sup)
+    station_ws = WsRecorder("station", st)
+    cskh = WsRecorder("dashboard", tokens["CSKH"])
+    try:
+        opened = _scan(client, st, "SPXTST0000021")
+        assert _scan(client, st, "SPXTST0000022")["outcome"] == "MISMATCH"
+        t0 = time.monotonic()
+        res = _request(client, st, type="MISMATCH", session_id=opened["state"]["session"]["id"])
+        assert res.status_code == 201, res.text
+        apr = res.json()["approval_request"]
+        assert res.json()["state"]["state"] == "WAITING_APPROVAL"
+        t_created = _wait_event(dash, "approval.created", lambda d: d["id"] == apr["id"])
+        assert t_created - t0 <= 2.0
+
+        items = client.get("/approval-requests", headers=_h(sup), params={"status": "PENDING"}).json()[
+            "items"
+        ]
+        item = next(i for i in items if i["id"] == apr["id"])
+        assert item["station"]["name"] == "TST Station 02"
+        assert (item["context"]["expected"], item["context"]["actual"]) == ("SPXTST0000021", "SPXTST0000022")
+
+        t1 = time.monotonic()
+        decided = _decide(client, sup, apr["id"], "CONTINUE")
+        assert decided.status_code == 200, decided.text
+        assert decided.json()["approval_request"]["decided_by"]["display_name"] == "Nguyễn B"
+        t_state = _wait_event(station_ws, "station.state", lambda d: d["state"] == "PACKING")
+        assert t_state - t1 <= 2.0
+        _wait_event(dash, "approval.resolved", lambda d: d["id"] == apr["id"])
+        time.sleep(1)
+        assert not cskh.of_type("approval.created")  # TC-03.56: CSKH không nhận sự kiện duyệt
+        assert cskh.of_type("report.updated")
+    finally:
+        for ws in (dash, station_ws, cskh):
+            ws.close()
+    logs = client.get(
+        "/audit-logs", headers=_h(tokens["ADMIN"]), params={"action": "APPROVAL_DECISION"}
+    ).json()["items"]
+    assert any(log["object_id"] == apr["id"] and log["user"]["display_name"] == "Nguyễn B" for log in logs)
+    _scan(client, st, "SPXTST0000021")  # đóng phiên
+
+
+def test_assist_withdraw_then_conflicts(client: httpx.Client, tokens: dict[str, str]) -> None:
+    """TC-03.41, 03.46, 03.48, 03.49 (API): ASSIST → gửi lại 409 → rút → duyệt sau khi rút 409 WITHDRAWN."""
+    st, sup = tokens["STATION2"], tokens["SUPERVISOR"]
+    sid = _scan(client, st, "SPXTST0000023")["state"]["session"]["id"]
+    res = _request(client, st, type="ASSIST", session_id=sid)
+    assert res.status_code == 201, res.text
+    apr_id = res.json()["approval_request"]["id"]
+    again = _request(client, st, type="ASSIST", session_id=sid)
+    assert (again.status_code, again.json()["error"]["code"]) == (409, "APPROVAL_ALREADY_PENDING")
+    assert _scan(client, st, "SPXTST0000024")["outcome"] == "IGNORED"  # TC-03.50
+
+    back = client.post(f"/station/approval-requests/{apr_id}/withdraw", headers=_h(st))
+    assert back.status_code == 200, back.text
+    assert back.json()["state"]["state"] == "PACKING"
+    late = _decide(client, sup, apr_id, "CONTINUE")
+    assert late.status_code == 409
+    assert late.json()["error"]["details"] == {"status": "WITHDRAWN", "decided_by": None, "decided_at": None}
+    _scan(client, st, "SPXTST0000023")
+
+
+def test_two_approvers_at_once(client: httpx.Client, tokens: dict[str, str]) -> None:
+    """TC-03.47: tst_sup CONTINUE và tst_admin CANCEL_SESSION song song → 200 + 409 ALREADY_RESOLVED."""
+    st = tokens["STATION2"]
+    sid = _scan(client, st, "SPXTST0000025")["state"]["session"]["id"]
+    apr_id = _request(client, st, type="ASSIST", session_id=sid).json()["approval_request"]["id"]
+    results: dict[str, httpx.Response] = {}
+    barrier = threading.Barrier(2)
+
+    def fire(role: str, action: str) -> None:
+        with httpx.Client(base_url=f"{BASE}/api/v1", timeout=30) as c:
+            barrier.wait()
+            results[role] = _decide(c, tokens[role], apr_id, action)
+
+    threads = [
+        threading.Thread(target=fire, args=("SUPERVISOR", "CONTINUE")),
+        threading.Thread(target=fire, args=("ADMIN", "CANCEL_SESSION")),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+
+    assert sorted(r.status_code for r in results.values()) == [200, 409]
+    winner = next(r for r in results.values() if r.status_code == 200).json()["approval_request"]
+    loser = next(r for r in results.values() if r.status_code == 409).json()["error"]
+    assert loser["code"] == "ALREADY_RESOLVED"
+    assert loser["details"]["decided_by"]["display_name"] == winner["decided_by"]["display_name"]
+    status = _psql(f"SELECT status FROM session WHERE id = '{uuid.UUID(sid)}'")  # noqa: S608
+    assert status == ("OPEN" if winner["decision"] == "CONTINUE" else "CANCELLED")
+    if status == "OPEN":
+        _scan(client, st, "SPXTST0000025")
+
+
+def test_repack_approve_complete_supersedes(client: httpx.Client, tokens: dict[str, str]) -> None:
+    """TC-03.51 (API), AC-14, BR-03: …010 (PACKED) → REPACK → duyệt → hoàn tất → phiên cũ SUPERSEDED."""
+    st, sup = tokens["STATION2"], tokens["SUPERVISOR"]
+    alert = _scan(client, st, "SPXTST0000010")
+    assert (alert["outcome"], alert["alert"]["code"]) == ("ALERT", "ALREADY_PACKED")
+    res = _request(client, st, type="REPACK", tracking_number="SPXTST0000010")
+    assert res.status_code == 201, res.text
+    assert res.json()["state"]["session"] is None
+    decided = _decide(client, sup, res.json()["approval_request"]["id"], "APPROVE_REPACK")
+    assert decided.status_code == 200, decided.text
+    state = _state(client, st)
+    assert state["state"] == "PACKING"
+    assert "REPACK" in state["session"]["flags"]
+    sql = "SELECT string_agg(status, ',' ORDER BY started_at) FROM session WHERE open_code = 'SPXTST0000010'"
+    assert _psql(sql) == "COMPLETED,OPEN"
+
+    assert _scan(client, st, "SPXTST0000010")["outcome"] == "SESSION_COMPLETED"
+    assert _psql(sql) == "SUPERSEDED,COMPLETED"
+    assert _psql("SELECT warehouse_status FROM package WHERE tracking_number = 'SPXTST0000010'") == "PACKED"
+
+
+def test_repack_handed_over_not_eligible(client: httpx.Client, tokens: dict[str, str]) -> None:
+    """TC-03.55: REPACK kiện …011 đã bàn giao → 409 NOT_ELIGIBLE, không tạo yêu cầu."""
+    res = _request(client, tokens["STATION2"], type="REPACK", tracking_number="SPXTST0000011")
+    assert (res.status_code, res.json()["error"]["code"]) == (409, "NOT_ELIGIBLE")
+    assert _psql("SELECT count(*) FROM approval_request WHERE tracking_number = 'SPXTST0000011'") == "0"
+
+
+def test_close_with_note_blocked_by_cam2_then_continue(client: httpx.Client, tokens: dict[str, str]) -> None:
+    """TC-03.43, 03.44 trên fake-cam2: khay thấy …002 khi mở phiên …026 → MISMATCH CAM2 → gửi duyệt →
+    Đóng có ghi chú 409 TRAY_STILL_DIFFERENT → Cho tiếp tục → về MISMATCH CAM2 ngay → hủy phiên.
+    """
+    st, sup = tokens["STATION"], tokens["SUPERVISOR"]
+    _wait_tray(client, st, ["SPXTST0000002"])
+    opened = _scan(client, st, "SPXTST0000026")
+    assert opened["outcome"] == "MISMATCH", opened
+    res = _request(client, st, type="MISMATCH", session_id=opened["state"]["session"]["id"])
+    assert res.status_code == 201, res.text
+    apr_id = res.json()["approval_request"]["id"]
+    items = client.get("/approval-requests", headers=_h(sup)).json()["items"]
+    assert next(i for i in items if i["id"] == apr_id)["context"]["tray_match"] == "DIFFERENT"
+
+    blocked = _decide(client, sup, apr_id, "CLOSE_WITH_NOTE", "QA")
+    assert (blocked.status_code, blocked.json()["error"]["code"]) == (409, "TRAY_STILL_DIFFERENT")
+    cont = _decide(client, sup, apr_id, "CONTINUE")
+    assert cont.status_code == 200, cont.text
+    state = _state(client, st)
+    assert (state["state"], state["session"]["mismatch"]["source"]) == ("MISMATCH", "CAM2")
+    cancel = client.post(
+        f"/station/sessions/{state['session']['id']}/cancel", headers=_h(st), json={"reason": "WRONG_SCAN"}
+    )
+    assert cancel.status_code == 200, cancel.text

@@ -59,14 +59,15 @@ async def test_tracker_writes_tray_and_announces_changes(redis_client: Redis) ->
     assert first["codes"] == ["SPXTST0000001"]
     assert again["updated_at"] == first["updated_at"]  # khung giống nhau không đổi updated_at
     assert 0 < ttl <= 5
-    assert await _messages(pubsub) == [{"station_id": str(station_id)}]  # chỉ phát khi đổi
+    mine = {"station_id": str(station_id)}
+    assert [m for m in await _messages(pubsub) if m == mine] == [mine]  # chỉ phát khi đổi
 
     # Mất stream > 3 giây → xóa khóa (UNAVAILABLE) + báo
     await tracker.handle(Observation(camera_id, None, 102.0))
     assert await redis_client.get(tray_key(station_id)) is not None
     await tracker.tick(103.6)
     assert await redis_client.get(tray_key(station_id)) is None
-    assert await _messages(pubsub) == [{"station_id": str(station_id)}]
+    assert [m for m in await _messages(pubsub) if m == mine] == [mine]
     await pubsub.aclose()  # type: ignore[no-untyped-call]
 
 
@@ -145,8 +146,11 @@ async def test_wrong_label_on_tray_turns_session_mismatch(
     assert "HAD_MISMATCH" in pack.flags
     msgs = await _messages(pubsub)
     await pubsub.aclose()  # type: ignore[no-untyped-call]
-    assert [m["type"] for m in msgs] == ["station.state", "report.updated"]
-    state = msgs[0]["data"]
+    # Kênh ws:dashboard dùng chung Redis với stack dev đang chạy: chỉ xét sự kiện của station test.
+    states = [m["data"] for m in msgs if m["type"] == "station.state"]
+    assert len(states) == 1
+    assert any(m["type"] == "report.updated" for m in msgs)
+    state = states[0]
     assert state["state"] == "MISMATCH"
     assert state["tray"] == {**state["tray"], "codes": ["SPXTST0000015"], "match": "DIFFERENT"}
     assert state["session"]["mismatch"]["source"] == "CAM2"
@@ -276,8 +280,7 @@ async def test_idle_station_only_pushes_tray(
 ) -> None:
     _, station_id = station
     pubsub = redis_client.pubsub()
-    await pubsub.subscribe(f"ws:station:{station_id}", "ws:dashboard")
-    await pubsub.get_message(timeout=1)
+    await pubsub.subscribe(f"ws:station:{station_id}")
     await pubsub.get_message(timeout=1)
     await _tray(redis_client, station_id, "SPXTST0000001")
 

@@ -15,3 +15,15 @@ async def pending_for_station(session: AsyncSession, station_id: uuid.UUID) -> A
         )
     )
     return result
+
+
+def set_tray_match(approval: ApprovalRequest, match: str | None) -> bool:
+    """Khay đổi trong lúc chờ duyệt MISMATCH / ASSIST → cập nhật `context.tray_match` (DEC-112)."""
+    if approval.type == "REPACK" or match is None:
+        return False
+    context = dict(approval.context or {})
+    if context.get("tray_match") == match:
+        return False
+    context["tray_match"] = match
+    approval.context = context
+    return True

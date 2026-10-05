@@ -17,7 +17,8 @@ from aicam.core.db import after_commit, commit, rollback
 from aicam.core.errors import AppError
 from aicam.core.redis import get_redis
 from aicam.core.settings import Settings, get_settings
-from aicam.modules.approvals.queries import pending_for_station
+from aicam.modules.approvals.queries import pending_for_station, set_tray_match
+from aicam.modules.approvals.views import approval_item
 from aicam.modules.media import jobs as media_jobs
 from aicam.modules.media.queries import clips_of_session
 from aicam.modules.orders import service as orders
@@ -206,16 +207,16 @@ def _alert(code: str, message: str, **data: Any) -> AlertOut:
     return AlertOut(code=code, message=message, data=data)
 
 
-def _event(session: AsyncSession, pack: PackSession, kind: str, **payload: Any) -> None:
+def record_event(session: AsyncSession, pack: PackSession, kind: str, **payload: Any) -> None:
     session.add(SessionEvent(session_id=pack.id, type=kind, payload=payload or None, at=clock.now()))
 
 
-def _add_flag(pack: PackSession, flag: str) -> None:
+def set_flag(pack: PackSession, flag: str) -> None:
     if flag not in pack.flags:
         pack.flags = [*pack.flags, flag]
 
 
-async def _lock_station(session: AsyncSession, station_id: uuid.UUID) -> None:
+async def lock_station(session: AsyncSession, station_id: uuid.UUID) -> None:
     """Tuần tự hóa mọi thao tác trên một station (DEC-11). Nhả khi transaction kết thúc."""
     await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"station:{station_id}"})
 
@@ -298,11 +299,9 @@ async def _open_session_unsafe(
     session.add(pack)
     await orders.transition(session, package, "PACKING", source="WAREHOUSE", actor_label=station.name)
     await session.flush()
-    _event(session, pack, "SCAN_OPEN", code=code)
-    if tray.blocks_close:
-        # Khay đã có phiếu khác trước khi quét: vision không phát sự kiện mới nên xét ngay (BR-06, DEC-111).
-        mark_mismatch(pack, source="CAM2", actual=_tray_actual(tray, code))
-        _event(session, pack, "MISMATCH", source="CAM2", scanned=code, tray=list(tray.codes))
+    record_event(session, pack, "SCAN_OPEN", code=code)
+    # Khay đã có phiếu khác trước khi quét: vision không phát sự kiện mới nên xét ngay (BR-06, DEC-111).
+    if apply_tray(session, pack, tray) == "MISMATCH":
         return "MISMATCH", None
     return "SESSION_OPENED", None
 
@@ -312,9 +311,9 @@ async def complete_session(
 ) -> None:
     """Đóng phiên hợp lệ: BR-18 cờ Cam 2, kiện PACKED, phiên đóng gói lại thay phiên cũ (BR-03)."""
     if not pack.cam2_seen_match or tray.match == "UNAVAILABLE":
-        _add_flag(pack, "CAM2_UNVERIFIED")
+        set_flag(pack, "CAM2_UNVERIFIED")
     if tray.match == "MATCH":
-        _add_flag(pack, "LABEL_ON_TRAY")
+        set_flag(pack, "LABEL_ON_TRAY")
     pack.status = "COMPLETED"
     pack.ended_at = clock.now()
     pack.close_code = close_code
@@ -325,14 +324,14 @@ async def complete_session(
         old = await session.get(PackSession, pack.supersedes_session_id)
         if old is not None and old.status == "COMPLETED":
             old.status = "SUPERSEDED"
-    _event(session, pack, "COMPLETED", close_code=close_code)
+    record_event(session, pack, "COMPLETED", close_code=close_code)
     media_jobs.enqueue_build_clips(session, pack.id, pack.ended_at)  # J-01 sau commit
 
 
 def mark_mismatch(pack: PackSession, *, source: str, actual: str) -> None:
     pack.status = "MISMATCH"
     pack.mismatch = {"source": source, "expected": pack.open_code, "actual": actual}
-    _add_flag(pack, "HAD_MISMATCH")
+    set_flag(pack, "HAD_MISMATCH")
 
 
 def _tray_actual(tray: Tray, open_code: str) -> str:
@@ -349,13 +348,13 @@ async def _continue_session(
     # Thứ tự cứng (BR-06, review #2): khay có mã khác luôn xét trước khi so mã quét.
     if tray.blocks_close:
         mark_mismatch(pack, source="CAM2", actual=_tray_actual(tray, pack.open_code))
-        _event(session, pack, "MISMATCH", source="CAM2", scanned=code, tray=list(tray.codes))
+        record_event(session, pack, "MISMATCH", source="CAM2", scanned=code, tray=list(tray.codes))
         return "MISMATCH", None
     if code == pack.open_code:
         await complete_session(session, pack, tray=tray, close_code=code, actor_label=station.name)
         return "SESSION_COMPLETED", None
     mark_mismatch(pack, source="SCAN", actual=code)
-    _event(session, pack, "MISMATCH", source="SCAN", scanned=code)
+    record_event(session, pack, "MISMATCH", source="SCAN", scanned=code)
     return "MISMATCH", None
 
 
@@ -402,7 +401,7 @@ async def scan(
         await _lookup_platform(session, code, adapter, settings.platform_lookup_timeout_s)
         await session.flush()
 
-    await _lock_station(session, station.id)
+    await lock_station(session, station.id)
     # Retry chạy chồng với lần gửi đầu: kiểm lại dưới lock (review #4).
     previous = await _dedup(session, client_scan_id, station.id)
     if previous is not None:
@@ -442,40 +441,54 @@ async def scan(
 # ---------------------------------------------------------------- Cam 2 (T-12)
 
 
-async def on_tray_changed(session: AsyncSession, station_id: uuid.UUID, settings: Settings) -> str | None:
-    """Vision báo khay đổi (BR-06, FR-03.06, 03.07; 02a §4.1).
+def apply_tray(session: AsyncSession, pack: PackSession, tray: Tray) -> str | None:
+    """Áp BR-06 cho phiên theo khay hiện tại (02a §4.1). Trả trạng thái mới nếu đổi.
 
-    - Phiên `OPEN` + khay `DIFFERENT`/`MULTIPLE` → `MISMATCH` nguồn `CAM2`, cờ `HAD_MISMATCH`.
-    - Phiên `MISMATCH` nguồn `CAM2` + khay `MATCH`/`NOT_SEEN` → `OPEN` (đã bỏ phiếu sai).
-    - Phiên `MISMATCH` nguồn `SCAN` hoặc `WAITING_APPROVAL` → giữ trạng thái, chỉ cập nhật `tray`.
     - Lần đầu `MATCH` trong phiên → `cam2_seen_match` (BR-18).
+    - `OPEN` + khay `DIFFERENT`/`MULTIPLE` → `MISMATCH` nguồn `CAM2`, cờ `HAD_MISMATCH`.
+    - `MISMATCH` nguồn `CAM2` + khay `MATCH`/`NOT_SEEN` → `OPEN`; phiếu sai đổi → cập nhật `actual`.
+    - `MISMATCH` nguồn `SCAN`, `WAITING_APPROVAL` → giữ (chỉ quét đúng mã / quyết định duyệt mới đổi).
+    """
+    if tray.match == "MATCH":
+        pack.cam2_seen_match = True
+    cam2_mismatch = pack.status == "MISMATCH" and (pack.mismatch or {}).get("source") == "CAM2"
+    if pack.status == "OPEN" and tray.blocks_close:
+        mark_mismatch(pack, source="CAM2", actual=_tray_actual(tray, pack.open_code))
+        record_event(session, pack, "MISMATCH", source="CAM2", tray=list(tray.codes))
+        return "MISMATCH"
+    if cam2_mismatch and tray.match in ("MATCH", "NOT_SEEN"):
+        pack.status = "OPEN"
+        pack.mismatch = None
+        record_event(session, pack, "MISMATCH_CLEARED", source="CAM2", tray=list(tray.codes))
+        return "OPEN"
+    if cam2_mismatch and tray.blocks_close and pack.mismatch:
+        actual = _tray_actual(tray, pack.open_code)
+        if pack.mismatch.get("actual") != actual:
+            pack.mismatch = {**pack.mismatch, "actual": actual}
+    return None
+
+
+async def on_tray_changed(session: AsyncSession, station_id: uuid.UUID, settings: Settings) -> str | None:
+    """Vision báo khay đổi (BR-06, FR-03.06, 03.07): áp `apply_tray` cho phiên đang mở của station.
+
+    Đang chờ duyệt MISMATCH / ASSIST → cập nhật `context.tray_match` của yêu cầu (D13 khóa / mở nút
+    "Đóng phiên có ghi chú") và báo `approval.updated` (DEC-112).
     Cùng khóa station với quét / J-07; đẩy `station.state` sau commit. Trả trạng thái phiên mới nếu đổi.
     """
     station = await stations.get_station(session, station_id)
     if station is None:
         await rollback(session)
         return None
-    await _lock_station(session, station_id)
+    await lock_station(session, station_id)
     pack = await active_session(session, station_id, refresh=True)
+    pending = await pending_for_station(session, station_id)
     new_status: str | None = None
+    tray_match: str | None = None
     if pack is not None:
         tray = await read_tray(get_redis(), station_id, pack.open_code)
-        if tray.match == "MATCH":
-            pack.cam2_seen_match = True
-        cam2_mismatch = pack.status == "MISMATCH" and (pack.mismatch or {}).get("source") == "CAM2"
-        if pack.status == "OPEN" and tray.blocks_close:
-            mark_mismatch(pack, source="CAM2", actual=_tray_actual(tray, pack.open_code))
-            _event(session, pack, "MISMATCH", source="CAM2", tray=list(tray.codes))
-            new_status = "MISMATCH"
-        elif cam2_mismatch and tray.match in ("MATCH", "NOT_SEEN"):
-            pack.status = "OPEN"
-            pack.mismatch = None
-            _event(session, pack, "MISMATCH_CLEARED", source="CAM2", tray=list(tray.codes))
-            new_status = "OPEN"
-        elif cam2_mismatch and tray.blocks_close:
-            actual = _tray_actual(tray, pack.open_code)
-            if pack.mismatch and pack.mismatch.get("actual") != actual:
-                pack.mismatch = {**pack.mismatch, "actual": actual}  # khay đổi phiếu sai khác
+        tray_match = tray.match
+        new_status = apply_tray(session, pack, tray)
+    approval_changed = pending is not None and set_tray_match(pending, tray_match)
     await session.flush()
     state = await build_state(session, station, settings)
     if new_status is not None:
@@ -483,6 +496,9 @@ async def on_tray_changed(session: AsyncSession, station_id: uuid.UUID, settings
         log.info("tray_session_changed", station_id=str(station_id), status=new_status)
     else:
         _publish_state_after_commit(session, station_id, state)
+    if approval_changed and pending is not None:
+        item = await approval_item(session, pending)
+        after_commit(session, lambda: _to_approvers("approval.updated", item.model_dump(mode="json")))
     await commit(session)
     return new_status
 
@@ -509,7 +525,7 @@ async def end_without_packing(
     await orders.transition(
         session, package, pack.package_status_before or "NEW", source="WAREHOUSE", actor_label=actor_label
     )
-    _event(session, pack, status, reason=reason, note=note)
+    record_event(session, pack, status, reason=reason, note=note)
     media_jobs.enqueue_build_clips(session, pack.id, pack.ended_at)  # clip vẫn cắt cho phiên hủy / bỏ dở
 
 
@@ -526,7 +542,7 @@ async def cancel(
         raise AppError(
             "VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": {"note": "Nhập lý do khi chọn Khác"}}
         )
-    await _lock_station(session, station.id)
+    await lock_station(session, station.id)
     pack = await session.get(PackSession, session_id)
     if pack is None or pack.station_id != station.id or pack.status not in ("OPEN", "MISMATCH"):
         raise AppError("SESSION_NOT_OPEN", "Phiên không còn mở.", 409)
@@ -590,7 +606,7 @@ async def check_timeouts(session: AsyncSession, settings: Settings) -> dict[str,
     counts = {"warned": 0, "abandoned": 0}
     for session_id, station_id in candidates:
         try:
-            await _lock_station(session, station_id)
+            await lock_station(session, station_id)
             pack = await session.scalar(
                 select(PackSession)
                 .where(PackSession.id == session_id)
@@ -657,12 +673,12 @@ async def mark_camera_lost(
 
     Cùng khóa station với quét / J-07. Trả id phiên bị gắn cờ (None nếu station rảnh). Caller commit.
     """
-    await _lock_station(session, station_id)
+    await lock_station(session, station_id)
     pack = await active_session(session, station_id, refresh=True)
     if pack is None:
         return None
-    _add_flag(pack, "VIDEO_INCOMPLETE")
-    _event(session, pack, "CAMERA_OFFLINE", camera_role=camera_role)
+    set_flag(pack, "VIDEO_INCOMPLETE")
+    record_event(session, pack, "CAMERA_OFFLINE", camera_role=camera_role)
     return pack.id
 
 
@@ -694,6 +710,12 @@ def notify_after_commit(session: AsyncSession, station_id: uuid.UUID, state: Sta
         await publish.to_dashboard("report.updated", {"date": today.isoformat()})
 
     after_commit(session, _send)
+
+
+async def _to_approvers(event_type: str, data: Any) -> None:
+    from aicam.realtime import publish
+
+    await publish.to_approvers(event_type, data)
 
 
 def _publish_state_after_commit(session: AsyncSession, station_id: uuid.UUID, state: StationStateOut) -> None:
