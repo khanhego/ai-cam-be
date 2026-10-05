@@ -16,9 +16,9 @@ SECRETS = ("sigvalue123", "jwt.token.value", "acc-tok-123", "1700000000", "uid-1
 
 def test_redact_query_masks_known_params_only() -> None:
     url = "/api/v1/media/clips/abc?uid=uid-1&exp=1700000000&sig=sigvalue123&page=2"
-    assert redact_query(url) == "/api/v1/media/clips/abc?uid=***&exp=***&sig=***&page=2"
-    assert redact_query("/ws/station?token=jwt.token.value") == "/ws/station?token=***"
-    assert redact_query("/cb?code=c1&state=s1&shop_id=9") == "/cb?code=***&state=***&shop_id=9"
+    assert redact_query(url) == "/api/v1/media/clips/abc?[uid đã che]&[exp đã che]&[sig đã che]&page=2"
+    assert redact_query("/ws/station?token=jwt.token.value") == "/ws/station?[token đã che]"
+    assert redact_query("/cb?code=c1&state=s1&shop_id=9") == "/cb?[code đã che]&[state đã che]&shop_id=9"
 
 
 def test_uvicorn_access_record_keeps_args_tuple() -> None:
@@ -31,7 +31,8 @@ def test_uvicorn_access_record_keeps_args_tuple() -> None:
     assert isinstance(record.args, tuple)
     assert record.args[4] == 101
     assert "jwt.token.value" not in record.getMessage()
-    assert "token=***" in record.getMessage()
+    assert "[token đã che]" in record.getMessage()
+    assert "token=" not in record.getMessage()
 
 
 def test_uvicorn_access_formatter_output_redacted() -> None:
@@ -52,7 +53,7 @@ def test_uvicorn_access_formatter_output_redacted() -> None:
 
 def test_structlog_redacts_query_in_values() -> None:
     event = redact(None, "info", {"event": "x", "url": "https://h/p?access_token=acc-tok-123&sign=abc"})
-    assert event["url"] == "https://h/p?access_token=***&sign=***"
+    assert event["url"] == "https://h/p?[access_token đã che]&[sign đã che]"
 
 
 async def test_shopee_client_http_logs_hide_token_and_sign(caplog: pytest.LogCaptureFixture) -> None:
@@ -68,7 +69,7 @@ async def test_shopee_client_http_logs_hide_token_and_sign(caplog: pytest.LogCap
         )
         await client.call("GET", "/api/v2/shop/get_shop_info", access_token="acc-tok-123", shop_id="99")
     assert "acc-tok-123" not in caplog.text
-    assert "sign=" not in caplog.text or "sign=***" in caplog.text
+    assert "sign=" not in caplog.text
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
     # Kể cả khi ai đó bật lại INFO cho httpx: query vẫn bị che.
     logging.getLogger("httpx").setLevel(logging.INFO)
@@ -81,7 +82,8 @@ async def test_shopee_client_http_logs_hide_token_and_sign(caplog: pytest.LogCap
     logging.getLogger("httpx").setLevel(logging.WARNING)
     assert "HTTP Request" in caplog.text
     assert "acc-tok-123" not in caplog.text
-    assert "access_token=***" in caplog.text
+    assert "[access_token đã che]" in caplog.text
+    assert "access_token=" not in caplog.text
     clock.reset()
 
 

@@ -13,15 +13,18 @@ _URL_CREDENTIALS = re.compile(r"(\w+://)[^/@\s:]+:[^/@\s]+@")
 # Tham số query mang bí mật (G3-F3, G3-N1): URL ký media (`sig`, `exp`, `uid`), token WS, OAuth (`code`,
 # `state`), Shopee (`access_token`, `refresh_token`, `sign`).
 SENSITIVE_QUERY = ("token", "sig", "exp", "uid", "code", "state", "access_token", "refresh_token", "sign")
-_QUERY_SECRET = re.compile(r"([?&](?:" + "|".join(SENSITIVE_QUERY) + r")=)[^&\s\"'#]*", re.IGNORECASE)
+_QUERY_SECRET = re.compile(r"([?&])(" + "|".join(SENSITIVE_QUERY) + r")=[^&\s\"'#]*", re.IGNORECASE)
 # Logger stdlib in nguyên URL gọi ra / vào: che query, httpx / httpcore chỉ ghi từ WARNING.
 NOISY_HTTP_LOGGERS = ("httpx", "httpcore")
 REDACTED_LOGGERS = ("uvicorn", "uvicorn.access", "uvicorn.error", "httpx", "httpcore", "celery")
 
 
 def redact_query(text: str) -> str:
-    """`/media/clips/x?uid=…&exp=…&sig=abc` → `/media/clips/x?uid=***&exp=***&sig=***`."""
-    return _QUERY_SECRET.sub(r"\1***", text)
+    """`/ws/station?token=abc&x=1` → `/ws/station?[token đã che]&x=1`.
+
+    Bỏ cả dấu `=` để log không còn mẫu `token=` / `sig=` (kiểm vận hành: `grep -E 'token=|sig='` phải rỗng).
+    """
+    return _QUERY_SECRET.sub(r"\1[\2 đã che]", text)
 
 
 def _clean_arg(value: object) -> object:

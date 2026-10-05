@@ -153,7 +153,7 @@ dc logs --since 1h vision | grep camera
 dc logs caddy | tail                    # access log (chữ ký URL, token WS đã che)
 ```
 
-Log không chứa bí mật trong URL (G3-F3, G3-N1): uvicorn tắt access log (`--no-access-log`, Caddy đã ghi access log có che); mọi log stdlib (uvicorn, httpx, celery) qua bộ che query `token`, `sig`, `exp`, `uid`, `code`, `state`, `access_token`, `refresh_token`, `sign`; `httpx` / `httpcore` chỉ ghi từ WARNING. Kiểm nhanh: `dc logs api worker-sync | grep -E 'token=|sig=|access_token=' | grep -v '\*\*\*'` phải rỗng.
+Log không chứa bí mật trong URL (G3-F3, G3-N1): uvicorn tắt access log (`--no-access-log`, Caddy đã ghi access log có che); mọi log stdlib (uvicorn, httpx, celery) qua bộ che query `token`, `sig`, `exp`, `uid`, `code`, `state`, `access_token`, `refresh_token`, `sign`; `httpx` / `httpcore` chỉ ghi từ WARNING. Giá trị bị thay bằng `[token đã che]`, `[sig đã che]`… Kiểm nhanh: `dc logs api worker-sync | grep -E 'token=|sig=|access_token='` phải rỗng.
 
 **`api` chạy một tiến trình (G3-F12).** Bus Redis `tray.changed` / `camera.health` (vision → api) được mọi tiến trình api nghe và xử lý: chạy nhiều tiến trình (`uvicorn --workers N`, `dc up --scale api=N`) làm cờ phiên / WS bị xử lý lặp. Một tiến trình đủ cho NFR-01 (đo T-19); muốn scale phải tách listener ra tiến trình riêng trước.
 
