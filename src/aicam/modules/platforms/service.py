@@ -1,5 +1,7 @@
 """Chọn adapter, kết nối shop Shopee (API-70..73), token mã hóa Fernet, tra sàn khi quét (02a §4, §7, §9)."""
 
+import hashlib
+import hmac
 import secrets
 import uuid
 from collections.abc import AsyncIterator
@@ -250,11 +252,20 @@ def callback_url(settings: Settings, state: str) -> str:
     return f"{base}{sep}state={state}"
 
 
-async def auth_url(adapter: PlatformAdapter, settings: Settings, user_id: uuid.UUID) -> str:
+STATE_COOKIE = "aicam_shopee_state"
+
+
+def state_fingerprint(state: str) -> str:
+    """Giá trị cookie gắn `state` với trình duyệt đã bấm Kết nối (G3-N7): chỉ lưu băm, không lưu `state`."""
+    return hashlib.sha256(state.encode()).hexdigest()
+
+
+async def auth_url(adapter: PlatformAdapter, settings: Settings, user_id: uuid.UUID) -> tuple[str, str]:
+    """Trả (URL ủy quyền, `state`) — router đặt cookie `state_fingerprint(state)`."""
     require_configured(settings)
     state = secrets.token_urlsafe(24)
     await get_redis().set(_state_key(state), str(user_id), ex=STATE_TTL_S)
-    return adapter.build_auth_url(callback_url(settings, state))
+    return adapter.build_auth_url(callback_url(settings, state)), state
 
 
 async def handle_callback(
@@ -266,9 +277,17 @@ async def handle_callback(
     code: str | None,
     shop_id: str | None,
     ip: str | None,
+    state_cookie: str | None = None,
 ) -> str:
-    """API-72: trả `result` cho redirect: `connected` | `denied` | `error`. Không ném lỗi ra trình duyệt."""
-    user_raw = await get_redis().getdel(_state_key(state)) if state else None
+    """API-72: trả `result` cho redirect: `connected` | `denied` | `error`. Không ném lỗi ra trình duyệt.
+
+    `state` phải khớp cookie của trình duyệt đã gọi API-71 (G3-N7): link callback bị lộ / bị dụ mở ở trình
+    duyệt khác không gắn được shop của kẻ tấn công.
+    """
+    if not state or not state_cookie or not hmac.compare_digest(state_fingerprint(state), state_cookie):
+        log.warning("shopee_callback_state_cookie_mismatch")
+        return "error"
+    user_raw = await get_redis().getdel(_state_key(state))
     if not user_raw:
         log.warning("shopee_callback_bad_state")
         return "error"

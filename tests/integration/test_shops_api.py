@@ -306,3 +306,27 @@ async def test_scan_without_connected_shop_does_not_call_shopee(api: AsyncClient
     body = (await _scan(api, station, "SPXVN0000999")).json()
     assert body["state"]["session"]["flags"] == ["UNVERIFIED"]
     assert route.call_count == 0
+
+
+async def test_callback_requires_state_cookie_of_same_browser(
+    api: AsyncClient, db: AsyncSession, admin: dict[str, str], mock: MockAdapter
+) -> None:
+    """G3-N7: link callback hợp lệ mở ở trình duyệt khác (không có / sai cookie băm `state`) → `error`, không
+    gắn shop; `state` không bị đốt nên trình duyệt đúng vẫn hoàn tất được."""
+    res = await api.post("/api/v1/shops/shopee/auth-url", headers=admin)
+    cookie = res.headers["set-cookie"].lower()
+    assert "httponly" in cookie
+    assert "samesite=lax" in cookie
+    url = urlparse(res.json()["url"])
+    good = api.cookies.get("aicam_shopee_state")
+    assert good
+
+    api.cookies.clear()
+    other = await api.get(f"{url.path}?{url.query}")
+    assert other.headers["location"].endswith("result=error")
+    forged = await api.get(f"{url.path}?{url.query}", headers={"cookie": "aicam_shopee_state=" + "0" * 64})
+    assert forged.headers["location"].endswith("result=error")
+    assert await db.scalar(select(Shop).where(Shop.platform_shop_id == MOCK_SHOP_ID)) is None
+
+    ok = await api.get(f"{url.path}?{url.query}", headers={"cookie": f"aicam_shopee_state={good}"})
+    assert ok.headers["location"].endswith("result=connected")

@@ -3,7 +3,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,9 +35,20 @@ async def list_shops(_: AdminOnly, db: DbSession, settings: AppSettings) -> Shop
 
 
 @router.post("/shops/shopee/auth-url", response_model=AuthUrlOut)
-async def auth_url(p: AdminOnly, adapter: Adapter, settings: AppSettings) -> AuthUrlOut:
-    """API-71: URL ủy quyền Shopee; `state` chống CSRF lưu Redis 10 phút. Chưa cấu hình → 503."""
-    return AuthUrlOut(url=await service.auth_url(adapter, settings, p.user_id))
+async def auth_url(p: AdminOnly, adapter: Adapter, settings: AppSettings, response: Response) -> AuthUrlOut:
+    """API-71: URL ủy quyền Shopee; `state` chống CSRF lưu Redis 10 phút + cookie HttpOnly băm `state` gắn
+    trình duyệt (G3-N7). Chưa cấu hình → 503."""
+    url, state = await service.auth_url(adapter, settings, p.user_id)
+    response.set_cookie(
+        service.STATE_COOKIE,
+        service.state_fingerprint(state),
+        max_age=service.STATE_TTL_S,
+        path=service.CALLBACK_PATH,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",  # Shopee chuyển hướng về bằng điều hướng GET cấp cao nhất: Lax vẫn gửi cookie
+    )
+    return AuthUrlOut(url=url)
 
 
 @router.get("/shops/shopee/callback", response_class=RedirectResponse, status_code=status.HTTP_302_FOUND)
@@ -54,8 +65,11 @@ async def callback(
     result = await service.handle_callback(
         db, adapter, settings, state=state, code=code, shop_id=shop_id,
         ip=request.client.host if request.client else None,
+        state_cookie=request.cookies.get(service.STATE_COOKIE),
     )  # fmt: skip
-    return RedirectResponse(f"{service.RESULT_PATH}?result={result}", status_code=status.HTTP_302_FOUND)
+    response = RedirectResponse(f"{service.RESULT_PATH}?result={result}", status_code=status.HTTP_302_FOUND)
+    response.delete_cookie(service.STATE_COOKIE, path=service.CALLBACK_PATH)
+    return response
 
 
 @router.post("/shops/{shop_id}/sync", response_model=QueuedOut, status_code=status.HTTP_202_ACCEPTED)
