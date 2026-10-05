@@ -98,6 +98,26 @@ async def test_daily_counts(api: AsyncClient, db: AsyncSession, redis_client: ob
     assert yesterday["counts"]["had_mismatch"] == 1
 
 
+async def test_daily_cache_dropped_on_report_updated(
+    api: AsyncClient, db: AsyncSession, redis_client: object
+) -> None:
+    """TC-09.03 (lỗi QA M2): sau `report.updated`, API-32 trả số mới thay vì bản cache 5 giây."""
+    from aicam.realtime import publish
+
+    clock.freeze(NOW)
+    headers, _ = await _login(api, db, "SUPERVISOR")
+    _, station = await make_station_account(db)
+    await _session(db, station.id, 1, "COMPLETED", NOW - timedelta(minutes=5))
+    first = (await api.get("/api/v1/reports/daily", headers=headers)).json()["counts"]["packed"]
+    await _session(db, station.id, 2, "COMPLETED", NOW - timedelta(minutes=1))
+
+    stale = (await api.get("/api/v1/reports/daily", headers=headers)).json()["counts"]["packed"]
+    await publish.to_dashboard("report.updated", {"date": "2026-10-05"})
+    fresh = (await api.get("/api/v1/reports/daily", headers=headers)).json()["counts"]["packed"]
+
+    assert (first, stale, fresh) == (1, 1, 2)
+
+
 async def test_daily_rejects_future_and_station(
     api: AsyncClient, db: AsyncSession, redis_client: object
 ) -> None:

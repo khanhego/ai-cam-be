@@ -22,6 +22,7 @@ from aicam.modules.media.models import Clip
 from aicam.modules.orders.models import Package, Shop
 from aicam.modules.sessions.models import ACTIVE_STATUSES, PackSession
 from aicam.modules.stations.models import Camera, Station
+from aicam.realtime.publish import daily_report_key
 
 CACHE_TTL_S = 5
 DISK_WARN_PERCENT = 80  # NFR-30 / 02a §10 `aicam_disk_used_ratio` > 0.8
@@ -199,7 +200,7 @@ async def daily(db: AsyncSession, day: date | None, settings: Settings) -> Daily
     if day > today(tz):
         raise AppError("VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422,
                        {"fields": {"date": "Không chọn ngày trong tương lai"}})  # fmt: skip
-    key = f"report:daily:{day.isoformat()}"
+    key = daily_report_key(day.isoformat())
     redis = get_redis()
     cached = await redis.get(key)
     if cached:
