@@ -8,7 +8,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
-from sqlalchemy import func, select, text
+from sqlalchemy import all_, func, literal, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,7 @@ from aicam.core.errors import AppError
 from aicam.core.redis import get_redis
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.approvals.queries import pending_for_station
+from aicam.modules.media import jobs as media_jobs
 from aicam.modules.media.queries import clips_of_session
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Package
@@ -320,6 +321,7 @@ async def complete_session(
         if old is not None and old.status == "COMPLETED":
             old.status = "SUPERSEDED"
     _event(session, pack, "COMPLETED", close_code=close_code)
+    media_jobs.enqueue_build_clips(session, pack.id, pack.ended_at)  # J-01 sau commit
 
 
 def mark_mismatch(pack: PackSession, *, source: str, actual: str) -> None:
@@ -452,6 +454,7 @@ async def end_without_packing(
         session, package, pack.package_status_before or "NEW", source="WAREHOUSE", actor_label=actor_label
     )
     _event(session, pack, status, reason=reason, note=note)
+    media_jobs.enqueue_build_clips(session, pack.id, pack.ended_at)  # clip vẫn cắt cho phiên hủy / bỏ dở
 
 
 async def cancel(
@@ -576,6 +579,35 @@ async def check_timeouts(session: AsyncSession, settings: Settings) -> dict[str,
             await rollback(session)
             log.exception("check_timeouts_failed", session_id=str(session_id))
     return counts
+
+
+# ---------------------------------------------------------------- cờ phiên (T-14)
+
+
+async def add_flag(session: AsyncSession, session_id: uuid.UUID, flag: str) -> None:
+    """Thêm cờ nguyên tử (không ghi đè cờ do luồng khác vừa thêm)."""
+    await session.execute(
+        update(PackSession)
+        .where(PackSession.id == session_id, literal(flag) != all_(PackSession.flags))
+        .values(flags=func.array_append(PackSession.flags, flag))
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def mark_camera_lost(
+    session: AsyncSession, station_id: uuid.UUID, camera_role: str
+) -> uuid.UUID | None:
+    """Camera mất tín hiệu giữa phiên → cờ VIDEO_INCOMPLETE cho phiên đang mở (EX-P7, review M1 #15).
+
+    Cùng khóa station với quét / J-07. Trả id phiên bị gắn cờ (None nếu station rảnh). Caller commit.
+    """
+    await _lock_station(session, station_id)
+    pack = await active_session(session, station_id, refresh=True)
+    if pack is None:
+        return None
+    _add_flag(pack, "VIDEO_INCOMPLETE")
+    _event(session, pack, "CAMERA_OFFLINE", camera_role=camera_role)
+    return pack.id
 
 
 # ---------------------------------------------------------------- realtime (T-11)

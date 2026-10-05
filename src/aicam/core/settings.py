@@ -42,6 +42,18 @@ class Settings(BaseSettings):
     platform_lookup_timeout_s: float = 2.0
     clip_padding_s: int = 5
 
+    # Media (T-14, T-15; spike S3 — 02a mục Spike S3).
+    ffmpeg_bin: str = "ffmpeg"
+    ffprobe_bin: str = "ffprobe"
+    media_url_ttl_s: int = 600  # URL ký HMAC hạn 10 phút (02 §8)
+    clip_settle_s: float = 3.0  # chờ thêm sau `ended_at + đệm` để MediaMTX ghi xong phần cuối (spike S3)
+    clip_gap_tolerance_s: float = 1.5  # khe hở lớn hơn → VIDEO_INCOMPLETE
+    clip_cut_timeout_s: int = 90
+    segment_closed_after_s: float = 15.0  # file không đổi quá lâu = segment đã đóng (camera ngừng)
+    export_ttl_hours: int = 24  # 02a API-44/45: file xuất giữ ≤ 24 giờ (J-10 dọn)
+    export_timeout_s: int = 600
+    export_font_file: Path = Path("/usr/share/fonts/truetype/bevietnampro/BeVietnamPro-SemiBold.ttf")
+
     platform_adapter: str = "mock"  # shopee | mock
     shopee_enabled: bool = False
     shopee_partner_id: str = ""

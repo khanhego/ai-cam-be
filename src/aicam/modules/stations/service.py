@@ -2,6 +2,7 @@
 
 import base64
 import json
+import re
 import uuid
 from collections.abc import Sequence
 from urllib.parse import urlsplit
@@ -311,3 +312,48 @@ async def update_clock_offsets(session: AsyncSession) -> int:
         camera.clock_offset_ms = await onvif_clock_offset_ms(host) if host else None
     await commit(session)
     return len(cameras)
+
+
+_CAMERA_PATH_RE = re.compile(r"cam-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+async def reconcile_mediamtx(session: AsyncSession, mediamtx: MediaMTX, settings: Settings) -> dict[str, int]:
+    """Một phần J-10 (DEC-102): đưa cấu hình path MediaMTX về khớp DB.
+
+    - Camera của station đang bật mà MediaMTX không có path (MediaMTX khởi động lại làm mất path thêm qua
+      API) → thêm lại, nếu không camera ngừng ghi và mất bằng chứng.
+    - Path dạng `cam-<uuid>` không còn camera trong DB (DB reset, test QA) → xóa để không ghi video rác.
+      Bỏ qua bước xóa khi DB chưa có camera nào (phòng trỏ nhầm DB làm xóa sạch).
+    """
+    current = await mediamtx.list_paths()
+    rows = (
+        await session.execute(
+            select(Camera, Station.is_active).join(Station, Station.id == Camera.station_id)
+        )
+    ).all()
+    await session.commit()
+    known = {cam.mediamtx_path for cam, _ in rows}
+    cipher = Cipher(settings.fernet_key)
+    added = removed = 0
+    for cam, active in rows:
+        if not active or cam.mediamtx_path in current:
+            continue
+        password = cipher.decrypt(cam.password_enc) if cam.password_enc else None
+        try:
+            await mediamtx.upsert_path(
+                cam.mediamtx_path, with_credentials(cam.rtsp_url, cam.username, password)
+            )
+            added += 1
+        except MediaMTXError as exc:
+            log.warning("mediamtx_readd_failed", camera_id=str(cam.id), error=str(exc))
+    if known:
+        for name in current:
+            if _CAMERA_PATH_RE.fullmatch(name) and name not in known:
+                try:
+                    await mediamtx.delete_path(name)
+                    removed += 1
+                except MediaMTXError as exc:
+                    log.warning("mediamtx_delete_failed", path=name, error=str(exc))
+    if added or removed:
+        log.info("mediamtx_reconciled", added=added, removed=removed)
+    return {"added": added, "removed": removed}

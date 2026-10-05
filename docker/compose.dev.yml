@@ -24,8 +24,18 @@ services:
       interval: 5s
       retries: 10
 
+  # Volume video thuộc uid 10001 (user `aicam` trong image): worker ghi clip / bản xuất, J-02 xóa video thô.
+  # MediaMTX chạy cùng uid để file nó ghi xóa được (T-14).
+  video-init:
+    image: alpine:3
+    command: ["sh", "-c", "mkdir -p /data/video/raw /data/video/clips /data/video/exports && chown -R 10001:10001 /data/video"]
+    volumes: [video:/data/video]
+
   mediamtx:
     image: bluenviron/mediamtx:1
+    user: "10001:10001"
+    depends_on:
+      video-init: { condition: service_completed_successfully }
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
       - video:/data/video

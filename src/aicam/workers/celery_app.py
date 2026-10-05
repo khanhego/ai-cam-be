@@ -14,8 +14,13 @@ app.conf.update(
     task_default_queue="default",
     timezone="UTC",
     enable_utc=True,
+    task_routes={
+        "media.build_session_clips": {"queue": "video"},
+        "media.render_export": {"queue": "export"},
+    },
     beat_schedule={
         "j07-session-timeouts": {"task": "sessions.check_timeouts", "schedule": 30.0},
         "j09-check-clock-drift": {"task": "stations.check_clock_drift", "schedule": 600.0},
+        "j10-index-segments": {"task": "media.index_segments", "schedule": 60.0},
     },
 )
