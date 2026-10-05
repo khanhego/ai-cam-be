@@ -209,6 +209,52 @@ async def test_health(api: AsyncClient, db: AsyncSession, redis_client: object, 
     assert (await api.get("/api/v1/system/health", headers=cskh)).status_code == 403
 
 
+@pytest.mark.parametrize(("used_tb", "warn"), [(6.8, True), (6.3, False)])
+async def test_disk_over_80_percent(
+    api: AsyncClient,
+    db: AsyncSession,
+    redis_client: object,
+    monkeypatch: pytest.MonkeyPatch,
+    used_tb: float,
+    warn: bool,
+) -> None:
+    """TC-09.05, NFR-30: ổ video > 80% (giả lập `shutil.disk_usage` của thư mục video, ổ 8 TB) → API-81
+    `disk.percent` > 80 và API-32 "Cần xử lý" có dòng `DISK_USAGE` kèm %; ổ < 80% → không có dòng."""
+    import shutil
+    from types import SimpleNamespace
+
+    from aicam.modules.reports import service as reports_service
+
+    total = 8 * 10**12
+    used = int(used_tb * 10**12)
+    seen: list[str] = []
+
+    def fake_usage(path: str) -> SimpleNamespace:
+        seen.append(str(path))
+        return SimpleNamespace(total=total, used=used, free=total - used)
+
+    monkeypatch.setattr(reports_service.shutil, "disk_usage", fake_usage)
+    assert shutil.disk_usage is fake_usage  # type: ignore[comparison-overlap]
+    api._transport.app.dependency_overrides[get_mediamtx] = lambda: _MediaMTX(False)  # type: ignore[attr-defined]
+    admin, _ = await _login(api, db, "ADMIN")
+    percent = round(used * 100 / total)
+
+    health = await api.get("/api/v1/system/health", headers=admin)
+    daily = await api.get("/api/v1/reports/daily", headers=admin)
+
+    assert health.status_code == 200, health.text
+    assert health.json()["disk"] == {"total_bytes": total, "used_bytes": used, "percent": percent}
+    assert daily.status_code == 200, daily.text
+    disk_rows = [a for a in daily.json()["attention"] if a["kind"] == "DISK_USAGE"]
+    if warn:
+        assert percent > 80
+        assert disk_rows == [{"kind": "DISK_USAGE", "percent": percent}]
+    else:
+        assert percent < 80
+        assert disk_rows == []
+    assert seen
+
+
 # ---------------------------------------------------------------- J-11
 
 

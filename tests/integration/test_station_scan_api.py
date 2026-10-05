@@ -1,6 +1,8 @@
 """API-10, API-11 — 02 §6.2, 02a §4.1; TC-03.xx trong 04-test-cases."""
 
 import json
+import math
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import timedelta
@@ -195,6 +197,27 @@ async def test_already_handed_over(scan: Scan, db: AsyncSession) -> None:
     res = await scan("SPXTST0000011")
 
     assert res.json()["alert"]["code"] == "ALREADY_HANDED_OVER"
+
+
+async def test_cancelled_after_pack_is_order_cancelled(scan: Scan, db: AsyncSession) -> None:
+    """TC-03.11, BR-01, EX-P10: kiện đã đóng rồi sàn hủy (CANCELLED_AFTER_PACK) → ALERT ORDER_CANCELLED,
+    không phải ALREADY_PACKED / ALREADY_HANDED_OVER; không mở phiên mới."""
+    await scan("SPXTST0000010")
+    await scan("SPXTST0000010")
+    package = await orders.find_package(db, "SPXTST0000010")
+    assert package is not None
+    assert await orders.apply_platform_cancel(db, package)
+    await db.flush()
+    assert package.warehouse_status == "CANCELLED_AFTER_PACK"
+
+    res = await scan("SPXTST0000010")
+
+    body = res.json()
+    assert res.status_code == 200
+    assert body["outcome"] == "ALERT"
+    assert body["alert"]["code"] == "ORDER_CANCELLED"
+    assert body["state"]["state"] == "READY"
+    assert await db.scalar(select(func.count()).select_from(PackSession)) == 1
 
 
 async def test_invalid_code(scan: Scan) -> None:
@@ -494,3 +517,41 @@ async def test_unexpected_lookup_error_falls_back_to_unverified(adapter: MockAda
     res = await scan("SPXTST0000014")
     assert res.status_code == 200, res.text
     assert _session(res.json())["flags"] == ["UNVERIFIED"]
+
+
+# ---------------------------------------------------------------- NFR-01 (TC-N.02)
+
+
+async def test_tc_n02_twenty_slow_platform_lookups(adapter: MockAdapter, scan: Scan) -> None:
+    """TC-N.02, NFR-01, BR-04: 20 lần quét mã phải tra sàn, `MockAdapter(delay_s=1.5)` → p95 ≤ 3 giây.
+
+    10 mã có trên sàn mock (tra xong trong 1,5 giây < ngưỡng cắt 2 giây → đã xác minh, có sản phẩm) và 10 mã
+    không có trên sàn (→ cờ `UNVERIFIED`, không sản phẩm). Mỗi phiên được đóng ngay (quét lại, không tra sàn)
+    để lần quét sau mở phiên mới.
+    """
+    adapter.delay_s = 1.5
+    known = [f"SPXTST{n:07d}" for n in (1, 2, 3, 4, 5, 6, 7, 8, 12, 13)]
+    unknown = [f"SPXTST999{n:04d}" for n in range(101, 111)]
+    durations: list[float] = []
+    for code in [c for pair in zip(known, unknown, strict=True) for c in pair]:
+        started = time.perf_counter()
+        res = await scan(code)
+        durations.append(time.perf_counter() - started)
+
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["outcome"] == "SESSION_OPENED", (code, body)
+        session = _session(body)
+        if code in known:
+            assert "UNVERIFIED" not in session["flags"], code
+            assert session["package"]["items"], code
+        else:
+            assert session["flags"] == ["UNVERIFIED"], code
+            assert session["package"]["items"] == [], code
+        assert (await scan(code)).json()["outcome"] == "SESSION_COMPLETED", code
+
+    p95 = sorted(durations)[math.ceil(0.95 * len(durations)) - 1]
+    print(f"TC-N.02: n={len(durations)} min={min(durations):.3f}s p95={p95:.3f}s max={max(durations):.3f}s")
+    assert len(durations) == 20
+    assert max(durations) <= 3.0
+    assert p95 <= 3.0

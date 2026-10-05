@@ -79,6 +79,7 @@ addopts = "-ra"
 markers = [
     "integration: cần PostgreSQL thật (TEST_DATABASE_URL)",
     "qa: QA trên stack dev thật (QA_BASE_URL)",
+    "perf: hiệu năng dữ liệu lớn, chạy riêng (RUN_PERF=1)",
 ]
 filterwarnings = ["ignore::DeprecationWarning:fastapi.testclient", "ignore::DeprecationWarning:starlette.testclient"]
 

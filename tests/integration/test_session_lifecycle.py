@@ -149,6 +149,28 @@ async def test_cancel_repack_keeps_old_session(
     assert package.warehouse_status == "PACKED"
 
 
+async def test_abandon_repack_keeps_old_session(
+    db: AsyncSession, ctx: tuple[dict[str, str], uuid.UUID], test_settings: Settings
+) -> None:
+    """TC-03.53, BR-03, BR-16: phiên đóng gói lại bỏ dở (J-07 sau 30 phút) → phiên mới ABANDONED,
+    kiện về PACKED, phiên cũ vẫn COMPLETED (không SUPERSEDED)."""
+    _, station_id = ctx
+    old, new = await _repack_session(db, station_id, "SPXTST0000010")
+
+    clock.advance(timedelta(minutes=30))
+    result = await sessions.check_timeouts(db, test_settings)
+
+    assert result["abandoned"] == 1
+    await db.refresh(new)
+    await db.refresh(old)
+    assert new.status == "ABANDONED"
+    assert old.status == "COMPLETED"
+    package = await orders.find_package(db, "SPXTST0000010")
+    assert package is not None
+    await db.refresh(package)
+    assert package.warehouse_status == "PACKED"
+
+
 async def test_complete_repack_supersedes_old(
     api: AsyncClient, db: AsyncSession, ctx: tuple[dict[str, str], uuid.UUID]
 ) -> None:
