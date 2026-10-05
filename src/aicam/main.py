@@ -16,7 +16,9 @@ from aicam.core.settings import Settings, get_settings
 from aicam.modules.media.router import router as media_router
 from aicam.modules.orders.router import router as orders_router
 from aicam.modules.reports.router import router as reports_router
+from aicam.modules.sessions.listeners import on_tray_changed
 from aicam.modules.sessions.router import router as sessions_router
+from aicam.modules.sessions.tray import TRAY_CHANGED_CHANNEL
 from aicam.modules.settings.router import router as settings_router
 from aicam.modules.stations.listeners import CAMERA_HEALTH_CHANNEL, on_camera_health
 from aicam.modules.stations.router import router as stations_router
@@ -36,6 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redis = init_redis(settings.redis_url)
         bus = Bus()
         bus.on(CAMERA_HEALTH_CHANNEL, on_camera_health)
+        bus.on(TRAY_CHANGED_CHANNEL, on_tray_changed)
         listener = start(bus, redis)
         try:
             yield

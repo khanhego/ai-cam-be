@@ -292,6 +292,16 @@ async def watched_paths(session: AsyncSession) -> list[str]:
     return list(rows.all())
 
 
+async def vision_cameras(session: AsyncSession) -> Sequence[Camera]:
+    """Cam 2 của station đang bật — tiến trình vision đọc mã trên khay (T-12)."""
+    rows = await session.scalars(
+        select(Camera)
+        .join(Station, Station.id == Camera.station_id)
+        .where(Station.is_active.is_(True), Camera.role == "CAM2")
+    )
+    return rows.all()
+
+
 async def apply_camera_health(session: AsyncSession, path: str, status: str) -> Camera | None:
     """Ghi trạng thái camera do J-08 phát hiện (subscriber `camera.health` trong api)."""
     camera = await session.scalar(select(Camera).where(Camera.mediamtx_path == path))

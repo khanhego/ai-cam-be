@@ -299,6 +299,11 @@ async def _open_session_unsafe(
     await orders.transition(session, package, "PACKING", source="WAREHOUSE", actor_label=station.name)
     await session.flush()
     _event(session, pack, "SCAN_OPEN", code=code)
+    if tray.blocks_close:
+        # Khay đã có phiếu khác trước khi quét: vision không phát sự kiện mới nên xét ngay (BR-06, DEC-111).
+        mark_mismatch(pack, source="CAM2", actual=_tray_actual(tray, code))
+        _event(session, pack, "MISMATCH", source="CAM2", scanned=code, tray=list(tray.codes))
+        return "MISMATCH", None
     return "SESSION_OPENED", None
 
 
@@ -330,6 +335,11 @@ def mark_mismatch(pack: PackSession, *, source: str, actual: str) -> None:
     _add_flag(pack, "HAD_MISMATCH")
 
 
+def _tray_actual(tray: Tray, open_code: str) -> str:
+    """Mã Cam 2 thấy khác mã phiên (nhiều mã → nối bằng dấu phẩy)."""
+    return ", ".join(c for c in tray.codes if c != open_code)
+
+
 async def _continue_session(
     session: AsyncSession, station: Station, pack: PackSession, code: str
 ) -> tuple[str, AlertOut | None]:
@@ -338,9 +348,7 @@ async def _continue_session(
         pack.cam2_seen_match = True
     # Thứ tự cứng (BR-06, review #2): khay có mã khác luôn xét trước khi so mã quét.
     if tray.blocks_close:
-        mark_mismatch(
-            pack, source="CAM2", actual=", ".join(c for c in tray.codes if c != pack.open_code) or ""
-        )
+        mark_mismatch(pack, source="CAM2", actual=_tray_actual(tray, pack.open_code))
         _event(session, pack, "MISMATCH", source="CAM2", scanned=code, tray=list(tray.codes))
         return "MISMATCH", None
     if code == pack.open_code:
@@ -429,6 +437,54 @@ async def scan(
         "scan", station_id=str(station.id), code=code, outcome=outcome, alert=alert.code if alert else None
     )
     return ScanOut(outcome=outcome, alert=alert, state=state)
+
+
+# ---------------------------------------------------------------- Cam 2 (T-12)
+
+
+async def on_tray_changed(session: AsyncSession, station_id: uuid.UUID, settings: Settings) -> str | None:
+    """Vision báo khay đổi (BR-06, FR-03.06, 03.07; 02a §4.1).
+
+    - Phiên `OPEN` + khay `DIFFERENT`/`MULTIPLE` → `MISMATCH` nguồn `CAM2`, cờ `HAD_MISMATCH`.
+    - Phiên `MISMATCH` nguồn `CAM2` + khay `MATCH`/`NOT_SEEN` → `OPEN` (đã bỏ phiếu sai).
+    - Phiên `MISMATCH` nguồn `SCAN` hoặc `WAITING_APPROVAL` → giữ trạng thái, chỉ cập nhật `tray`.
+    - Lần đầu `MATCH` trong phiên → `cam2_seen_match` (BR-18).
+    Cùng khóa station với quét / J-07; đẩy `station.state` sau commit. Trả trạng thái phiên mới nếu đổi.
+    """
+    station = await stations.get_station(session, station_id)
+    if station is None:
+        await rollback(session)
+        return None
+    await _lock_station(session, station_id)
+    pack = await active_session(session, station_id, refresh=True)
+    new_status: str | None = None
+    if pack is not None:
+        tray = await read_tray(get_redis(), station_id, pack.open_code)
+        if tray.match == "MATCH":
+            pack.cam2_seen_match = True
+        cam2_mismatch = pack.status == "MISMATCH" and (pack.mismatch or {}).get("source") == "CAM2"
+        if pack.status == "OPEN" and tray.blocks_close:
+            mark_mismatch(pack, source="CAM2", actual=_tray_actual(tray, pack.open_code))
+            _event(session, pack, "MISMATCH", source="CAM2", tray=list(tray.codes))
+            new_status = "MISMATCH"
+        elif cam2_mismatch and tray.match in ("MATCH", "NOT_SEEN"):
+            pack.status = "OPEN"
+            pack.mismatch = None
+            _event(session, pack, "MISMATCH_CLEARED", source="CAM2", tray=list(tray.codes))
+            new_status = "OPEN"
+        elif cam2_mismatch and tray.blocks_close:
+            actual = _tray_actual(tray, pack.open_code)
+            if pack.mismatch and pack.mismatch.get("actual") != actual:
+                pack.mismatch = {**pack.mismatch, "actual": actual}  # khay đổi phiếu sai khác
+    await session.flush()
+    state = await build_state(session, station, settings)
+    if new_status is not None:
+        notify_after_commit(session, station_id, state)  # + report.updated (số phiên từng lệch mã)
+        log.info("tray_session_changed", station_id=str(station_id), status=new_status)
+    else:
+        _publish_state_after_commit(session, station_id, state)
+    await commit(session)
+    return new_status
 
 
 # ---------------------------------------------------------------- API-12, API-15, J-07
@@ -636,6 +692,15 @@ def notify_after_commit(session: AsyncSession, station_id: uuid.UUID, state: Sta
             await publish.to_station(station_id, "station.state", state.model_dump(mode="json"))
         today = clock.now().astimezone(ZoneInfo(get_settings().tz_display)).date()
         await publish.to_dashboard("report.updated", {"date": today.isoformat()})
+
+    after_commit(session, _send)
+
+
+def _publish_state_after_commit(session: AsyncSession, station_id: uuid.UUID, state: StationStateOut) -> None:
+    from aicam.realtime import publish
+
+    async def _send() -> None:
+        await publish.to_station(station_id, "station.state", state.model_dump(mode="json"))
 
     after_commit(session, _send)
 
