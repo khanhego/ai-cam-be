@@ -182,7 +182,10 @@ async def test_sync_now(
     assert shop is not None
     res = await api.post(f"/api/v1/shops/{shop.id}/sync", headers=admin)
     assert (res.status_code, res.json()) == (202, {"queued": True})
-    assert sent_jobs[-1] == ("platforms.sync_orders", [str(shop.id), True], "sync", 0.0)
+    task, (sent_shop, token), queue, _ = sent_jobs[-1]
+    assert (task, sent_shop, queue) == ("platforms.sync_orders", str(shop.id), "sync")
+    assert isinstance(token, str)
+    assert token.startswith("api:")  # token chủ lock: job nhả bằng compare-and-delete (G3-N4)
     res = await api.post(f"/api/v1/shops/{shop.id}/sync", headers=admin)
     assert (res.status_code, res.json()["error"]["code"]) == (409, "SYNC_IN_PROGRESS")
     await platforms.release_sync_lock(shop.id)

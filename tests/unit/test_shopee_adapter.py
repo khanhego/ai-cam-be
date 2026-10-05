@@ -342,3 +342,47 @@ def test_warehouse_hint_mapping() -> None:
     assert mapping.warehouse_hint("SHIPPED", "LOGISTICS_DELIVERY_DONE") == "DELIVERED"
     assert mapping.warehouse_hint("TO_CONFIRM_RECEIVE", "") == "DELIVERED"
     assert mapping.warehouse_hint("READY_TO_SHIP", "LOGISTICS_READY") is None
+
+
+# ---------------------------------------------------------------- G3-N6 / N8
+
+
+@respx.mock
+async def test_auth_calls_are_not_retried(adapter: ShopeeAdapter, sleeps: list[float]) -> None:
+    """G3-N8: refresh token dùng một lần — `/api/v2/auth/*` lỗi tạm (503, mạng) không gửi lại."""
+    route = respx.post(f"{BASE}/api/v2/auth/access_token/get").mock(return_value=httpx.Response(503))
+    with pytest.raises(PlatformError) as err:
+        await adapter.refresh(CREDS)
+    assert not isinstance(err.value, PlatformAuthError)
+    assert route.call_count == 1
+    assert sleeps == []
+    token_route = respx.post(f"{BASE}/api/v2/auth/token/get").mock(
+        side_effect=httpx.ConnectTimeout("timeout")
+    )
+    with pytest.raises(PlatformError):
+        await adapter.client.call("POST", "/api/v2/auth/token/get", body={})
+    assert token_route.call_count == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("code", ["error_sign", "error_permission", "error_param"])
+@respx.mock
+async def test_config_errors_are_not_auth_errors(adapter: ShopeeAdapter, code: str) -> None:
+    """G3-N6: 403 `error_sign` / `error_permission` là lỗi cấu hình — không đánh shop EXPIRED."""
+    respx.get(f"{BASE}/api/v2/shop/get_shop_info").mock(
+        return_value=httpx.Response(403, json={"error": code, "message": "x", "request_id": "r"})
+    )
+    with pytest.raises(ShopeeRequestError) as err:
+        await adapter.shop_name(CREDS)
+    assert not isinstance(err.value, PlatformAuthError)
+    assert err.value.error == code
+
+
+@pytest.mark.parametrize(("status", "code"), [(403, "invalid_access_token"), (401, "")])
+@respx.mock
+async def test_token_errors_are_auth_errors(adapter: ShopeeAdapter, status: int, code: str) -> None:
+    respx.get(f"{BASE}/api/v2/shop/get_shop_info").mock(
+        return_value=httpx.Response(status, json={"error": code, "message": "x"})
+    )
+    with pytest.raises(PlatformAuthError):
+        await adapter.shop_name(CREDS)

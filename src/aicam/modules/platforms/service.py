@@ -318,15 +318,30 @@ def sync_lock_key(shop_id: uuid.UUID) -> str:
     return f"sync:{shop_id}"
 
 
-async def acquire_sync_lock(shop_id: uuid.UUID, owner: str) -> bool:
-    return bool(await get_redis().set(sync_lock_key(shop_id), owner, nx=True, ex=SYNC_LOCK_TTL_S))
+_RELEASE_IF_OWNER = """
+if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end
+return 0
+"""
 
 
-async def release_sync_lock(shop_id: uuid.UUID) -> None:
-    await get_redis().delete(sync_lock_key(shop_id))
+async def acquire_sync_lock(shop_id: uuid.UUID, owner: str) -> str | None:
+    """Lock Redis `sync:{shop}` (J-04, J-12, API-73). Trả token chủ (để nhả) hoặc None nếu đang bị giữ."""
+    token = f"{owner}:{secrets.token_hex(8)}"
+    ok = await get_redis().set(sync_lock_key(shop_id), token, nx=True, ex=SYNC_LOCK_TTL_S)
+    return token if ok else None
 
 
-async def enqueue_sync(shop_id: uuid.UUID, *, lock_held: bool) -> None:
+async def release_sync_lock(shop_id: uuid.UUID, token: str | None = None) -> None:
+    """Nhả lock. Có `token` → chỉ xóa nếu vẫn là chủ (G3-N4: lock đã hết TTL và người khác giữ thì không xóa
+    nhầm). `token=None` chỉ cho message cũ `lock_held=True` / dọn tay."""
+    if token is None:
+        await get_redis().delete(sync_lock_key(shop_id))
+        return
+    await get_redis().eval(_RELEASE_IF_OWNER, 1, sync_lock_key(shop_id), token)  # type: ignore[misc]
+
+
+async def enqueue_sync(shop_id: uuid.UUID, *, lock_held: bool | str) -> None:
+    """`lock_held`: token lock API-73 đã giữ (job nhả bằng token), hoặc False."""
     from aicam.modules.media import jobs  # gửi Celery theo tên task (test thay sender)
 
     await jobs.send(SYNC_TASK, [str(shop_id), lock_held], "sync")
@@ -341,10 +356,11 @@ async def request_sync(session: AsyncSession, shop_id: uuid.UUID, settings: Sett
         raise AppError(
             "SHOP_NOT_CONNECTED", "Shop chưa kết nối hoặc ủy quyền đã hết hạn. Bấm Kết nối lại.", 409
         )
-    if not await acquire_sync_lock(shop.id, "api"):
+    token = await acquire_sync_lock(shop.id, "api")
+    if token is None:
         raise AppError("SYNC_IN_PROGRESS", "Đang đồng bộ, thử lại sau.", 409)
     try:
-        await enqueue_sync(shop.id, lock_held=True)
+        await enqueue_sync(shop.id, lock_held=token)
     except Exception:
-        await release_sync_lock(shop.id)
+        await release_sync_lock(shop.id, token)
         raise

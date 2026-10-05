@@ -129,7 +129,7 @@ def housekeeping() -> dict[str, int]:
 
 
 @app.task(name="platforms.sync_orders", soft_time_limit=240, time_limit=270)  # type: ignore[untyped-decorator]
-def sync_orders(shop_id: str | None = None, lock_held: bool = False) -> dict[str, Any]:
+def sync_orders(shop_id: str | None = None, lock_held: bool | str = False) -> dict[str, Any]:
     """J-04 (5 phút / mọi shop CONNECTED; API-73 và sau kết nối cho một shop). Timeout 4 phút (02a §7)."""
 
     async def _job(db: AsyncSession) -> dict[str, Any]:

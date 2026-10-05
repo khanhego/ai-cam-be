@@ -334,7 +334,7 @@ async def test_j12_refresh(db: AsyncSession, mock: MockAdapter, test_settings: S
     shop = await _shop(db, test_settings, expires_in=timedelta(minutes=30))
     fresh = await _shop_copy(db, test_settings)
     out = await sync.refresh_tokens(db, mock, test_settings)
-    assert out == {"refreshed": 1, "expired": 0, "failed": 0}
+    assert out == {"refreshed": 1, "expired": 0, "failed": 0, "skipped": 0}
     await db.refresh(shop)
     assert shop.auth_expires_at == NOW + timedelta(hours=4)
     creds = platforms.credentials(shop, Cipher(test_settings.fernet_key))
@@ -361,3 +361,81 @@ async def _shop_copy(db: AsyncSession, settings: Settings) -> Shop:
     db.add(shop)
     await db.flush()
     return shop
+
+
+# ---------------------------------------------------------------- G3-N4: J-12 dưới lock sync:{shop}
+
+
+async def test_j12_skips_while_j04_holds_lock(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """J-04 đang chạy (giữ lock) → J-12 không refresh (refresh token dùng một lần); J-04 tự làm mới."""
+    shop = await _shop(db, test_settings, expires_in=timedelta(minutes=30))
+    token = await platforms.acquire_sync_lock(shop.id, "job")
+    assert token is not None
+
+    out = await sync.refresh_tokens(db, mock, test_settings)
+
+    assert out == {"refreshed": 0, "expired": 0, "failed": 0, "skipped": 1}
+    assert "refresh" not in mock.calls
+    await db.refresh(shop)
+    assert shop.auth_status == "CONNECTED"
+    await platforms.release_sync_lock(shop.id, token)
+    out = await sync.refresh_tokens(db, mock, test_settings)
+    assert out["refreshed"] == 1
+    assert mock.calls.count("refresh") == 1
+
+
+async def test_j12_rereads_after_lock(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """J-12 chọn shop sắp hết hạn; trước khi J-12 lấy được lock, J-04 đã làm mới → J-12 đọc lại, bỏ qua."""
+    shop = await _shop(db, test_settings, expires_in=timedelta(minutes=30))
+    original = platforms.acquire_sync_lock
+
+    async def j04_refreshed_first(shop_id: Any, owner: str) -> str | None:
+        await sync.ensure_fresh(db, shop, mock, Cipher(test_settings.fernet_key), force=True)
+        await db.flush()
+        return await original(shop_id, owner)
+
+    monkeypatch.setattr(platforms, "acquire_sync_lock", j04_refreshed_first)
+    out = await sync.refresh_tokens(db, mock, test_settings)
+
+    assert out["skipped"] == 1
+    assert mock.calls.count("refresh") == 1  # chỉ lần của J-04
+
+
+async def test_release_sync_lock_only_by_owner(db: AsyncSession) -> None:
+    """Lock hết TTL, người khác đã giữ → token cũ không xóa nhầm (compare-and-delete)."""
+    import uuid
+
+    shop_id = uuid.uuid4()
+    old = await platforms.acquire_sync_lock(shop_id, "job")
+    assert old is not None
+    await platforms.release_sync_lock(shop_id, old)
+    new = await platforms.acquire_sync_lock(shop_id, "api")
+    assert new is not None
+    await platforms.release_sync_lock(shop_id, old)  # chủ cũ nhả muộn
+    assert await platforms.acquire_sync_lock(shop_id, "x") is None  # lock của "api" còn nguyên
+    await platforms.release_sync_lock(shop_id, new)
+    assert await platforms.acquire_sync_lock(shop_id, "x") is not None
+    await platforms.release_sync_lock(shop_id)
+
+
+async def test_j04_config_error_keeps_shop_connected(
+    db: AsyncSession, test_settings: Settings, redis_client: object
+) -> None:
+    """G3-N6: Shopee trả 403 `error_sign` (sai partner key) → SYNC_FAILED, shop vẫn CONNECTED."""
+    shop = await _shop(db, test_settings)
+    client = ShopeeClient(2001234, "k", BASE, max_attempts=1)
+    adapter = ShopeeAdapter(client)
+    with respx.mock:
+        respx.route(host="partner.test-stable.shopeemobile.com").mock(
+            return_value=httpx.Response(403, json={"error": "error_sign", "message": "Wrong sign."})
+        )
+        out = await sync.sync_orders(db, adapter, test_settings)
+    assert out[str(shop.id)]["status"] == "FAILED"
+    await db.refresh(shop)
+    assert shop.auth_status == "CONNECTED"
+    assert shop.last_error is not None
+    assert shop.last_error["code"] == "SYNC_FAILED"

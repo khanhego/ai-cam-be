@@ -128,7 +128,10 @@ class ShopeeClient:
         Log mỗi lần gọi: path, HTTP, mã lỗi, request_id, thời gian — không log token / sign (query string).
         """
         last = "unknown"
-        for attempt in range(1, self.max_attempts + 1):
+        # `/api/v2/auth/*` (đổi code, làm mới token) KHÔNG thử lại (G3-N8): refresh token dùng một lần — gửi
+        # lại sau khi Shopee đã nhận (timeout phía mình) sẽ bị từ chối và đánh shop EXPIRED oan.
+        attempts = 1 if path.startswith("/api/v2/auth/") else self.max_attempts
+        for attempt in range(1, attempts + 1):
             query = {**(params or {}), **self.signed_params(path, access_token=access_token, shop_id=shop_id)}
             started = time.monotonic()
             retry_after: str | None = None
@@ -156,9 +159,10 @@ class ShopeeClient:
                     request_id=data.get("request_id"),
                     duration_ms=round((time.monotonic() - started) * 1000),
                 )
-                if error in AUTH_ERRORS or (
-                    res.status_code in (401, 403) and not error.startswith("error_param")
-                ):
+                # Chỉ mã lỗi token cụ thể (hoặc 401/403 không kèm mã) mới là hết ủy quyền (G3-N6).
+                # `error_sign`, `error_permission`, `error_param*`… là lỗi cấu hình / tham số →
+                # ShopeeRequestError, shop giữ CONNECTED, `last_error` báo để admin sửa.
+                if error in AUTH_ERRORS or (res.status_code in (401, 403) and not error):
                     raise PlatformAuthError(
                         f"{error or res.status_code}: {data.get('message') or ''}".strip()
                     )
@@ -171,6 +175,6 @@ class ShopeeClient:
                     raise ShopeeRequestError(f"HTTP {res.status_code}", "")
                 else:
                     return data
-            if attempt < self.max_attempts:
+            if attempt < attempts:
                 await self._sleep(self._delay(attempt, retry_after))
-        raise PlatformError(f"Shopee lỗi sau {self.max_attempts} lần thử: {last}")
+        raise PlatformError(f"Shopee lỗi sau {attempts} lần thử: {last}")
