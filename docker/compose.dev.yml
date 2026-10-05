@@ -28,8 +28,9 @@ services:
   # MediaMTX chạy cùng uid để file nó ghi xóa được (T-14).
   video-init:
     image: alpine:3
-    command: ["sh", "-c", "mkdir -p /data/video/raw /data/video/clips /data/video/exports && chown -R 10001:10001 /data/video"]
-    volumes: [video:/data/video]
+    # Volume imports: file CSV / xlsx gốc (T-17, API-50/54; J-11 xóa sau 90 ngày).
+    command: ["sh", "-c", "mkdir -p /data/video/raw /data/video/clips /data/video/exports && chown -R 10001:10001 /data/video /data/imports"]
+    volumes: [video:/data/video, imports:/data/imports]
 
   mediamtx:
     image: bluenviron/mediamtx:1
@@ -69,8 +70,9 @@ services:
       MEDIAMTX_API_URL: http://mediamtx:9997
       MEDIAMTX_RTSP_URL: rtsp://mediamtx:8554
     ports: ["8180:8000"]
-    volumes: [video:/data/video]
+    volumes: [video:/data/video, imports:/data/imports]
     depends_on:
+      video-init: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
     healthcheck:
@@ -91,7 +93,7 @@ services:
     command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "default,video,sync", "--loglevel", "info"]
     env_file: [../.env.example]
     environment: *app_env
-    volumes: [video:/data/video]
+    volumes: [video:/data/video, imports:/data/imports]
     depends_on: [api]
 
   # Encode bản xuất tách riêng, mỗi lần 1 job: không chặn cắt clip (DEC-32).
@@ -113,3 +115,4 @@ services:
 volumes:
   pgdata:
   video:
+  imports:

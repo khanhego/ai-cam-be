@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
 from aicam.modules.orders.models import Order, OrderItem, Package, StatusHistory
-from aicam.modules.platforms.base import CANCELLED_STATUSES, PlatformOrder
+from aicam.modules.platforms.base import CANCELLED_STATUSES, PlatformItem, PlatformOrder
 
 # 01 §7 v0.3 (DEC-24). Khóa: (từ, tới).
 ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
@@ -167,6 +167,97 @@ async def upsert_platform_order(
         packages.append(package)
     await session.flush()
     return UpsertResult(order=order, created=created, packages=packages)
+
+
+async def orders_by_sn(session: AsyncSession, sns: Sequence[str]) -> dict[str, Order]:
+    if not sns:
+        return {}
+    rows = (await session.scalars(select(Order).where(Order.platform_order_sn.in_(list(sns))))).all()
+    return {o.platform_order_sn: o for o in rows}
+
+
+async def packages_by_code(
+    session: AsyncSession, codes: Sequence[str]
+) -> dict[str, tuple[Package, str | None]]:
+    """Mã vận đơn (upper) → (kiện, mã đơn sàn đang gắn hoặc None)."""
+    if not codes:
+        return {}
+    rows = (
+        await session.execute(
+            select(Package, Order.platform_order_sn)
+            .outerjoin(Order, Order.id == Package.order_id)
+            .where(func.upper(Package.tracking_number).in_([c.upper() for c in codes]))
+        )
+    ).all()
+    return {p.tracking_number.upper(): (p, sn) for p, sn in rows}
+
+
+@dataclass(frozen=True)
+class CsvOrder:
+    platform_order_sn: str
+    buyer_note: str | None
+    items: tuple[PlatformItem, ...]
+    tracking_numbers: tuple[str, ...]
+
+
+async def apply_csv_order(
+    session: AsyncSession,
+    data: CsvOrder,
+    *,
+    import_id: uuid.UUID,
+    shop_id: uuid.UUID | None,
+    actor_user_id: uuid.UUID,
+) -> bool | None:
+    """Ghi một đơn từ file nhập (API-51). Trả True = tạo mới, False = cập nhật đơn CSV, None = bỏ qua.
+
+    BR-17: đơn nguồn API không bị file ghi đè. Kiện đã có giữ nguyên `warehouse_status`; kiện chưa xác minh
+    (BR-04) được gắn vào đơn.
+    """
+    order = await session.scalar(
+        select(Order).where(Order.platform_order_sn == data.platform_order_sn).with_for_update()
+    )
+    if order is not None and order.source == "API":
+        return None
+    created = order is None
+    if order is None:
+        order = Order(platform_order_sn=data.platform_order_sn, source="CSV", shop_id=shop_id)
+        session.add(order)
+    order.buyer_note = data.buyer_note
+    order.csv_import_id = import_id
+    await session.flush()
+    await session.execute(delete(OrderItem).where(OrderItem.order_id == order.id))
+    for item in data.items:
+        session.add(
+            OrderItem(
+                order_id=order.id,
+                sku=item.sku,
+                product_name=item.product_name,
+                variation=item.variation,
+                quantity=item.quantity,
+            )
+        )
+    for code in data.tracking_numbers:
+        package = await find_package(session, code)
+        if package is None:
+            package = Package(tracking_number=code.upper(), order_id=order.id)
+            session.add(package)
+            await session.flush()
+            session.add(
+                StatusHistory(
+                    package_id=package.id,
+                    source="MANUAL",
+                    from_status=None,
+                    to_status="NEW",
+                    at=clock.now(),
+                    actor_user_id=actor_user_id,
+                    actor_label="Nhập đơn từ file",
+                )
+            )
+        else:
+            package.order_id = order.id
+            package.verified = True
+    await session.flush()
+    return created
 
 
 async def is_cancelled(session: AsyncSession, package: Package) -> bool:
