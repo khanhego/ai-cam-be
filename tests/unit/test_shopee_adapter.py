@@ -386,3 +386,27 @@ async def test_token_errors_are_auth_errors(adapter: ShopeeAdapter, status: int,
     )
     with pytest.raises(PlatformAuthError):
         await adapter.shop_name(CREDS)
+
+
+@respx.mock
+async def test_find_by_tracking_bounded_per_scan(adapter: ShopeeAdapter) -> None:
+    """G3-P2-12: tra khi quét đọc 1 trang danh sách, hỏi tối đa 10 mã vận đơn; lần sau bỏ qua đơn đã biết."""
+    lists = respx.get(f"{BASE}/api/v2/order/get_order_list").mock(
+        return_value=ok(
+            {
+                "more": True,
+                "next_cursor": "p2",
+                "order_list": [{"order_sn": f"SN{i:02d}", "order_status": "PROCESSED"} for i in range(30)],
+            }
+        )
+    )
+    tracking = respx.get(f"{BASE}/api/v2/logistics/get_tracking_number").mock(
+        side_effect=lambda r: ok({"tracking_number": f"SPXVN{r.url.params['order_sn']}"})
+    )
+
+    assert await adapter.find_by_tracking(CREDS, "SPXVNKHONGCO") is None
+    assert lists.call_count == 1
+    assert tracking.call_count == 10
+    assert await adapter.find_by_tracking(CREDS, "SPXVNKHONGCO") is None
+    asked = [c.request.url.params["order_sn"] for c in tracking.calls]
+    assert asked[10:] == [f"SN{i:02d}" for i in range(10, 20)]  # 10 đơn đầu đã biết → hỏi 10 đơn kế

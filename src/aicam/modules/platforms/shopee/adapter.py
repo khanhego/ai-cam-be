@@ -39,6 +39,10 @@ MAX_WINDOW = timedelta(days=15)  # get_order_list: time_to − time_from ≤ 15 
 DETAIL_BATCH = 50
 DETAIL_FIELDS = "item_list,package_list,cancel_reason,pickup_done_time"
 CACHE_SIZE = 5000
+# Tra khi quét (G3-P2-12, cần xác nhận ở T-3): tối đa 1 trang danh sách (100 đơn) và 10 lần hỏi mã vận đơn mỗi
+# lần quét — người gọi chỉ chờ 2 giây, không đốt hạn mức API của shop cho một mã lạ.
+LOOKUP_MAX_PAGES = 1
+LOOKUP_MAX_CANDIDATES = 10
 
 
 def _ts(value: Any) -> datetime | None:
@@ -103,10 +107,11 @@ class ShopeeAdapter:
 
     # ------------------------------------------------------------ đơn (FR-05.02, 05.03)
     async def _order_sns(
-        self, creds: ShopCredentials, since: datetime, until: datetime
+        self, creds: ShopCredentials, since: datetime, until: datetime, *, max_pages: int | None = None
     ) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
         start = since
+        pages = 0
         while start < until:
             end = min(start + MAX_WINDOW, until)
             cursor = ""
@@ -119,6 +124,9 @@ class ShopeeAdapter:
                 body = _body(await self._shop_call("GET", "/api/v2/order/get_order_list", creds, params))
                 for o in body.get("order_list") or []:
                     out.append((str(o["order_sn"]), str(o.get("order_status") or "")))
+                pages += 1
+                if max_pages is not None and pages >= max_pages:
+                    return out
                 cursor = str(body.get("next_cursor") or "")
                 if not body.get("more") or not cursor:
                     break
@@ -221,11 +229,15 @@ class ShopeeAdapter:
             if order is not None and code in order.tracking_numbers:
                 return order
         now = clock.now()
+        # Ưu tiên đơn chưa biết mã vận đơn: đơn đã có trong bộ nhớ (đã hỏi) chắc chắn không phải mã này.
+        resolved = set(self._tracking_cache.values())
         candidates = [
             sn
-            for sn, status in await self._order_sns(creds, now - self.lookup_lookback, now)
-            if status not in mapping.NO_TRACKING_STATUSES
-        ]
+            for sn, status in await self._order_sns(
+                creds, now - self.lookup_lookback, now, max_pages=LOOKUP_MAX_PAGES
+            )
+            if status not in mapping.NO_TRACKING_STATUSES and sn not in resolved
+        ][:LOOKUP_MAX_CANDIDATES]
         for i in range(0, len(candidates), 5):  # dò song song từng nhóm 5 đơn, dừng khi thấy
             chunk = candidates[i : i + 5]
             found = await asyncio.gather(*(self._tracking_number(creds, sn, None) for sn in chunk))
