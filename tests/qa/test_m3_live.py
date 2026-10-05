@@ -327,7 +327,10 @@ def test_assist_withdraw_then_conflicts(client: httpx.Client, tokens: dict[str, 
     assert back.json()["state"]["state"] == "PACKING"
     late = _decide(client, sup, apr_id, "CONTINUE")
     assert late.status_code == 409
-    assert late.json()["error"]["details"] == {"status": "WITHDRAWN", "decided_by": None, "decided_at": None}
+    details = late.json()["error"]["details"]
+    # DEC-60: rút yêu cầu cũng ghi `decided_at` (đồng hồ quá giờ tính lại từ mốc này), `decided_by` null.
+    assert (details["status"], details["decided_by"]) == ("WITHDRAWN", None)
+    assert details["decided_at"] is not None
     _scan(client, st, "SPXTST0000023")
 
 

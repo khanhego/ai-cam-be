@@ -260,6 +260,9 @@ def test_tc_01_05_06_roi(client: httpx.Client, tokens: dict[str, dict[str, str]]
         client.put(f"/cameras/{cams['CAM2']['id']}/roi", headers=admin, json={**roi, "w": 0.04}).status_code
         == 422
     )
+    # ROI giữa khung làm vision đọc phiếu của fake-cam2 → case M1 sau bị MISMATCH tùy lúc chạy (chập chờn
+    # khi chạy cả bộ, phát hiện ở QA M4). Trả ROI về góc trống.
+    _mute_cam2()
 
 
 def test_tc_01_07_simulated_camera_loss(client: httpx.Client, tokens: dict[str, dict[str, str]]) -> None:

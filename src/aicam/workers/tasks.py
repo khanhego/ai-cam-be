@@ -16,6 +16,8 @@ from aicam.core.settings import get_settings
 from aicam.modules.imports import service as imports
 from aicam.modules.media import exports, jobs
 from aicam.modules.media import service as media
+from aicam.modules.platforms import service as platforms
+from aicam.modules.platforms import sync as platform_sync
 from aicam.modules.sessions import service as sessions
 from aicam.modules.stations import service as stations
 from aicam.modules.stations.mediamtx import HttpMediaMTX, MediaMTXError
@@ -116,3 +118,41 @@ def housekeeping() -> dict[str, int]:
         return out
 
     return _run(_job)
+
+
+# ---------------------------------------------------------------- Shopee (T-22, queue `sync`)
+
+
+@app.task(name="platforms.sync_orders", soft_time_limit=240, time_limit=270)  # type: ignore[untyped-decorator]
+def sync_orders(shop_id: str | None = None, lock_held: bool = False) -> dict[str, Any]:
+    """J-04 (5 phút / mọi shop CONNECTED; API-73 và sau kết nối cho một shop). Timeout 4 phút (02a §7)."""
+
+    async def _job(db: AsyncSession) -> dict[str, Any]:
+        settings = get_settings()
+        return await platform_sync.sync_orders(
+            db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None,
+            lock_held=lock_held,
+        )  # fmt: skip
+
+    return _run(_job)
+
+
+@app.task(name="platforms.verify_unverified", soft_time_limit=240)  # type: ignore[untyped-decorator]
+def verify_unverified() -> dict[str, int]:
+    """J-05 (10 phút): xác minh lại kiện chưa xác minh (BR-04)."""
+    settings = get_settings()
+    return _run(lambda db: platform_sync.verify_unverified(db, platforms.get_adapter(settings), settings))
+
+
+@app.task(name="platforms.sync_shipping_status", soft_time_limit=600)  # type: ignore[untyped-decorator]
+def sync_shipping_status() -> dict[str, int]:
+    """J-06 (15 phút): trạng thái vận chuyển → HANDED_OVER / DELIVERED; hủy sau đóng (EX-P10)."""
+    settings = get_settings()
+    return _run(lambda db: platform_sync.sync_shipping_status(db, platforms.get_adapter(settings), settings))
+
+
+@app.task(name="platforms.refresh_tokens", soft_time_limit=120)  # type: ignore[untyped-decorator]
+def refresh_tokens() -> dict[str, int]:
+    """J-12 (30 phút): làm mới token sắp hết hạn; bị từ chối → shop EXPIRED."""
+    settings = get_settings()
+    return _run(lambda db: platform_sync.refresh_tokens(db, platforms.get_adapter(settings), settings))

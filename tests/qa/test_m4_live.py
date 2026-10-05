@@ -177,3 +177,31 @@ def test_shopee_connect_or_not_configured(client: httpx.Client, tokens: dict[str
     assert _psql("SELECT count(*) FROM audit_log WHERE action = 'SHOP_CONNECT'") == "1"
     # Token lưu mã hóa (Fernet), không có chữ rõ.
     assert _psql("SELECT position('mock-access' in convert_from(access_token_enc, 'UTF8')) FROM shop") == "0"
+
+
+def test_shopee_sync_now_runs_on_worker(client: httpx.Client, tokens: dict[str, str]) -> None:
+    """API-73 + J-04 trên worker thật (queue `sync`, adapter mock): 202 → worker chạy → `last_synced_at` có
+    trị, lock nhả (đồng bộ lại được). Chạy sau `test_shopee_connect_or_not_configured`."""
+    items = client.get("/shops", headers=_h(tokens["ADMIN"])).json()["items"]
+    if not items:
+        pytest.skip("SHOPEE_ENABLED=false: chưa có shop kết nối")
+    shop_id = items[0]["id"]
+    deadline = time.monotonic() + 60
+    res = client.post(f"/shops/{shop_id}/sync", headers=_h(tokens["ADMIN"]))
+    while res.status_code == 409 and time.monotonic() < deadline:  # J-04 sau kết nối có thể còn đang chạy
+        assert res.json()["error"]["code"] == "SYNC_IN_PROGRESS"
+        time.sleep(1)
+        res = client.post(f"/shops/{shop_id}/sync", headers=_h(tokens["ADMIN"]))
+    assert (res.status_code, res.json()) == (202, {"queued": True})
+    while time.monotonic() < deadline:
+        again = client.post(f"/shops/{shop_id}/sync", headers=_h(tokens["ADMIN"]))
+        if again.status_code == 202:
+            break
+        time.sleep(1)
+    else:
+        pytest.fail("lock sync không được nhả sau 60 giây")
+    time.sleep(3)
+    shop = client.get("/shops", headers=_h(tokens["ADMIN"])).json()["items"][0]
+    assert shop["last_synced_at"] is not None
+    assert shop["last_error"] is None
+    assert shop["auth_status"] == "CONNECTED"

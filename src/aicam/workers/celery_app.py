@@ -18,12 +18,18 @@ app.conf.update(
     task_routes={
         "media.build_session_clips": {"queue": "video"},
         "media.render_export": {"queue": "export"},
+        "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12 (gọi Shopee) tách khỏi cắt clip
     },
     beat_schedule={
         "j07-session-timeouts": {"task": "sessions.check_timeouts", "schedule": 30.0},
         "j09-check-clock-drift": {"task": "stations.check_clock_drift", "schedule": 600.0},
         "j10-index-segments": {"task": "media.index_segments", "schedule": 60.0},
         "j11-housekeeping": {"task": "maintenance.housekeeping", "schedule": 300.0},
+        # Shopee (02a §7, ADR-007 polling). Không làm gì khi SHOPEE_ENABLED=false.
+        "j04-sync-orders": {"task": "platforms.sync_orders", "schedule": 300.0},
+        "j05-verify-unverified": {"task": "platforms.verify_unverified", "schedule": 600.0},
+        "j06-sync-shipping-status": {"task": "platforms.sync_shipping_status", "schedule": 900.0},
+        "j12-refresh-tokens": {"task": "platforms.refresh_tokens", "schedule": 1800.0},
         # 02:00 giờ VN (UTC+7, không đổi giờ mùa hè) = 19:00 UTC.
         "j02-enforce-retention": {"task": "media.enforce_retention", "schedule": crontab(hour=19, minute=0)},
     },

@@ -87,6 +87,14 @@ async def create_unverified_package(session: AsyncSession, code: str) -> Package
     return package
 
 
+async def apply_platform_cancel(session: AsyncSession, package: Package) -> bool:
+    """Sàn hủy đơn: kiện NEW → CANCELLED, PACKED → CANCELLED_AFTER_PACK (EX-P10); trạng thái khác giữ."""
+    target = {"NEW": "CANCELLED", "PACKED": "CANCELLED_AFTER_PACK"}.get(package.warehouse_status)
+    if target is None:
+        return False
+    return await transition(session, package, target, source="PLATFORM", actor_label="Sàn")
+
+
 @dataclass
 class UpsertResult:
     order: Order
@@ -157,14 +165,12 @@ async def upsert_platform_order(
         else:
             package.order_id = order.id
             package.verified = True
-        if data.is_cancelled:
-            if package.warehouse_status == "NEW":
-                await transition(session, package, "CANCELLED", source="PLATFORM", actor_label="Sàn")
-            elif package.warehouse_status == "PACKED":
-                await transition(
-                    session, package, "CANCELLED_AFTER_PACK", source="PLATFORM", actor_label="Sàn"
-                )
         packages.append(package)
+    if data.is_cancelled:
+        # Đơn hủy trên sàn thường không còn mã vận đơn trong dữ liệu sàn → xét mọi kiện đã gắn đơn (EX-P10).
+        linked = (await session.scalars(select(Package).where(Package.order_id == order.id))).all()
+        for package in {p.id: p for p in [*packages, *linked]}.values():
+            await apply_platform_cancel(session, package)
     await session.flush()
     return UpsertResult(order=order, created=created, packages=packages)
 
