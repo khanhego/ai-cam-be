@@ -29,6 +29,9 @@ Tài liệu thiết kế nằm ở repo gốc `AI-cam-shop-managment/docs/ai/`:
 | Chạy API local | `uv run uvicorn aicam.entrypoints.api:app --reload --port 8180` |
 | Stack dev (Docker) | `docker compose -f docker/compose.dev.yml up --build` |
 | Build image | `docker build -f docker/Dockerfile -t aicam .` |
+| Contract test (OpenAPI ↔ 02 §6) | `uv run pytest tests/contract` · cập nhật `openapi.json` cho FE: `uv run python scripts/export_openapi.py` |
+| Test tải (locust, stack dev) | `LOAD_PROFILE=stress LOAD_STATIONS=4 uvx --from locust locust -f tests/load/locustfile.py --host http://localhost:8180 --headless -u 5 -r 5 -t 5m` (xem docstring file) |
+| Stack kho (production) | `docker compose --env-file docker/.env -f docker/compose.yml up -d --build` — hướng dẫn vận hành: [docs/ops.md](docs/ops.md) |
 
 ## Port của stack dev
 
