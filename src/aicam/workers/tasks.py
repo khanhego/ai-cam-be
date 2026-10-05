@@ -62,6 +62,11 @@ def build_session_clips(self: Any, session_id: str) -> dict[str, Any]:
     result = _run(
         lambda db: media.build_session_clips(db, uuid.UUID(session_id), get_settings(), final=final)
     )
+    if result.waiting and result.retry_in is not None:
+        # Chưa tới giờ cắt: hẹn lại với **cùng** số lần thử — chờ settle không tiêu lượt retry, kể cả khi job
+        # đến sớm ở lượt cuối (vd API-46 / J-11 đẩy lại ngay sau khi đóng phiên).
+        self.apply_async(args=[session_id], countdown=result.retry_in, retries=self.request.retries)
+        return {"ready": 0, "failed": 0, "waiting_s": round(result.retry_in, 1)}
     if result.retry_in is not None and not final:
         raise self.retry(countdown=result.retry_in)
     return {"ready": len(result.ready), "failed": len(result.failed)}

@@ -446,3 +446,56 @@ async def test_station_without_camera_fails_immediately(
     assert result.retry_in is None
     assert len(result.failed) == 2
     assert (await _clip(db, pack.id, "CAM2")).error == "Station chưa cấu hình CAM2"
+
+
+# ---------------------------------------------------------------- G3-F1: worker chết giữa chừng
+
+
+async def test_rows_for_all_roles_created_before_cutting(
+    db: AsyncSession, redis_client: object, media_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Worker chết khi đang cắt CAM1 → dòng CAM1 và CAM2 đều đã PENDING (một transaction) → J-11 bắt được."""
+    _, station, _ = await _station_with_cams(db)
+    pack = await make_closed_session(db, station, "SPXTST0000021", T, T + timedelta(seconds=20))
+    pack_id = pack.id
+    clock.freeze(T + timedelta(minutes=10))
+
+    async def _crash(*_: Any, **__: Any) -> bool:
+        raise RuntimeError("worker bị kill")
+
+    monkeypatch.setattr(media, "_build_one", _crash)
+    with pytest.raises(RuntimeError):
+        await media.build_session_clips(db, pack_id, media_settings)
+    await db.rollback()
+
+    statuses = (
+        await db.scalars(select(Clip.status).where(Clip.session_id == pack_id).order_by(Clip.camera_role))
+    ).all()
+    assert list(statuses) == ["PENDING", "PENDING"]
+    assert pack_id in await media.sessions_missing_clips(db, timedelta(minutes=5), timedelta(days=1))
+
+
+@needs_ffmpeg
+async def test_j11_rebuilds_session_missing_one_role(
+    db: AsyncSession, redis_client: object, media_settings: Settings, sample: Path
+) -> None:
+    """Dữ liệu cũ: phiên có CAM1 READY, không có dòng CAM2 → J-11 đẩy lại J-01 → có CAM2 READY."""
+    _, station, cams = await _station_with_cams(db)
+    for cam in cams.values():
+        put_segments(media_settings.video_root, cam.mediamtx_path, sample, starts_every(T, 6))
+    pack = await make_closed_session(
+        db, station, "SPXTST0000022", T + timedelta(seconds=15), T + timedelta(seconds=40)
+    )
+    db.add(Clip(session_id=pack.id, camera_role="CAM1", status="READY", start_at=T, end_at=T + timedelta(
+        seconds=45), path="clips/x-CAM1.mp4", sha256="c1" * 32, flags=[]))  # fmt: skip
+    await db.flush()
+    clock.freeze(T + timedelta(minutes=10))
+    assert pack.id in await media.sessions_missing_clips(db, timedelta(minutes=5), timedelta(days=1))
+
+    result = await media.build_session_clips(db, pack.id, media_settings)
+
+    cam2 = await _clip(db, pack.id, "CAM2")
+    assert cam2.status == "READY"
+    assert result.ready == [cam2.id]
+    assert (await _clip(db, pack.id, "CAM1")).sha256 == "c1" * 32  # clip READY không bị cắt lại
+    assert pack.id not in await media.sessions_missing_clips(db, timedelta(minutes=5), timedelta(days=1))

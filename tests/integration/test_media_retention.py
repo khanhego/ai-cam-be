@@ -212,3 +212,56 @@ async def test_rebuild_failed_clip(
     again = await api.post(url, headers=sup)
     assert (again.status_code, again.json()["error"]["code"]) == (409, "CLIP_NOT_FAILED")
     assert (await api.post(f"/api/v1/sessions/{uuid.uuid4()}/clips/rebuild", headers=sup)).status_code == 404
+
+
+async def test_retention_keeps_raw_video_of_failed_clip(db: AsyncSession, media_settings: Settings) -> None:
+    """G3-F7: video thô quá hạn nhưng chồng [mở − đệm, đóng + đệm] của phiên có clip FAILED → giữ (API-46
+    cắt lại được); file cũ khác của cùng camera vẫn bị xóa."""
+    clock.freeze(T0)
+    _, station = await make_station_account(db)
+    cam = (await make_cameras(db, station))["CAM1"]
+    ended = T0 - timedelta(days=40)
+    clip, _ = await _clip(db, media_settings, station, "SPXTST0000031", ended, status="FAILED")
+    files = {}
+    for name, start in (
+        ("before", ended - timedelta(minutes=2, seconds=50)),  # segment chứa đầu phiên (mở = đóng − 2 phút)
+        ("inside", ended - timedelta(seconds=30)),
+        ("other", ended - timedelta(hours=3)),
+    ):
+        f = media_settings.video_root / "raw" / cam.mediamtx_path / f"{start:%Y/%m/%d/%H-%M-%S-%f}.mp4"
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_bytes(b"x")
+        files[name] = f
+
+    out = await media.enforce_retention(db, media_settings)
+
+    assert out["raw_files"] == 1
+    assert {k: f.exists() for k, f in files.items()} == {"before": True, "inside": True, "other": False}
+    # Clip cắt lại thành công → lượt sau được xóa.
+    await db.execute(update(Clip).where(Clip.id == clip.id).values(status="READY", end_at=T0))
+    assert (await media.enforce_retention(db, media_settings))["raw_files"] == 2
+
+
+async def test_retention_commits_before_unlink_and_retries_file(
+    db: AsyncSession, media_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-F8: DELETED + audit commit trước; xóa file lỗi → clip vẫn DELETED, lượt J-02 sau xóa nốt file."""
+    clock.freeze(T0)
+    _, station = await make_station_account(db)
+    clip, path = await _clip(db, media_settings, station, "SPXTST0000032", T0 - timedelta(days=100))
+    original = media._unlink
+
+    def _fail(p: Path) -> None:
+        if "clips" in p.parts:
+            raise PermissionError("ổ chỉ đọc")
+        original(p)
+
+    monkeypatch.setattr(media, "_unlink", _fail)
+    first = await media.enforce_retention(db, media_settings)
+    assert (first["clips"], first["clip_files_retried"]) == (1, 0)
+    assert ((await _reload(db, clip.id)).status, path.exists()) == ("DELETED", True)
+
+    monkeypatch.setattr(media, "_unlink", original)
+    second = await media.enforce_retention(db, media_settings)
+    assert (second["clips"], second["clip_files_retried"]) == (0, 1)
+    assert not path.exists()

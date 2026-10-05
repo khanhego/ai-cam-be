@@ -14,7 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import structlog
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -166,6 +166,7 @@ async def index_segments(db: AsyncSession, settings: Settings) -> int:
 @dataclass
 class BuildResult:
     retry_in: float | None = None
+    waiting: bool = False  # chưa tới `ended_at + đệm + chờ ghi`: hẹn lại, không tính là một lần thử (G3)
     ready: list[uuid.UUID] = field(default_factory=list)
     failed: list[uuid.UUID] = field(default_factory=list)
 
@@ -176,6 +177,10 @@ class _NoCamera(Exception):
 
 class _Retry(Exception):
     """Video chưa đủ (MediaMTX chưa ghi tới cuối khoảng): thử lại sau."""
+
+
+class NoVideoError(ffmpeg.FFmpegError):
+    """Lần cuối mà camera không có video nào trong khoảng phiên → clip FAILED + cờ VIDEO_INCOMPLETE (F9)."""
 
 
 async def _segments_for(
@@ -233,7 +238,7 @@ async def _build_one(
     if not segments:
         if not final:
             raise _Retry
-        raise ffmpeg.FFmpegError("Không có video của camera trong khoảng phiên")
+        raise NoVideoError("Không có video của camera trong khoảng phiên")
     if segments[-1].end < t1 and not last_closed and not final:
         raise _Retry  # segment đang ghi chưa tới cuối khoảng
     missing = gaps(segments, t0, t1)
@@ -255,30 +260,42 @@ async def _build_one(
     return incomplete
 
 
-async def _lock_clip(db: AsyncSession, session_id: uuid.UUID, role: str, t0: datetime, t1: datetime) -> Clip:
-    """Tạo clip PENDING nếu chưa có (UNIQUE (session_id, camera_role)) rồi khóa dòng — chạy 2 lần an toàn."""
+async def _ensure_clip_rows(db: AsyncSession, session_id: uuid.UUID, t0: datetime, t1: datetime) -> None:
+    """Tạo dòng clip PENDING cho **mọi** vai camera trong MỘT transaction, trước khi cắt (G3-F1).
+
+    Worker chết giữa chừng thì phiên vẫn còn dòng PENDING → J-11 đẩy lại J-01; API-46 không phải đoán clip
+    nào còn thiếu. Idempotent theo UNIQUE (session_id, camera_role).
+    """
     await db.execute(
         insert(Clip)
         .values(
-            id=uuid.uuid4(),
-            session_id=session_id,
-            camera_role=role,
-            status="PENDING",
-            start_at=t0,
-            end_at=t1,
-            flags=[],
-            held=False,
+            [
+                {
+                    "id": uuid.uuid4(),
+                    "session_id": session_id,
+                    "camera_role": role,
+                    "status": "PENDING",
+                    "start_at": t0,
+                    "end_at": t1,
+                    "flags": [],
+                    "held": False,
+                }
+                for role in ROLES
+            ]
         )
         .on_conflict_do_nothing(index_elements=["session_id", "camera_role"])
     )
-    clip: Clip = (
-        await db.scalars(
-            select(Clip)
-            .where(Clip.session_id == session_id, Clip.camera_role == role)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).one()
+    await db.commit()
+
+
+async def _lock_clip(db: AsyncSession, session_id: uuid.UUID, role: str) -> Clip | None:
+    """Khóa dòng clip của một vai (đã tạo ở `_ensure_clip_rows`) — chạy 2 lần an toàn."""
+    clip: Clip | None = await db.scalar(
+        select(Clip)
+        .where(Clip.session_id == session_id, Clip.camera_role == role)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
     return clip
 
 
@@ -287,7 +304,8 @@ async def build_session_clips(
 ) -> BuildResult:
     """J-01: cắt clip Cam 1 + Cam 2 `[started_at − đệm, ended_at + đệm]` (FR-02.02, AC-02).
 
-    Mỗi camera commit riêng. Thiếu đoạn → cờ `VIDEO_INCOMPLETE` cho clip và phiên.
+    Dòng clip của mọi vai được tạo PENDING trong một transaction trước (G3-F1); sau đó mỗi camera cắt và
+    commit riêng. Thiếu đoạn → cờ `VIDEO_INCOMPLETE` cho clip và phiên.
     Lỗi ở lần thử cuối (`final`) → clip FAILED.
     """
     result = BuildResult()
@@ -300,13 +318,15 @@ async def build_session_clips(
     wait = (t1 + timedelta(seconds=settings.clip_settle_s) - clock.now()).total_seconds()
     if wait > 0:
         result.retry_in = wait
+        result.waiting = True
         return result
     cameras = {c.role: c for c in await stations.cameras_of(db, pack.station_id)}
     await db.commit()
+    await _ensure_clip_rows(db, session_id, t0, t1)
     incomplete_any = False
     for role in ROLES:
-        clip = await _lock_clip(db, session_id, role, t0, t1)
-        if clip.status in ("READY", "DELETED"):
+        clip = await _lock_clip(db, session_id, role)
+        if clip is None or clip.status in ("READY", "DELETED"):
             await db.commit()
             continue
         began = time.monotonic()
@@ -334,7 +354,7 @@ async def build_session_clips(
                 clip.status = "FAILED"
                 clip.error = str(exc)[:500]
                 result.failed.append(clip.id)
-                incomplete_any |= "Không có video" in clip.error
+                incomplete_any |= isinstance(exc, NoVideoError)
                 log.error("clip_failed", clip_id=str(clip.id), error=clip.error)
         await db.commit()
     if incomplete_any:
@@ -362,8 +382,23 @@ def _notify_clip_ready(
 async def sessions_missing_clips(
     db: AsyncSession, older_than: timedelta, lookback: timedelta
 ) -> list[uuid.UUID]:
-    """J-11: phiên đã kết thúc > `older_than` mà chưa có đủ clip hoặc còn clip PENDING (job bị mất)."""
+    """J-11: phiên đã kết thúc > `older_than` mà thiếu dòng clip của một vai camera (số dòng < số vai —
+    J-01 luôn tạo đủ dòng cho mọi vai, kể cả vai station chưa cấu hình → FAILED) hoặc còn clip PENDING
+    (job bị mất).
+    """
     now = clock.now()
+    clip_count = (
+        select(func.count(Clip.id))
+        .where(Clip.session_id == PackSession.id)
+        .correlate(PackSession)
+        .scalar_subquery()
+    )
+    pending = (
+        select(Clip.id)
+        .where(Clip.session_id == PackSession.id, Clip.status == "PENDING")
+        .correlate(PackSession)
+        .exists()
+    )
     rows = await db.execute(
         select(PackSession.id)
         .where(
@@ -372,19 +407,7 @@ async def sessions_missing_clips(
             PackSession.ended_at < now - older_than,
             PackSession.ended_at > now - lookback,
         )
-        .where(
-            select(Clip.id)
-            .where(Clip.session_id == PackSession.id, Clip.status != "PENDING")
-            .correlate(PackSession)
-            .limit(1)
-            .scalar_subquery()
-            .is_(None)
-            | select(Clip.id)
-            .where(Clip.session_id == PackSession.id, Clip.status == "PENDING")
-            .correlate(PackSession)
-            .limit(1)
-            .exists()
-        )
+        .where((clip_count < len(ROLES)) | pending)
         .limit(200)
     )
     return [r[0] for r in rows.all()]
@@ -399,7 +422,7 @@ def _clip_unavailable(clip: Clip, retention_clip_days: int) -> AppError | None:
             "CLIP_DELETED",
             f"Clip đã bị xóa theo chính sách lưu trữ {retention_clip_days} ngày.",
             410,
-            {"deleted_at": clip.deleted_at.isoformat() if clip.deleted_at else None,
+            {"deleted_at": clock.iso_z(clip.deleted_at) if clip.deleted_at else None,
              "retention_clip_days": retention_clip_days},
         )  # fmt: skip
     if clip.status != "READY":
@@ -545,26 +568,42 @@ async def rebuild(db: AsyncSession, session_id: uuid.UUID, p: Principal) -> Rebu
 
 # ---------------------------------------------------------------- J-02 retention
 
+# Segment MediaMTX dài tối đa 60 giây: file bắt đầu trước mốc tới 60 giây vẫn có thể chứa mốc đó.
+_SEGMENT_MAX = timedelta(minutes=2)
+
 
 def _unlink(path: Path) -> None:
     path.unlink(missing_ok=True)
 
 
-def sweep_raw_files(video_root: Path, cutoff: datetime) -> int:
+Protected = dict[str, list[tuple[datetime, datetime]]]
+
+
+def _is_protected(keep: Protected, camera_path: str, start: datetime) -> bool:
+    return any(a - _SEGMENT_MAX <= start <= b for a, b in keep.get(camera_path, ()))
+
+
+def sweep_raw_files(video_root: Path, cutoff: datetime, keep: Protected | None = None) -> int:
     """Xóa file video thô có giờ bắt đầu trước `cutoff − 2 phút` (segment ≤ 60 giây đã kết thúc trước mốc).
 
     Quét theo đĩa, không theo index: dọn cả video của camera đã xóa khỏi DB (ổ dev đầy 2026-10-05).
+    `keep`: `mediamtx_path` → khoảng giờ cần giữ (phiên có clip FAILED / PENDING — G3-F7): API-46 còn cắt lại
+    được sau `retention_raw_days`.
     """
     raw = video_root / "raw"
     if not raw.is_dir():
         return 0
-    limit = cutoff - timedelta(minutes=2)
+    limit = cutoff - _SEGMENT_MAX
+    keep = keep or {}
     removed = 0
     for f in raw.glob("*/*/*/*/*.mp4"):
         start = parse_start(f)
-        if start is not None and start < limit:
-            _unlink(f)
-            removed += 1
+        if start is None or start >= limit:
+            continue
+        if _is_protected(keep, f.relative_to(raw).parts[0], start):
+            continue
+        _unlink(f)
+        removed += 1
     for day in sorted(raw.glob("*/*/*/*"), reverse=True):  # dọn thư mục ngày / tháng / năm rỗng
         for d in (day, day.parent, day.parent.parent):
             try:
@@ -574,27 +613,66 @@ def sweep_raw_files(video_root: Path, cutoff: datetime) -> int:
     return removed
 
 
+async def protected_raw_ranges(db: AsyncSession, padding_s: float) -> Protected:
+    """Khoảng `[started_at − đệm, ended_at + đệm]` theo camera của phiên có clip FAILED / PENDING (G3-F7)."""
+    pad = timedelta(seconds=padding_s)
+    rows = await db.execute(
+        select(Camera.mediamtx_path, PackSession.started_at, PackSession.ended_at)
+        .select_from(Clip)
+        .join(PackSession, PackSession.id == Clip.session_id)
+        .join(Camera, (Camera.station_id == PackSession.station_id) & (Camera.role == Clip.camera_role))
+        .where(Clip.status.in_(("FAILED", "PENDING")), PackSession.ended_at.is_not(None))
+    )
+    out: Protected = {}
+    for path, started, ended in rows.all():
+        if ended is not None:
+            out.setdefault(path, []).append((started - pad, ended + pad))
+    return out
+
+
+async def retention_clip_candidates(db: AsyncSession, clip_cutoff: datetime) -> list[uuid.UUID]:
+    """Ứng viên J-02 (đọc không khóa — mỗi clip được khóa và kiểm lại trước khi xóa)."""
+    return list(
+        (
+            await db.scalars(
+                select(Clip.id).where(Clip.held.is_(False), Clip.status == "READY", Clip.end_at < clip_cutoff)
+            )
+        ).all()
+    )
+
+
+def _remove_clip_file(settings: Settings, clip: Clip) -> bool:
+    """Xóa file clip sau khi `DELETED` đã commit; lỗi → để lượt J-02 sau dọn (G3-F8)."""
+    if not clip.path:
+        return True
+    try:
+        _unlink(absolute(settings, clip.path))
+    except (OSError, ValueError):
+        log.exception("retention_clip_unlink_failed", clip_id=str(clip.id), path=clip.path)
+        return False
+    return True
+
+
 async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, int]:
     """J-02 (02:00 giờ VN): video thô quá `retention_raw_days`; clip không giữ quá `retention_clip_days`.
 
-    Setting đọc lúc chạy (DEC-30, AC-20). Clip: khóa dòng → kiểm lại (API-42 vừa giữ thì bỏ qua — BR-09) →
-    xóa file → `DELETED` + audit `DELETE_CLIP` (actor hệ thống), commit từng clip.
+    Setting đọc lúc chạy (DEC-30, AC-20). Video thô của phiên có clip FAILED / PENDING được giữ (G3-F7).
+    Clip: khóa dòng → kiểm lại (API-42 vừa giữ thì bỏ qua — BR-09) → `DELETED` + audit `DELETE_CLIP`
+    (actor hệ thống) → commit → **rồi** xóa file (G3-F8: DB không bao giờ nói READY cho file đã mất).
+    Xóa file lỗi → lượt sau dọn lại các clip `DELETED` còn file.
     """
     cfg = await settings_service.get(db)
     now = clock.now()
     raw_cutoff = now - timedelta(days=cfg.retention_raw_days)
     clip_cutoff = now - timedelta(days=cfg.retention_clip_days)
+    keep = await protected_raw_ranges(db, settings.clip_padding_s)
     await db.commit()
 
-    raw_files = sweep_raw_files(settings.video_root, raw_cutoff)
+    raw_files = sweep_raw_files(settings.video_root, raw_cutoff, keep)
     rows = await db.execute(delete(VideoSegment).where(VideoSegment.end_at < raw_cutoff))
     await db.commit()
 
-    candidates_ = (
-        await db.scalars(
-            select(Clip.id).where(Clip.held.is_(False), Clip.status == "READY", Clip.end_at < clip_cutoff)
-        )
-    ).all()
+    candidates_ = await retention_clip_candidates(db, clip_cutoff)
     await db.commit()
     deleted = 0
     for clip_id in candidates_:
@@ -608,8 +686,6 @@ async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, i
             if clip is None or clip.held or clip.status != "READY" or clip.end_at >= clip_cutoff:
                 await db.rollback()
                 continue
-            if clip.path:
-                _unlink(absolute(settings, clip.path))
             clip.status = "DELETED"
             clip.deleted_at = now
             audit.record(db, "DELETE_CLIP", user_id=None, object_type="CLIP", object_id=clip.id,
@@ -621,6 +697,35 @@ async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, i
         except Exception:
             await db.rollback()
             log.exception("retention_clip_failed", clip_id=str(clip_id))
-    result = {"raw_files": raw_files, "segment_rows": rows.rowcount or 0, "clips": deleted}  # type: ignore[attr-defined]
+            continue
+        _remove_clip_file(settings, clip)
+    leftovers = await _purge_deleted_clip_files(db, settings, now)
+    result = {
+        "raw_files": raw_files,
+        "segment_rows": rows.rowcount or 0,  # type: ignore[attr-defined]
+        "clips": deleted,
+        "clip_files_retried": leftovers,
+    }
     log.info("retention_done", **result)
     return result
+
+
+async def _purge_deleted_clip_files(db: AsyncSession, settings: Settings, now: datetime) -> int:
+    """Clip `DELETED` (30 ngày gần nhất) mà file còn trên đĩa — lần xóa trước lỗi (G3-F8) → xóa lại."""
+    rows = (
+        await db.scalars(
+            select(Clip).where(
+                Clip.status == "DELETED", Clip.path.is_not(None), Clip.deleted_at >= now - timedelta(days=30)
+            )
+        )
+    ).all()
+    await db.commit()
+    retried = 0
+    for clip in rows:
+        try:
+            exists = absolute(settings, clip.path or "").exists()
+        except ValueError:
+            continue
+        if exists and _remove_clip_file(settings, clip):
+            retried += 1
+    return retried
