@@ -36,7 +36,6 @@ log = structlog.get_logger()
 
 CURSOR_OVERLAP = timedelta(minutes=10)  # 02a J-04: since = cursor − 10 phút
 REFRESH_MARGIN = timedelta(hours=1)  # 02a J-12: còn < 1 giờ thì làm mới
-COMMIT_EVERY = 50
 VERIFY_BATCH = 50
 VERIFY_MAX_AGE = timedelta(days=7)
 SHIPPING_BATCH = 50
@@ -212,8 +211,11 @@ async def sync_shop_orders(
                     result.orders += 1
                     if await _upsert(session, order, shop.id):
                         result.changed += 1
-                    if result.orders % COMMIT_EVERY == 0:
-                        await commit(session)
+                    # DEC-162 (G3-V1): commit sau MỖI đơn — nhả khóa `order:{sn}` + khóa kiện trước khi
+                    # lấy đơn / trang kế (lời gọi mạng), không giữ nhiều khóa theo thứ tự Shopee trả → không
+                    # khóa chéo với API-51. Cursor vẫn chỉ tiến khi đi hết danh sách (đơn đã ghi thì lần
+                    # sau ghi lại idempotent).
+                    await commit(session)
                 break
             except PlatformAuthError:
                 # 02 §10.2 architecture: token hết hạn giữa chừng → refresh một lần rồi thử lại.

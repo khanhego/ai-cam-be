@@ -11,11 +11,11 @@ from datetime import timedelta
 from pathlib import Path
 
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
-from aicam.core.db import commit, rollback
+from aicam.core.db import commit, is_lock_conflict, rollback
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.pagination import Page
@@ -185,6 +185,10 @@ def _has_errors() -> AppError:
     )
 
 
+def _conflict() -> AppError:
+    return AppError("IMPORT_CONFLICT", "Dữ liệu đơn vừa thay đổi trong lúc nhập. Bấm Nhập lại.", 409)
+
+
 def _expired() -> AppError:
     return AppError("IMPORT_EXPIRED", "Bản xem trước đã hết hạn. Tải file lại.", 409)
 
@@ -252,22 +256,27 @@ async def commit_import(
                 counts.new += 1
             else:
                 counts.updated += 1
+        row.status = "COMMITTED"
+        row.committed_at = clock.now()
+        row.counts = counts.model_dump()
+        audit.record(
+            session, "IMPORT_COMMIT", user_id=p.user_id, object_type="CSV_IMPORT", object_id=row.id, ip=p.ip,
+            data={"file_name": row.file_name, "counts": row.counts},
+        )  # fmt: skip
+        await commit(session)
     except (IntegrityError, orders.CsvWriteConflict) as exc:
         # Đồng bộ Shopee / quét tạo cùng đơn hoặc mã vận đơn, hoặc kiện vừa được gắn vào đơn khác (G3-F5)
         # đúng lúc nhập: không nhập phần nào; bấm Nhập lại → phân loại lại báo lỗi dòng.
         await rollback(session)
-        raise AppError(
-            "IMPORT_CONFLICT", "Dữ liệu đơn vừa thay đổi trong lúc nhập. Bấm Nhập lại.", 409
-        ) from exc
-    row.status = "COMMITTED"
-    row.committed_at = clock.now()
-    row.counts = counts.model_dump()
-    audit.record(
-        session, "IMPORT_COMMIT", user_id=p.user_id, object_type="CSV_IMPORT", object_id=row.id, ip=p.ip,
-        data={"file_name": row.file_name, "counts": row.counts},
-    )  # fmt: skip
-    await commit(session)
-    return ImportCommitOut(id=row.id, status=row.status, counts=counts)
+        raise _conflict() from exc
+    except DBAPIError as exc:
+        # Postgres hủy vì khóa chéo với J-04 / quét (40P01) hoặc hết lock_timeout (55P03) — DEC-162 (G3-V1):
+        # rollback cả lần nhập, bản xem trước vẫn PREVIEW → bấm Nhập lại.
+        if not is_lock_conflict(exc):
+            raise
+        await rollback(session)
+        raise _conflict() from exc
+    return ImportCommitOut(id=row.id, status="COMMITTED", counts=counts)
 
 
 async def history(session: AsyncSession, page: int, page_size: int) -> Page[ImportItem]:

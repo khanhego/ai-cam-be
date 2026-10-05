@@ -351,6 +351,45 @@ async def test_commit_does_not_steal_package_claimed_after_classify(
     assert owner.platform_order_sn == "2410APIY0001"
 
 
+async def test_commit_deadlock_is_409_and_preview_kept(
+    api: AsyncClient, db: AsyncSession, sup: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-V1 (DEC-162): Postgres hủy transaction API-51 vì khóa chéo với J-04 (40P01) → rollback, 409
+    IMPORT_CONFLICT (không 500), không nhập phần nào, bản xem trước vẫn PREVIEW → bấm Nhập lại thành công."""
+    from sqlalchemy.exc import DBAPIError
+
+    from aicam.modules.imports.models import CsvImport
+
+    class Deadlock(Exception):
+        pgcode = "40P01"
+
+    csv = HEADER + "2410DLK00001,SPXDLK0000001,,Áo,,1,\n2410DLK00002,SPXDLK0000002,,Quần,,1,\n"
+    body = (await _upload(api, sup, csv.encode())).json()
+    original = orders.apply_csv_order
+    calls = 0
+
+    async def deadlock_on_second(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise DBAPIError("SELECT ... FOR UPDATE", {}, Deadlock("deadlock detected"))
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(orders, "apply_csv_order", deadlock_on_second)
+    res = await api.post(f"/api/v1/imports/{body['id']}/commit", headers=sup)
+
+    assert (res.status_code, res.json()["error"]["code"]) == (409, "IMPORT_CONFLICT")
+    assert await db.scalar(select(Order).where(Order.platform_order_sn == "2410DLK00001")) is None
+    row = await db.get(CsvImport, uuid.UUID(body["id"]), populate_existing=True)
+    assert row is not None
+    assert row.status == "PREVIEW"
+
+    monkeypatch.setattr(orders, "apply_csv_order", original)
+    again = await api.post(f"/api/v1/imports/{body['id']}/commit", headers=sup)
+    assert again.status_code == 200, again.text
+    assert again.json()["counts"]["new"] == 2
+
+
 async def test_xlsx_zip_bomb_is_422(api: AsyncClient, sup: dict[str, str]) -> None:
     """G3-N5: xlsx nhỏ bung ra 60 MB → 422 FILE_INVALID rõ ràng, không treo event loop / không 500."""
     import zipfile

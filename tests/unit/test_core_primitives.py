@@ -105,3 +105,18 @@ def test_staging_requires_real_secrets() -> None:
 
     with pytest.raises(ValidationError, match="staging cần đặt secret thật"):
         Settings(app_env="staging")
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"), [("40P01", True), ("55P03", True), ("23505", False), (None, False)]
+)
+def test_is_lock_conflict_by_sqlstate(code: str | None, expected: bool) -> None:
+    """DEC-162 (G3-V1): chỉ deadlock / hết lock_timeout mới thành 409 IMPORT_CONFLICT; lỗi DB khác vẫn 500."""
+    from sqlalchemy.exc import DBAPIError
+
+    from aicam.core.db import is_lock_conflict
+
+    class PgError(Exception):
+        sqlstate = code
+
+    assert is_lock_conflict(DBAPIError("SELECT 1", {}, PgError("x"))) is expected
