@@ -10,6 +10,7 @@ import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại g
 from aicam import __version__
 from aicam.core.db import dispose_engine, init_engine
 from aicam.core.errors import install_error_handlers
+from aicam.core.limits import BodySizeLimitMiddleware
 from aicam.core.logging import configure_logging
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import Settings, get_settings
@@ -58,6 +59,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     install_error_handlers(app)
+    app.add_middleware(BodySizeLimitMiddleware)  # G3-N2: chặn body quá lớn trước khi Starlette spool ra đĩa
     if settings.cors_origins:
         app.add_middleware(
             CORSMiddleware,

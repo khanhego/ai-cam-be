@@ -3,6 +3,7 @@
 File gốc lưu dưới `IMPORT_ROOT`, cột `file_path` giữ đường dẫn **tương đối** (DEC-105).
 """
 
+import asyncio
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -136,7 +137,8 @@ async def upload(
     """API-50: kiểm định dạng → phân loại → lưu file gốc + bản xem trước (hạn 30 phút)."""
     name = _safe_name(file_name)
     ext = parser.extension_of(name)
-    parsed = parser.parse(content, ext, settings.scan_code_regex)
+    # Đọc file (CPU, có thể vài trăm ms với xlsx) ngoài event loop: không làm chậm quét ở station (G3-N5).
+    parsed = await asyncio.to_thread(parser.parse, content, ext, settings.scan_code_regex)
     result = await classify(session, parsed)
 
     now = clock.now()
@@ -211,7 +213,9 @@ async def commit_import(
     if not row.file_path or not path.is_file():
         raise _expired()
 
-    parsed = parser.parse(path.read_bytes(), parser.extension_of(row.file_name), settings.scan_code_regex)
+    content = await asyncio.to_thread(path.read_bytes)
+    ext = parser.extension_of(row.file_name)
+    parsed = await asyncio.to_thread(parser.parse, content, ext, settings.scan_code_regex)
     result = await classify(session, parsed)
     if result.errors:
         row.counts = result.counts.model_dump()

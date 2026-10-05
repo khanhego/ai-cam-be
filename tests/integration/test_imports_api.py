@@ -349,3 +349,14 @@ async def test_commit_does_not_steal_package_claimed_after_classify(
     owner = await db.get(Order, package.order_id) if package and package.order_id else None
     assert owner is not None
     assert owner.platform_order_sn == "2410APIY0001"
+
+
+async def test_xlsx_zip_bomb_is_422(api: AsyncClient, sup: dict[str, str]) -> None:
+    """G3-N5: xlsx nhỏ bung ra 60 MB → 422 FILE_INVALID rõ ràng, không treo event loop / không 500."""
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("xl/worksheets/sheet1.xml", b"\0" * (60 * 1024 * 1024))
+    res = await _upload(api, sup, buf.getvalue(), "bom.xlsx")
+    assert (res.status_code, res.json()["error"]["code"]) == (422, "FILE_INVALID")

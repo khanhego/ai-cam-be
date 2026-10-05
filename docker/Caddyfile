@@ -19,6 +19,10 @@
 		Referrer-Policy no-referrer
 		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
 		Cross-Origin-Opener-Policy same-origin
+		# CSP cơ bản (G3-N10): mọi tài nguyên cùng origin; WS (/ws), WHEP (/live, fetch + WebRTC), video ký (blob:).
+		# `script-src` cho phép đúng script chọn theme inline trong ai-cam-fe/index.html theo hash — FE đổi script đó
+		# thì tính lại hash (docs/ops.md §9) hoặc chuyển script ra file riêng.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'sha256-wMAAS9iOALRtpDOTov76eUExYsm6fx4bcqr2Ai49TZU='; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
 		-Server
 	}
 
@@ -40,7 +44,20 @@
 		respond 404
 	}
 
+	# Giới hạn body ở proxy (G3-N2): upload nhập đơn ≤ 6 MB (file ≤ 5 MB + multipart), API JSON khác ≤ 1 MB.
+	# api kiểm lại Content-Length (core/limits.py) — chặn trước khi Starlette spool multipart ra đĩa.
+	@imports path /api/v1/imports /api/v1/imports/*
+	handle @imports {
+		request_body {
+			max_size 6MB
+		}
+		reverse_proxy api:8000
+	}
+
 	handle /api/* {
+		request_body {
+			max_size 1MB
+		}
 		reverse_proxy api:8000
 	}
 

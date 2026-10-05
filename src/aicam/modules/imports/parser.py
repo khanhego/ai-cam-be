@@ -6,6 +6,7 @@ Chỉ đọc + kiểm từng ô; không chạm DB. Phân loại NEW / UPDATE / S
 import csv
 import io
 import re
+import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,6 +14,12 @@ from aicam.core.errors import AppError
 
 MAX_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 5000
+# Chống zip bomb (G3-N5): xlsx là zip — 5 MB nén có thể bung ra hàng GB XML.
+XLSX_MAX_UNZIPPED = 50 * 1024 * 1024
+XLSX_MAX_ENTRIES = 500
+XLSX_MAX_RATIO = 200  # một phần tử > 1 MB nén hơn 200 lần là bất thường với bảng đơn hàng
+# openpyxl read-only đệm mỗi dòng tới `max_column` khai trong `<dimension>` (G3-P2-3): chỉ đọc số cột hữu ích.
+XLSX_MAX_COLS = 7 + 30  # 7 cột mẫu + dư cho cột thêm của người dùng
 COLUMNS = (
     "platform_order_sn",
     "tracking_number",
@@ -87,20 +94,48 @@ def _csv_table(content: bytes) -> list[list[str]]:
     first_line = text.split("\n", 1)[0]
     # Excel tiếng Việt hay xuất CSV phân cách `;`.
     delimiter = max((",", ";", "\t"), key=first_line.count)
-    return [list(r) for r in csv.reader(io.StringIO(text), delimiter=delimiter)]
+    try:
+        return [list(r) for r in csv.reader(io.StringIO(text), delimiter=delimiter)]
+    except csv.Error as exc:  # ô > 131.072 ký tự, dấu nháy hỏng… (G3-P2-9)
+        raise file_invalid(
+            "File CSV sai định dạng (ô quá dài hoặc dấu nháy không đóng). Dùng file mẫu."
+        ) from exc
+
+
+def check_xlsx_zip(content: bytes) -> None:
+    """Từ chối xlsx bung ra quá lớn trước khi openpyxl đọc (G3-N5). Kích thước khai trong zip được `zipfile`
+    áp khi giải nén (không đọc quá `file_size`), nên kiểm trên header là đủ."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            entries = archive.infolist()
+    except (zipfile.BadZipFile, ValueError) as exc:
+        raise file_invalid("Không đọc được file Excel. Dùng file mẫu.") from exc
+    too_big = file_invalid("File Excel bất thường (dữ liệu nén quá lớn). Lưu lại thành .csv rồi nhập.")
+    if len(entries) > XLSX_MAX_ENTRIES:
+        raise too_big
+    total = 0
+    for info in entries:
+        total += info.file_size
+        if info.file_size > 1024 * 1024 and info.file_size > XLSX_MAX_RATIO * max(info.compress_size, 1):
+            raise too_big
+    if total > XLSX_MAX_UNZIPPED:
+        raise too_big
 
 
 def _xlsx_table(content: bytes) -> list[list[str]]:
     from openpyxl import load_workbook
 
+    check_xlsx_zip(content)
     try:
         book = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except Exception as exc:  # zip hỏng, không phải xlsx…
         raise file_invalid("Không đọc được file Excel. Dùng file mẫu.") from exc
     try:
         sheet = book.worksheets[0]
+        if hasattr(sheet, "reset_dimensions"):  # bỏ `<dimension>` khai láo (A1:XFD…) — G3-P2-3
+            sheet.reset_dimensions()
         table: list[list[str]] = []
-        for values in sheet.iter_rows(values_only=True):
+        for values in sheet.iter_rows(values_only=True, max_col=XLSX_MAX_COLS):
             table.append([_cell(v) for v in values])
             if len(table) > MAX_ROWS + 1 + 1000:  # đủ để báo vượt giới hạn, không đọc hết file khổng lồ
                 break
