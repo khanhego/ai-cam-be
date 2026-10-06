@@ -383,3 +383,97 @@ async def test_sql_and_python_predicates_agree(db: AsyncSession) -> None:
         hit = set((await db.scalars(select(PackSession.id).where(PackSession.id.in_(ids), sql))).all())
         assert hit == {s.id for s in made if py(s)}
     assert len(made) > 200
+
+
+# ---------------------------------------------------------------- (14), (15) v0.5 — T-290 gỡ lý do hủy
+
+
+async def test_confirm_return_overrides_cancel_reason_admin_only(
+    api: AsyncClient, db: AsyncSession, test_settings: Settings
+) -> None:
+    """(14): station hủy `WRONG_SCAN` phiên G sớm nhất (chọn nhầm lý do) → CSKH `CONFIRM_RETURN` 403; ADMIN →
+    G vào bằng chứng hồ sơ `{id}` (`auto = false`), là phiên chính, rời `excluded_return_sessions`, N03 / D2
+    đếm G như phiên hủy thật; hồ sơ khác không tự thêm."""
+    station, package, case, _ = await _setup(db)
+    g = await _return(db, station, package, case, T0, "CANCELLED", cancel_reason="WRONG_SCAN")
+    d = await _return(
+        db, station, package, case, T0 + timedelta(minutes=9), "COMPLETED", conclusion="EMPTY_BOX"
+    )
+    created = await claims.create_from_return(db, d, case)
+    assert created is not None
+    claim = created.claim
+    cskh, _ = await _login(api, db, "CSKH")
+    admin, admin_p = await _login(api, db, "ADMIN")
+    other = await _manual(db, admin_p, package, case, "DAMAGED")
+    assert g.id not in await _active(db, claim.id)
+    assert (await reports.daily(db, None, test_settings)).counts.returns_dropped_7d == 0
+    detail = (await api.get(f"/api/v1/claims/{claim.id}", headers=admin)).json()
+
+    denied = await _review(api, cskh, detail, g.id, "CONFIRM_RETURN", note="Xem video: kiện hoàn thật")
+    assert denied.status_code == 403
+    assert denied.json()["error"]["message"] == "Chỉ Admin / Supervisor gỡ lý do hủy của phiên."
+
+    res = await _review(api, admin, detail, g.id, "CONFIRM_RETURN", note="Xem video: kiện hoàn thật")
+
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert _primary(body) == [str(g.id)]
+    ev = next(e for e in body["evidence"] if e["session"] and e["session"]["id"] == str(g.id))
+    assert (ev["auto"], ev["session"]["evidence_exclusion"]) == (False, None)
+    assert ev["session"]["return_confirmed"]["by"]["display_name"] == "ADMIN QA"
+    assert body["excluded_return_sessions"] == []
+    assert g.id not in await _active(db, other.id)  # hồ sơ khác không tự thêm
+    confirm = await db.scalar(select(AuditLog).where(AuditLog.action == "SESSION_RETURN_CONFIRM"))
+    assert confirm is not None
+    assert confirm.data["overridden_cause"] == "WRONG_SCAN"
+    assert (await reports.daily(db, None, test_settings)).counts.returns_dropped_7d == 1
+    loaded = await db.get(Claim, claim.id)
+    assert loaded is not None
+    rows, _ = await claim_pack._session_rows(db, loaded)
+    assert next(s.id for s, main, kind in rows if kind == "mo-hoan" and main) == g.id
+
+    # (15) đã xác nhận rồi đánh dấu quét nhầm → loại lại; bỏ đánh dấu → về trạng thái đã xác nhận
+    marked = await _review(api, admin, body, g.id, "MARK_WRONG_SCAN", reason_code="WRONG_SCAN")
+    assert marked.status_code == 200, marked.text
+    assert [x["evidence_exclusion"] for x in marked.json()["excluded_return_sessions"]] == ["MARKED"]
+    assert _primary(marked.json()) == [str(d.id)]
+    again = await _review(api, admin, marked.json(), g.id, "CONFIRM_RETURN", note="Xác nhận lại lần nữa")
+    assert (again.status_code, again.json()["error"]["code"]) == (409, "SESSION_NOT_ELIGIBLE")
+    unmarked = await _review(api, admin, marked.json(), g.id, "UNMARK_WRONG_SCAN", note="Đánh dấu nhầm")
+    assert unmarked.status_code == 200, unmarked.text
+    assert unmarked.json()["excluded_return_sessions"] == []
+    await db.refresh(g)
+    assert (g.review_confirmed_at is not None, g.wrong_scan_at) == (True, None)
+
+
+async def test_confirm_return_restores_soft_removed_row(api: AsyncClient, db: AsyncSession) -> None:
+    """Phiên bị loại CSKH đã thêm tay rồi bỏ → SUPERVISOR `CONFIRM_RETURN` thêm lại đúng dòng cũ."""
+    station, package, case, _ = await _setup(db)
+    g = await _return(db, station, package, case, T0, "CANCELLED", cancel_reason="SUPERVISOR",
+                      cancel_cause="NOT_A_RETURN")  # fmt: skip
+    sup, p = await _login(api, db, "SUPERVISOR")
+    claim = await _manual(db, p, package, case, "EMPTY_BOX")
+    detail = (await api.get(f"/api/v1/claims/{claim.id}", headers=sup)).json()
+    sessions_now = [e["session"]["id"] for e in detail["evidence"] if e["session"]]
+    snaps = [e["snapshot"]["id"] for e in detail["evidence"] if e["snapshot"]]
+    added = (
+        await api.put(f"/api/v1/claims/{claim.id}/evidence", headers=sup,
+                      json={"version": detail["version"], "session_ids": [*sessions_now, str(g.id)],
+                            "snapshot_ids": snaps})
+    ).json()  # fmt: skip
+    removed = (
+        await api.put(f"/api/v1/claims/{claim.id}/evidence", headers=sup,
+                      json={"version": added["version"], "session_ids": sessions_now, "snapshot_ids": snaps,
+                            "note": "Bỏ phiên không phải hàng hoàn"})
+    ).json()  # fmt: skip
+    row_id = await db.scalar(
+        select(ClaimEvidence.id).where(ClaimEvidence.claim_id == claim.id, ClaimEvidence.session_id == g.id)
+    )
+
+    res = await _review(api, sup, removed, g.id, "CONFIRM_RETURN", note="Xem lại video: là kiện hoàn")
+
+    assert res.status_code == 200, res.text
+    ev = next(e for e in res.json()["evidence"] if e["session"] and e["session"]["id"] == str(g.id))
+    assert ev["id"] == str(row_id)  # cùng dòng, không thêm dòng mới
+    assert _primary(res.json()) == [str(g.id)]
+    assert res.json()["removed_evidence"] == []

@@ -5,8 +5,8 @@
   có phiên (hoặc ảnh của phiên) trong bằng chứng → bỏ mềm (BR-38 — video giữ tới `keep_until`); hồ sơ đã
   đóng giữ nguyên.
 - `UNMARK_WRONG_SCAN`: xóa đánh dấu; **không** tự thêm lại (CSKH dùng API-134 "Thêm lại").
-- `CONFIRM_RETURN`: xác nhận "Là phiên hoàn thật" cho phiên cần soát (Supervisor hủy trước Phase 3) — và
-  (v0.5, T-290) phiên bị loại theo lý do hủy.
+- `CONFIRM_RETURN`: xác nhận "Là phiên hoàn thật" cho phiên cần soát (Supervisor hủy trước Phase 3) và
+  (v0.5, T-290) phiên bị loại theo lý do hủy — chỉ ADMIN / SUPERVISOR.
 
 Thứ tự khóa (02a §4 API-189, DEC-251): hồ sơ (id tăng, gồm `{id}`) → `session` → `claim_evidence`.
 """
@@ -27,6 +27,7 @@ from aicam.modules.claims import service as claims
 from aicam.modules.claims.models import Claim, ClaimEvidence
 from aicam.modules.claims.schemas import ReviewIn
 from aicam.modules.media.models import Snapshot
+from aicam.modules.media.protection import lock_session_clips
 from aicam.modules.sessions.models import PackSession
 
 log = structlog.get_logger()
@@ -231,16 +232,53 @@ def _unmark(db: AsyncSession, pack: PackSession, claim: Claim, note: str, p: Pri
     )  # fmt: skip
 
 
+def excluded_by_cause(s: PackSession) -> bool:
+    """Bị loại **theo lý do hủy** (station / Supervisor chọn quét nhầm / không phải hàng hoàn), chưa xác nhận,
+    chưa đánh dấu quét nhầm — đối tượng gỡ loại của `CONFIRM_RETURN` v0.5 (DEC-529)."""
+    return (
+        s.type == "RETURN"
+        and s.wrong_scan_at is None
+        and s.review_confirmed_at is None
+        and evidence_rules.excluded(s)
+    )
+
+
 async def confirm_return(db: AsyncSession, pack: PackSession, claim: Claim, note: str, p: Principal) -> None:
-    """`CONFIRM_RETURN` cho phiên cần soát (DEC-516): phiên thành phiên thường (có thể là phiên chính)."""
-    if not evidence_rules.review_needed(pack):
+    """`CONFIRM_RETURN` (DEC-516, DEC-529): phiên cần soát → phiên thường; phiên bị loại theo lý do hủy
+    (chọn nhầm lý do) → gỡ loại (chỉ ADMIN / SUPERVISOR), vào bằng chứng hồ sơ `{id}` (thêm `auto = false`
+    hoặc thêm lại dòng đã bỏ) — hồ sơ khác không tự thêm. Phiên đã đánh dấu quét nhầm: dùng `UNMARK` trước
+    (đánh dấu thắng)."""
+    overridden: str | None = None
+    if evidence_rules.review_needed(pack):
+        pass
+    elif excluded_by_cause(pack):
+        if p.role not in ("ADMIN", "SUPERVISOR"):
+            raise AppError("FORBIDDEN", "Chỉ Admin / Supervisor gỡ lý do hủy của phiên.", 403)
+        overridden = evidence_rules.effective_cancel_reason(pack)
+    else:
         raise _not_eligible("Phiên không cần xác nhận.")
     pack.review_confirmed_at, pack.review_confirmed_by, pack.review_confirmed_note = (
         clock.now(),
         p.user_id,
         note,
     )
+    if overridden is not None:
+        row: ClaimEvidence | None = await db.scalar(
+            select(ClaimEvidence)
+            .where(ClaimEvidence.claim_id == claim.id, ClaimEvidence.session_id == pack.id)
+            .with_for_update()
+        )
+        if row is None:
+            await claims.add_evidence(db, claim, [pack.id], [], auto=False, added_by=p.user_id)
+        elif row.removed_at is not None:
+            await lock_session_clips(db, [pack.id])  # như thêm lại ở API-134 (DEC-251, DEC-543)
+            row.removed_at = row.removed_by = row.removed_reason = None
+        claims.add_note(
+            db, claim, "NOTE", f"Xác nhận phiên mở hoàn là phiên hoàn thật (gỡ lý do hủy). Ghi chú: {note}",
+            p.user_id,
+        )  # fmt: skip
     audit.record(
         db, "SESSION_RETURN_CONFIRM", user_id=p.user_id, object_type="SESSION", object_id=pack.id, ip=p.ip,
-        data={"session_id": str(pack.id), "claim_id": str(claim.id), "note": note, "overridden_cause": None},
+        data={"session_id": str(pack.id), "claim_id": str(claim.id), "note": note,
+              "overridden_cause": overridden},
     )  # fmt: skip

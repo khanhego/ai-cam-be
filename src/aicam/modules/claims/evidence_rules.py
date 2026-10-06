@@ -25,6 +25,7 @@ from aicam.modules.returns.models import ReturnCasePackage
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.sessions.queries import (
     EXCLUDED_CANCEL_REASONS,
+    effective_cancel_reason,
     excluded,
     excluded_return_sql,
     review_needed,
@@ -32,7 +33,13 @@ from aicam.modules.sessions.queries import (
 )
 
 PRIOR_STATUSES = ("CANCELLED", "ABANDONED")
-__all__ = ["EXCLUDED_CANCEL_REASONS", "evidence_exclusion", "excluded", "review_needed"]
+__all__ = [
+    "EXCLUDED_CANCEL_REASONS",
+    "effective_cancel_reason",
+    "evidence_exclusion",
+    "excluded",
+    "review_needed",
+]
 
 
 def evidence_exclusion(s: PackSession) -> str | None:
