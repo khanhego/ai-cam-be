@@ -27,6 +27,7 @@ from aicam.modules.platforms.base import (
     PlatformAdapter,
     PlatformError,
     PlatformOrder,
+    PlatformReturn,
     ShippingStatus,
     ShopCredentials,
 )
@@ -79,6 +80,15 @@ class UnconfiguredAdapter:
     async def get_shipping_statuses(self, creds: ShopCredentials | None, refs: Any) -> list[ShippingStatus]:
         return []
 
+    async def list_returns(
+        self, creds: ShopCredentials | None, since: datetime
+    ) -> AsyncIterator[PlatformReturn]:
+        raise PlatformError("Chưa cấu hình Shopee")
+        yield  # pragma: no cover — biến hàm thành async generator
+
+    async def get_return(self, creds: ShopCredentials | None, return_sn: str) -> PlatformReturn | None:
+        return None
+
 
 @lru_cache
 def _mock() -> MockAdapter:
@@ -94,11 +104,18 @@ def _shopee(
     attempts: int,
     backoff_s: float,
     lookback_min: int,
+    returns_page_size: int = 50,
+    returns_window_days: int = 15,
 ) -> ShopeeAdapter:
     client = ShopeeClient(
         partner_id, partner_key, base_url, timeout_s=timeout_s, max_attempts=attempts, backoff_s=backoff_s
     )
-    return ShopeeAdapter(client, lookup_lookback=timedelta(minutes=lookback_min))
+    return ShopeeAdapter(
+        client,
+        lookup_lookback=timedelta(minutes=lookback_min),
+        returns_page_size=returns_page_size,
+        returns_window=timedelta(days=returns_window_days),
+    )
 
 
 def is_configured(settings: Settings) -> bool:
@@ -133,7 +150,8 @@ def get_adapter(settings: Settings) -> PlatformAdapter:
     return _shopee(
         int(settings.shopee_partner_id), settings.shopee_partner_key, settings.shopee_base_url,
         settings.shopee_timeout_s, settings.shopee_max_attempts, settings.shopee_backoff_s,
-        settings.shopee_lookup_lookback_min,
+        settings.shopee_lookup_lookback_min, settings.shopee_returns_page_size,
+        settings.shopee_returns_window_days,
     )  # fmt: skip
 
 

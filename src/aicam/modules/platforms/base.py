@@ -34,9 +34,47 @@ class PlatformOrder:
         return self.status in CANCELLED_STATUSES
 
 
+# Nhóm trạng thái yêu cầu trả (02a §7, DEC-262).
+RETURN_STATUS_GROUPS = ("OPEN", "CANCELLED", "DONE", "CLOSED")
+
+
+@dataclass(frozen=True)
+class ReturnItem:
+    """Dòng sản phẩm khách yêu cầu trả; ghép `order_item` theo sku / tên + phân loại ở `returns` (T-104)."""
+
+    quantity: int
+    item_id: str | None = None
+    model_id: str | None = None
+    sku: str | None = None
+    product_name: str | None = None
+    variation: str | None = None
+
+
+@dataclass(frozen=True)
+class PlatformReturn:
+    """Yêu cầu trả / hoàn tiền (02a §7). `status` giữ chữ sàn; `status_group` ∈ RETURN_STATUS_GROUPS."""
+
+    return_sn: str
+    order_sn: str
+    status: str
+    status_group: str
+    needs_parcel: bool
+    return_tracking_number: str | None = None
+    reason: str | None = None
+    # Có thể chứa thông tin người mua → không log (02a §3).
+    reason_text: str | None = None
+    items: tuple[ReturnItem, ...] = ()
+    seller_due_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class ShippingStatus:
-    """Gợi ý trạng thái kho từ trạng thái vận chuyển sàn: HANDED_OVER | DELIVERED | None.
+    """Gợi ý trạng thái kho từ trạng thái vận chuyển sàn: HANDED_OVER | DELIVERED | RETURN_EXPECTED | None.
+
+    RETURN_EXPECTED: tín hiệu hoàn (`TO_RETURN`, giao thất bại, boom COD — DEC-259).
 
     `order_status`: trạng thái đơn trên sàn lúc tra (để J-06 bắt đơn hủy sau khi đóng — EX-P10).
     """
@@ -95,3 +133,9 @@ class PlatformAdapter(Protocol):
     async def get_shipping_statuses(
         self, creds: ShopCredentials | None, refs: Sequence[ShipmentRef]
     ) -> list[ShippingStatus]: ...
+
+    def list_returns(
+        self, creds: ShopCredentials | None, since: datetime
+    ) -> AsyncIterator[PlatformReturn]: ...
+
+    async def get_return(self, creds: ShopCredentials | None, return_sn: str) -> PlatformReturn | None: ...

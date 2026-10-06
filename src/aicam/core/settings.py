@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     shopee_backoff_s: float = 0.5
     shopee_lookup_lookback_min: int = 60  # tra khi quét: dò đơn cập nhật trong 60 phút gần nhất
     shopee_initial_sync_days: int = 3  # lần đồng bộ đầu sau khi kết nối
+    # Phase 2 J-13 (02a §9) — chờ T-3 xác nhận giới hạn thật của `returns.get_return_list`.
+    shopee_returns_page_size: int = 50
+    shopee_returns_window_days: int = 15
 
     @property
     def is_production(self) -> bool:

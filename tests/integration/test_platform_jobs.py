@@ -439,3 +439,22 @@ async def test_j04_config_error_keeps_shop_connected(
     assert shop.auth_status == "CONNECTED"
     assert shop.last_error is not None
     assert shop.last_error["code"] == "SYNC_FAILED"
+
+
+async def test_j06_return_hint_keeps_phase1_step(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """T-103 / DEC-304: hint `RETURN_EXPECTED` (giao thất bại) — kiện PACKED vẫn sang HANDED_OVER như Phase 1;
+    `→ RETURN_EXPECTED` + hồ sơ hàng hoàn ở T-105. Kiện HANDED_OVER giữ nguyên (không InvalidTransition)."""
+    await _shop(db, test_settings)
+    package = await _packed(db, mock, 11)
+    mock.shipping["SPXTST0000011"] = "DELIVERY_FAILED"
+
+    await sync.sync_shipping_status(db, mock, test_settings)
+    await db.refresh(package)
+    assert package.warehouse_status == "HANDED_OVER"
+
+    out = await sync.sync_shipping_status(db, mock, test_settings)
+    await db.refresh(package)
+    assert package.warehouse_status == "HANDED_OVER"
+    assert out["changed"] == 0

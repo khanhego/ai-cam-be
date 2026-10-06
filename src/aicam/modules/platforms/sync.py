@@ -346,6 +346,9 @@ async def _apply_shipping(session: AsyncSession, package: Package, order: Order,
         ("PACKED", "HANDED_OVER"): ["HANDED_OVER"],
         ("PACKED", "DELIVERED"): ["HANDED_OVER", "DELIVERED"],
         ("HANDED_OVER", "DELIVERED"): ["DELIVERED"],
+        # Tín hiệu hoàn (DEC-259): T-103 chỉ áp bước "đã rời kho" như Phase 1; `→ RETURN_EXPECTED` + hồ sơ
+        # hàng hoàn qua `returns.attach_or_create` ở T-105 (DEC-304).
+        ("PACKED", "RETURN_EXPECTED"): ["HANDED_OVER"],
     }.get((package.warehouse_status, hint or ""), [])
     for to in steps:
         changed = (
