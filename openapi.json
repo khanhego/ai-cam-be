@@ -20,6 +20,99 @@
         "title": "AccountRef",
         "type": "object"
       },
+      "AdjustIn": {
+        "properties": {
+          "reason": {
+            "maxLength": 500,
+            "minLength": 5,
+            "title": "Reason",
+            "type": "string"
+          },
+          "recon_alert_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recon Alert Id"
+          },
+          "to_status": {
+            "enum": [
+              "NEW",
+              "PACKING",
+              "PACKED",
+              "HANDED_OVER",
+              "DELIVERED",
+              "CANCELLED",
+              "CANCELLED_AFTER_PACK",
+              "RETURN_EXPECTED",
+              "RETURN_INSPECTING",
+              "RETURN_RECEIVED_OK",
+              "RETURN_RECEIVED_ISSUE",
+              "RETURN_MISSING"
+            ],
+            "title": "To Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to_status",
+          "reason"
+        ],
+        "title": "AdjustIn",
+        "type": "object"
+      },
+      "AdjustOut": {
+        "properties": {
+          "package": {
+            "$ref": "#/components/schemas/AdjustedPackage"
+          },
+          "recon_alert": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReconAlertOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "package",
+          "recon_alert"
+        ],
+        "title": "AdjustOut",
+        "type": "object"
+      },
+      "AdjustedPackage": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "warehouse_status"
+        ],
+        "title": "AdjustedPackage",
+        "type": "object"
+      },
       "AlertOut": {
         "properties": {
           "code": {
@@ -49,6 +142,42 @@
           "message"
         ],
         "title": "AlertOut",
+        "type": "object"
+      },
+      "AlertPackage": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "platform_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "warehouse_status",
+          "platform_status"
+        ],
+        "title": "AlertPackage",
         "type": "object"
       },
       "ApprovalBrief": {
@@ -2256,6 +2385,107 @@
         "title": "RecentSession",
         "type": "object"
       },
+      "ReconAlertOut": {
+        "properties": {
+          "allowed_status_targets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Status Targets",
+            "type": "array"
+          },
+          "br": {
+            "title": "Br",
+            "type": "string"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "package": {
+            "$ref": "#/components/schemas/AlertPackage"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rule": {
+            "enum": [
+              "SHIPPED_NOT_PACKED",
+              "CANCELLED_AFTER_PACK",
+              "RETURN_OVERDUE",
+              "RETURN_UNANNOUNCED",
+              "PACKED_NOT_HANDED_OVER",
+              "RETURN_DONE_NOT_RECEIVED",
+              "UNVERIFIED_STALE"
+            ],
+            "title": "Rule",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "HIGH",
+              "MEDIUM",
+              "LOW"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "OPEN",
+              "RESOLVED",
+              "AUTO_RESOLVED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "rule",
+          "br",
+          "severity",
+          "status",
+          "package",
+          "context",
+          "detected_at",
+          "closed_at",
+          "resolution",
+          "allowed_status_targets"
+        ],
+        "title": "ReconAlertOut",
+        "type": "object"
+      },
       "RefreshIn": {
         "properties": {
           "client": {
@@ -2271,6 +2501,104 @@
           "client"
         ],
         "title": "RefreshIn",
+        "type": "object"
+      },
+      "Resolution": {
+        "properties": {
+          "action": {
+            "enum": [
+              "RESOLVE",
+              "ADJUST_STATUS",
+              "OPEN_CLAIM"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedBy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "claim_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Id"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "to_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Status"
+          }
+        },
+        "required": [
+          "action",
+          "note",
+          "by",
+          "at",
+          "to_status",
+          "claim_id"
+        ],
+        "title": "Resolution",
+        "type": "object"
+      },
+      "ResolvedBy": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "ResolvedBy",
         "type": "object"
       },
       "Roi": {
@@ -4882,6 +5210,60 @@
           }
         },
         "summary": "Package Detail",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/v1/packages/{package_id}/warehouse-status": {
+      "post": {
+        "description": "API-122: điều chỉnh trạng thái kho thủ công (FR-06.05).",
+        "operationId": "adjust_warehouse_status_api_v1_packages__package_id__warehouse_status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjustIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdjustOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Adjust Warehouse Status",
         "tags": [
           "packages"
         ]

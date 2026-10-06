@@ -77,6 +77,29 @@ def _prefixed_enums(prefix: str, enums: dict[str, frozenset[str]]) -> dict[str, 
 
 
 PAGE = ("page", "page_size", "total")
+# Item cảnh báo lệch (02 §6.2 API-120) — dùng lại trong API-121 / 122.
+RECON_ALERT_ITEM = (
+    "id",
+    "rule",
+    "br",
+    "severity",
+    "status",
+    "package.id",
+    "package.tracking_number",
+    "package.warehouse_status",
+    "package.platform_status",
+    "context",
+    "detected_at",
+    "closed_at",
+    "resolution.action",
+    "resolution.note",
+    "resolution.by.id",
+    "resolution.by.display_name",
+    "resolution.at",
+    "resolution.to_status",
+    "resolution.claim_id",
+    "allowed_status_targets",
+)
 APPROVAL_ITEM = (
     "id",
     "type",
@@ -325,6 +348,23 @@ CONTRACT: tuple[Api, ...] = (
             "timeline[].to_status",
             "timeline[].actor",
         ),
+    ),
+    Api(
+        "API-122",
+        "POST",
+        "/packages/{package_id}/warehouse-status",
+        200,
+        (
+            "package.id",
+            "package.tracking_number",
+            "package.warehouse_status",
+            *_prefixed("recon_alert", RECON_ALERT_ITEM),
+        ),
+        {
+            "recon_alert.severity": _e("HIGH", "MEDIUM", "LOW"),
+            "recon_alert.status": _e("OPEN", "RESOLVED", "AUTO_RESOLVED"),
+        },
+        request_fields=("to_status", "reason", "recon_alert_id"),
     ),
     Api(
         "API-32",

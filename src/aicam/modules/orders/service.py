@@ -11,7 +11,10 @@ from aicam.core import audit, clock
 from aicam.modules.orders.models import Order, OrderItem, Package, StatusHistory
 from aicam.modules.platforms.base import CANCELLED_STATUSES, PlatformItem, PlatformOrder
 
-# 01 §7 v0.3 (DEC-24). Khóa: (từ, tới).
+_RETURN_OPENABLE = ("RETURN_EXPECTED", "RETURN_MISSING", "HANDED_OVER", "DELIVERED", "NEW")
+_RETURN_RECEIVED = ("RETURN_RECEIVED_OK", "RETURN_RECEIVED_ISSUE")
+
+# 01 §7 v0.3 (DEC-24) + Phase 2. Khóa: (từ, tới).
 ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("NEW", "PACKING"),  # quét mở phiên
@@ -22,8 +25,40 @@ ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
         ("PACKED", "CANCELLED_AFTER_PACK"),  # sàn hủy sau khi đóng
         ("NEW", "CANCELLED"),  # sàn hủy trước khi đóng
         ("HANDED_OVER", "DELIVERED"),  # sàn báo giao thành công
+        # ---- Phase 2 (02 §5.3 v0.4, 01 §7.1)
+        ("NEW", "HANDED_OVER"),  # điều chỉnh tay (L6)
+        ("CANCELLED_AFTER_PACK", "HANDED_OVER"),  # điều chỉnh tay (DEC-258)
+        ("PACKING", "CANCELLED_AFTER_PACK"),  # đóng phiên khi đơn đã hủy (BR-21)
+        ("HANDED_OVER", "RETURN_EXPECTED"),  # giao thất bại / sàn hoàn về
+        ("DELIVERED", "RETURN_EXPECTED"),  # yêu cầu trả có kiện về
+        ("NEW", "RETURN_EXPECTED"),  # đơn trước khi dùng hệ thống (DEC-254)
+        ("RETURN_EXPECTED", "DELIVERED"),  # sàn hủy yêu cầu / chỉnh tay / khách trả một phần
+        ("RETURN_EXPECTED", "HANDED_OVER"),  # giao lại sau thất bại / khách trả một phần
+        ("RETURN_MISSING", "DELIVERED"),  # chỉnh tay / khách trả một phần
+        ("RETURN_MISSING", "HANDED_OVER"),  # khách trả một phần (DEC-271, R3-3)
+        ("RETURN_EXPECTED", "RETURN_MISSING"),  # BR-12
+        ("RETURN_MISSING", "RETURN_EXPECTED"),  # chỉnh tay gia hạn (DEC-255)
+        *((src, "RETURN_INSPECTING") for src in _RETURN_OPENABLE),  # mở phiên hoàn
+        *(
+            (src, dst) for src in _RETURN_OPENABLE for dst in _RETURN_RECEIVED if src != "NEW"
+        ),  # DEC-249, R2-9
+        ("RETURN_INSPECTING", "RETURN_RECEIVED_OK"),
+        ("RETURN_INSPECTING", "RETURN_RECEIVED_ISSUE"),
+        *(("RETURN_INSPECTING", src) for src in _RETURN_OPENABLE),  # hủy / bỏ dở → trạng thái trước
+        ("RETURN_RECEIVED_OK", "RETURN_RECEIVED_ISSUE"),  # sửa kết luận (API-113)
+        ("RETURN_RECEIVED_ISSUE", "RETURN_RECEIVED_OK"),
     }
 )
+
+# Điều chỉnh tay API-122 (01 §7.1 "Điều chỉnh tay", FR-06.05): từ → các đích được phép.
+MANUAL_TRANSITIONS: dict[str, tuple[str, ...]] = {
+    "NEW": ("HANDED_OVER",),
+    "PACKED": ("HANDED_OVER",),
+    "CANCELLED_AFTER_PACK": ("HANDED_OVER",),
+    "HANDED_OVER": ("DELIVERED",),
+    "RETURN_MISSING": ("RETURN_EXPECTED", "DELIVERED"),
+    "RETURN_EXPECTED": ("DELIVERED",),
+}
 
 
 class InvalidTransition(Exception):
@@ -47,18 +82,20 @@ async def transition(
         return False
     if (package.warehouse_status, to_status) not in ALLOWED_TRANSITIONS:
         raise InvalidTransition(package.warehouse_status, to_status)
+    now = clock.now()
     session.add(
         StatusHistory(
             package_id=package.id,
             source=source,
             from_status=package.warehouse_status,
             to_status=to_status,
-            at=clock.now(),
+            at=now,
             actor_user_id=actor_user_id,
             actor_label=actor_label,
         )
     )
     package.warehouse_status = to_status
+    package.status_changed_at = now  # DEC-225: mốc cho BR-12, BR-14
     return True
 
 

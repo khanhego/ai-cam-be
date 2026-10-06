@@ -1,4 +1,4 @@
-"""API-30, API-31 — 02 §6.2."""
+"""API-30, API-31, API-122 — 02 §6.2."""
 
 import uuid
 from datetime import date
@@ -11,13 +11,14 @@ from aicam.core.db import get_session
 from aicam.core.deps import Principal, require_roles
 from aicam.core.pagination import Page
 from aicam.core.settings import Settings, get_settings
-from aicam.modules.orders import packages
+from aicam.modules.orders import adjust, packages
 from aicam.modules.orders.models import WAREHOUSE_STATUSES
 from aicam.modules.sessions.models import SESSION_FLAGS, SESSION_STATUSES
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
 Staff = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR", "CSKH"))]
+Lead = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR"))]
 
 WarehouseStatus = Literal[WAREHOUSE_STATUSES]  # type: ignore[valid-type]
 SessionStatus = Literal[SESSION_STATUSES]  # type: ignore[valid-type]
@@ -54,3 +55,11 @@ async def search_packages(
 async def package_detail(package_id: uuid.UUID, _: Staff, db: DbSession) -> packages.PackageDetail:
     """API-31: chi tiết kiện, phiên, clip, dòng thời gian (FR-07.02)."""
     return await packages.detail(db, package_id)
+
+
+@router.post("/packages/{package_id}/warehouse-status", response_model=adjust.AdjustOut)
+async def adjust_warehouse_status(
+    package_id: uuid.UUID, body: adjust.AdjustIn, p: Lead, db: DbSession, settings: AppSettings
+) -> adjust.AdjustOut:
+    """API-122: điều chỉnh trạng thái kho thủ công (FR-06.05)."""
+    return await adjust.adjust_status(db, package_id, body, actor=p.user_id, ip=p.ip, tz=settings.tz_display)
