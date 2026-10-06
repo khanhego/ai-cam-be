@@ -1790,6 +1790,112 @@
         "title": "ClosedSessionOut",
         "type": "object"
       },
+      "CorrectIn": {
+        "properties": {
+          "conclusion": {
+            "enum": [
+              "OK",
+              "DAMAGED",
+              "MISSING_ITEM",
+              "WRONG_ITEM",
+              "EMPTY_BOX",
+              "OTHER"
+            ],
+            "title": "Conclusion",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineIn"
+            },
+            "maxItems": 200,
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conclusion",
+          "reason"
+        ],
+        "title": "CorrectIn",
+        "type": "object"
+      },
+      "CorrectionBefore": {
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conclusion",
+          "note",
+          "lines"
+        ],
+        "title": "CorrectionBefore",
+        "type": "object"
+      },
+      "CorrectionBy": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "CorrectionBy",
+        "type": "object"
+      },
       "DailyOut": {
         "properties": {
           "attention": {
@@ -2776,6 +2882,34 @@
           "expires_at"
         ],
         "title": "ImportPreviewOut",
+        "type": "object"
+      },
+      "InspectionCorrection": {
+        "description": "Một lần sửa kết luận (API-113, 02 §6.3 #4, DEC-261).",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "before": {
+            "$ref": "#/components/schemas/CorrectionBefore"
+          },
+          "by": {
+            "$ref": "#/components/schemas/CorrectionBy"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "by",
+          "reason",
+          "before"
+        ],
+        "title": "InspectionCorrection",
         "type": "object"
       },
       "InspectionIn": {
@@ -4054,6 +4188,41 @@
         "title": "PackReferenceClip",
         "type": "object"
       },
+      "PackSnapshot": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "READY",
+              "DELETED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "status"
+        ],
+        "title": "PackSnapshot",
+        "type": "object"
+      },
       "PackageBrief": {
         "properties": {
           "id": {
@@ -4092,12 +4261,59 @@
         "title": "PackageBrief",
         "type": "object"
       },
-      "PackageDetail": {
+      "PackageClaimBrief": {
         "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "type",
+          "status"
+        ],
+        "title": "PackageClaimBrief",
+        "type": "object"
+      },
+      "PackageDetail": {
+        "properties": {
+          "allowed_status_targets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Status Targets",
+            "type": "array"
+          },
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/PackageClaimBrief"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_placeholder": {
+            "title": "Is Placeholder",
+            "type": "boolean"
           },
           "order": {
             "anyOf": [
@@ -4119,6 +4335,20 @@
               }
             ],
             "title": "Platform Logistics Status"
+          },
+          "recon_alerts": {
+            "items": {
+              "$ref": "#/components/schemas/ReconAlertBrief"
+            },
+            "title": "Recon Alerts",
+            "type": "array"
+          },
+          "return_cases": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnCaseItem"
+            },
+            "title": "Return Cases",
+            "type": "array"
           },
           "sessions": {
             "items": {
@@ -4155,7 +4385,12 @@
           "verified",
           "order",
           "sessions",
-          "timeline"
+          "timeline",
+          "is_placeholder",
+          "return_cases",
+          "recon_alerts",
+          "claims",
+          "allowed_status_targets"
         ],
         "title": "PackageDetail",
         "type": "object"
@@ -4207,6 +4442,16 @@
             ],
             "title": "Platform Status"
           },
+          "return_case": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnCaseBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "source": {
             "anyOf": [
               {
@@ -4240,7 +4485,8 @@
           "source",
           "last_session",
           "has_clip",
-          "is_placeholder"
+          "is_placeholder",
+          "return_case"
         ],
         "title": "PackageItem",
         "type": "object"
@@ -4636,6 +4882,59 @@
         "title": "RecentSession",
         "type": "object"
       },
+      "ReconAlertBrief": {
+        "properties": {
+          "br": {
+            "title": "Br",
+            "type": "string"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "rule",
+          "br",
+          "severity",
+          "status",
+          "detected_at",
+          "closed_at"
+        ],
+        "title": "ReconAlertBrief",
+        "type": "object"
+      },
       "ReconAlertOut": {
         "properties": {
           "allowed_status_targets": {
@@ -4771,6 +5070,27 @@
           "summary"
         ],
         "title": "ReconAlertPage",
+        "type": "object"
+      },
+      "ReconOpen": {
+        "properties": {
+          "HIGH": {
+            "default": 0,
+            "title": "High",
+            "type": "integer"
+          },
+          "LOW": {
+            "default": 0,
+            "title": "Low",
+            "type": "integer"
+          },
+          "MEDIUM": {
+            "default": 0,
+            "title": "Medium",
+            "type": "integer"
+          }
+        },
+        "title": "ReconOpen",
         "type": "object"
       },
       "RefreshIn": {
@@ -4983,6 +5303,35 @@
           "next_run_at"
         ],
         "title": "RetentionImpactOut",
+        "type": "object"
+      },
+      "ReturnCaseBrief": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status"
+        ],
+        "title": "ReturnCaseBrief",
         "type": "object"
       },
       "ReturnCaseDetail": {
@@ -6061,6 +6410,10 @@
       },
       "SessionDetail": {
         "properties": {
+          "can_correct": {
+            "title": "Can Correct",
+            "type": "boolean"
+          },
           "cancel_reason": {
             "anyOf": [
               {
@@ -6114,6 +6467,16 @@
             "title": "Id",
             "type": "string"
           },
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "note": {
             "anyOf": [
               {
@@ -6125,11 +6488,51 @@
             ],
             "title": "Note"
           },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "pack_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "protected_by_claims": {
             "items": {
               "$ref": "#/components/schemas/ClaimRef"
             },
             "title": "Protected By Claims",
+            "type": "array"
+          },
+          "return_case_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Case Id"
+          },
+          "snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSnapshot"
+            },
+            "title": "Snapshots",
             "type": "array"
           },
           "started_at": {
@@ -6144,6 +6547,14 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "type": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
+            "type": "string"
           }
         },
         "required": [
@@ -6157,9 +6568,98 @@
           "cancel_reason",
           "note",
           "clips",
-          "protected_by_claims"
+          "protected_by_claims",
+          "type",
+          "operator_name",
+          "return_case_id",
+          "inspection",
+          "can_correct",
+          "snapshots",
+          "pack_snapshot"
         ],
         "title": "SessionDetail",
+        "type": "object"
+      },
+      "SessionInspection": {
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "corrected": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InspectionCorrection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "corrections": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionCorrection"
+            },
+            "title": "Corrections",
+            "type": "array"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "lines_mode": {
+            "enum": [
+              "FULL",
+              "REFERENCE"
+            ],
+            "title": "Lines Mode",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "saved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved At"
+          }
+        },
+        "required": [
+          "conclusion",
+          "note",
+          "saved_at",
+          "lines_mode",
+          "lines",
+          "corrections",
+          "corrected"
+        ],
+        "title": "SessionInspection",
         "type": "object"
       },
       "SessionOut": {
@@ -6284,6 +6784,67 @@
           "abandon_at"
         ],
         "title": "SessionOut",
+        "type": "object"
+      },
+      "SessionSnapshot": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "MANUAL",
+              "PACK_CLOSE"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "protection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Protection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "READY",
+              "DELETED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "taken_at": {
+            "format": "date-time",
+            "title": "Taken At",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "taken_at",
+          "url",
+          "status",
+          "protection"
+        ],
+        "title": "SessionSnapshot",
         "type": "object"
       },
       "SettingsIn": {
@@ -6760,6 +7321,17 @@
             "title": "Name",
             "type": "string"
           },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
           "state": {
             "title": "State",
             "type": "string"
@@ -6774,6 +7346,10 @@
               }
             ],
             "title": "Tracking Number"
+          },
+          "work_mode": {
+            "title": "Work Mode",
+            "type": "string"
           }
         },
         "required": [
@@ -6782,7 +7358,9 @@
           "state",
           "cameras",
           "last_scan_at",
-          "tracking_number"
+          "tracking_number",
+          "work_mode",
+          "operator_name"
         ],
         "title": "StationDaily",
         "type": "object"
@@ -7600,6 +8178,10 @@
             "title": "Abandoned",
             "type": "integer"
           },
+          "cam2_unverified": {
+            "title": "Cam2 Unverified",
+            "type": "integer"
+          },
           "cancelled": {
             "title": "Cancelled",
             "type": "integer"
@@ -7608,8 +8190,20 @@
             "title": "Cancelled After Pack",
             "type": "integer"
           },
+          "claims_due_soon": {
+            "title": "Claims Due Soon",
+            "type": "integer"
+          },
+          "claims_open": {
+            "title": "Claims Open",
+            "type": "integer"
+          },
           "had_mismatch": {
             "title": "Had Mismatch",
+            "type": "integer"
+          },
+          "label_on_tray": {
+            "title": "Label On Tray",
             "type": "integer"
           },
           "packed": {
@@ -7619,6 +8213,29 @@
           "packed_not_handed_over": {
             "title": "Packed Not Handed Over",
             "type": "integer"
+          },
+          "recon_open": {
+            "$ref": "#/components/schemas/ReconOpen"
+          },
+          "returns_expected": {
+            "title": "Returns Expected",
+            "type": "integer"
+          },
+          "returns_missing": {
+            "title": "Returns Missing",
+            "type": "integer"
+          },
+          "returns_received": {
+            "title": "Returns Received",
+            "type": "integer"
+          },
+          "returns_received_issue": {
+            "title": "Returns Received Issue",
+            "type": "integer"
+          },
+          "returns_unidentified": {
+            "title": "Returns Unidentified",
+            "type": "integer"
           }
         },
         "required": [
@@ -7627,7 +8244,17 @@
           "abandoned",
           "cancelled",
           "packed_not_handed_over",
-          "cancelled_after_pack"
+          "cancelled_after_pack",
+          "returns_received",
+          "returns_received_issue",
+          "returns_unidentified",
+          "returns_expected",
+          "returns_missing",
+          "recon_open",
+          "claims_open",
+          "claims_due_soon",
+          "label_on_tray",
+          "cam2_unverified"
         ],
         "title": "Counts",
         "type": "object"
@@ -9580,6 +10207,26 @@
           },
           {
             "in": "query",
+            "name": "session_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "PACK",
+                    "RETURN"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Type"
+            }
+          },
+          {
+            "in": "query",
             "name": "source",
             "required": false,
             "schema": {
@@ -9652,7 +10299,7 @@
     },
     "/api/v1/packages/{package_id}": {
       "get": {
-        "description": "API-31: chi tiết kiện, phiên, clip (+ `protection` — ADR-009), dòng thời gian (FR-07.02, FR-02.09).",
+        "description": "API-31: chi tiết kiện, phiên (+ phiên hoàn: kết luận, ảnh), clip (+ `protection` — ADR-009), hồ sơ hàng\nhoàn / cảnh báo / hồ sơ khiếu nại, dòng thời gian (FR-07.02, FR-02.09, 02.11).",
         "operationId": "package_detail_api_v1_packages__package_id__get",
         "parameters": [
           {
@@ -10392,6 +11039,60 @@
         "summary": "Create Export",
         "tags": [
           "media"
+        ]
+      }
+    },
+    "/api/v1/sessions/{session_id}/inspection": {
+      "put": {
+        "description": "API-113: sửa kết luận phiên hoàn đã đóng ≤ 7 ngày (FR-04.11) → phiên như API-31 `sessions[]`.",
+        "operationId": "correct_inspection_api_v1_sessions__session_id__inspection_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Correct Inspection",
+        "tags": [
+          "packages"
         ]
       }
     },

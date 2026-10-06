@@ -84,8 +84,17 @@ async def test_daily_counts(api: AsyncClient, db: AsyncSession, redis_client: ob
 
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["counts"] == {"packed": 12, "had_mismatch": 3, "abandoned": 1, "cancelled": 2,
-                              "packed_not_handed_over": 4, "cancelled_after_pack": 1}  # fmt: skip
+    phase1 = (
+        "packed",
+        "had_mismatch",
+        "abandoned",
+        "cancelled",
+        "packed_not_handed_over",
+        "cancelled_after_pack",
+    )
+    expected = {"packed": 12, "had_mismatch": 3, "abandoned": 1, "cancelled": 2, "packed_not_handed_over": 4,
+                "cancelled_after_pack": 1}  # fmt: skip
+    assert {k: body["counts"][k] for k in phase1} == expected
     assert body["stations"][0]["state"] == "PACKING"
     assert body["stations"][0]["tracking_number"] == "SPXTST0000024"
     kinds = {a["kind"]: a for a in body["attention"]}

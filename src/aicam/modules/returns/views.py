@@ -75,7 +75,8 @@ def _day_start(day: date, tz: str) -> datetime:
     return datetime.combine(day, time.min, tzinfo=ZoneInfo(tz))
 
 
-async def _items(db: AsyncSession, cases: list[ReturnCase], tz: str) -> list[ReturnCaseItem]:
+async def items_of(db: AsyncSession, cases: list[ReturnCase], tz: str) -> list[ReturnCaseItem]:
+    """Item API-110 (dùng lại ở API-111, API-31 `return_cases[]`)."""
     ids = [c.id for c in cases]
     if not ids:
         return []
@@ -215,7 +216,11 @@ async def list_cases(
         ).all()
     )
     return ReturnCasePage(
-        items=await _items(db, cases, tz), page=page, page_size=page_size, total=total, tab_counts=tab_counts
+        items=await items_of(db, cases, tz),
+        page=page,
+        page_size=page_size,
+        total=total,
+        tab_counts=tab_counts,
     )
 
 
@@ -224,7 +229,7 @@ async def case_detail(db: AsyncSession, case_id: uuid.UUID, tz: str) -> ReturnCa
     found = await db.get(ReturnCase, case_id)
     if found is None:
         raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ hàng hoàn.", 404)
-    item = (await _items(db, [found], tz))[0]
+    item = (await items_of(db, [found], tz))[0]
     rows = (
         await db.execute(
             select(PackSession, Station.name)
