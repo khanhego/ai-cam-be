@@ -384,11 +384,9 @@ def _new_kind(signal: Signal) -> str:
 async def _case_with_key(session: AsyncSession, order_id: uuid.UUID, key: str) -> ReturnCase | None:
     result: ReturnCase | None = await session.scalar(
         select(ReturnCase)
-        .where(
-            ReturnCase.order_id == order_id,
-            ReturnCase.status != "CANCELLED",
-            ReturnCase.signal_keys.contains([key]),
-        )
+        .where(ReturnCase.order_id == order_id, ReturnCase.signal_keys.contains([key]))
+        # G3 BB-7: cùng khóa đợt kể cả hồ sơ đã hủy → không tạo lại (đợt mới có mốc khác → khóa khác).
+        .order_by(ReturnCase.status.in_(OPEN_CASE_STATUSES).desc(), ReturnCase.created_at.desc())
         .limit(1)
     )
     return result
@@ -453,7 +451,7 @@ async def attach_or_create(
         )
         if known is not None:
             return AttachResult(known)
-    if signal.key:
+    if signal.key and not signal.key.endswith(":-"):  # G3 F-13: thiếu mốc → không dùng làm khóa đợt
         existing = await _case_with_key(session, order.id, signal.key)
         if existing is not None:
             return AttachResult(existing)
@@ -531,7 +529,9 @@ def return_signal_key(return_sn: str) -> str:
 
 def failed_signal_key(order_sn: str, at: datetime | None) -> str:
     """`FAILED:{order_sn}:{mốc cập nhật}` (R3-7). Shopee chưa cho mốc cập nhật vận chuyển riêng (T-3) → dùng
-    `update_time` của đơn; J-04 và J-06 cùng mốc nên một đợt giao thất bại chỉ một khóa."""
+    `update_time` của đơn; J-04 và J-06 cùng mốc nên một đợt giao thất bại chỉ một khóa. Thiếu mốc → `…:-`:
+    chỉ đánh dấu hồ sơ có tín hiệu giao thất bại, KHÔNG dùng để chống trùng đợt (G3 F-13) — mọi đợt thiếu mốc
+    sau này sẽ không bị coi là "đã gắn"."""
     return f"FAILED:{order_sn}:{int(at.timestamp()) if at else '-'}"
 
 
@@ -671,13 +671,53 @@ def _openable_by_status(package: Package, order: Order | None, has_open_case: bo
 async def resolve_code(session: AsyncSession, code: str) -> Resolution:
     """Tra mã quét ở bàn hoàn (02a §4.1) — đọc, không khóa; người gọi kiểm lại dưới khóa."""
     code = code.strip().upper()
-    # 1. Mã vận đơn chiều về (ưu tiên hồ sơ chưa kết thúc).
-    case = await session.scalar(
+    # 0. Mã lạ đã quét trước đó → hồ sơ "Chưa xác định" mang mã đó (G3 SM-F8, DEC-344): còn mở → mở phiên trên
+    #    hồ sơ đó (không tạo hồ sơ trùng); đã nhận → `RETURN_ALREADY_RECEIVED` (lối "kiện khác" vẫn có).
+    unidentified = await session.scalar(
         select(ReturnCase)
-        .where(func.upper(ReturnCase.return_tracking_number) == code)
+        .join(PackSession, PackSession.return_case_id == ReturnCase.id)
+        .where(
+            PackSession.type == "RETURN",
+            func.upper(PackSession.open_code) == code,
+            ReturnCase.kind == "UNIDENTIFIED",
+            ReturnCase.manual_link_only.is_(False),
+            ReturnCase.merged_into_id.is_(None),
+            ReturnCase.status.in_((*OPEN_CASE_STATUSES, *RECEIVED_CASE_STATUSES)),
+        )
         .order_by(ReturnCase.status.in_(OPEN_CASE_STATUSES).desc(), ReturnCase.created_at.desc())
         .limit(1)
     )
+    if unidentified is not None:
+        own = await packages_of_case(session, unidentified.id)
+        package = await _first_unreceived(session, unidentified) or (own[0] if own else None)
+        if package is not None:
+            return Resolution("FOUND", package, unidentified, await _order_of(session, package))
+    # 1. Mã vận đơn chiều về (ưu tiên hồ sơ chưa kết thúc; hồ sơ đã hủy không dùng — G3 SM-F1, EX-R7: xử lý
+    # như
+    #    hàng hoàn không báo trước).
+    case = await session.scalar(
+        select(ReturnCase)
+        .where(func.upper(ReturnCase.return_tracking_number) == code)
+        .order_by(
+            ReturnCase.status.in_(OPEN_CASE_STATUSES).desc(),
+            ReturnCase.status.in_(RECEIVED_CASE_STATUSES).desc(),
+            ReturnCase.created_at.desc(),
+        )
+        .limit(1)
+    )
+    if (
+        case is not None
+        and case.merged_into_id is None
+        and case.status
+        not in (
+            *OPEN_CASE_STATUSES,
+            *RECEIVED_CASE_STATUSES,
+        )
+    ):
+        real = [p for p in await packages_of_case(session, case.id) if not p.is_placeholder]
+        if real:  # kiện của hồ sơ đã hủy, không gắn hồ sơ đó → mở như hàng hoàn không báo trước (EX-R1)
+            return Resolution("FOUND", real[0], None, await _order_of(session, real[0]))
+        case = None
     if case is not None and case.merged_into_id is not None:
         case = await session.get(ReturnCase, case.merged_into_id) or case
     if case is not None:
@@ -941,6 +981,10 @@ async def merge_unidentified(
     `kind = UNANNOUNCED`. Kiện thật `→ RETURN_INSPECTING → RETURN_RECEIVED_*` theo kết luận (2 bước).
     Hồ sơ khiếu nại của kiện tạm chuyển sang kiện thật (trùng BR-27 → gộp — DEC-311); `merged_claims` nhận
     các cặp đã gộp (API-112).
+
+    Bất biến khóa (G3 BB-8): người gọi giữ `order:{sn}` của `order` (J-04 / J-13 / API-112 lấy đầu tiên;
+    đóng phiên lấy bằng `try_lock_order`) → mọi đường khóa hồ sơ mở của đơn (sau khóa đơn) tuần tự theo đơn,
+    nên khóa hồ sơ đích sau hồ sơ chưa xác định / sau kiện không khóa chéo được.
     """
     target = next(
         (p for p in await packages_of_order(session, order.id) if p.tracking_number.upper() == code.upper()),
@@ -965,6 +1009,8 @@ async def merge_unidentified(
             PackSession.package_id == target.id,
             PackSession.type == "RETURN",
             PackSession.status == "COMPLETED",
+            PackSession.return_case_id
+            != case.id,  # G3 SM-F2: phiên của chính hồ sơ này (DEC-307c) không chặn
         )
     )
     if already is not None or (

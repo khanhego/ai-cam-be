@@ -10,7 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
-from sqlalchemy import and_, any_, func, literal, select
+from sqlalchemy import and_, any_, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -299,9 +299,15 @@ async def _return_attention(db: AsyncSession, counts: Counts) -> list[dict[str, 
             .select_from(PackSession)
             .where(
                 PackSession.type == "RETURN",
-                PackSession.status == "ABANDONED",
-                PackSession.ended_at >= since,
-                ~later_done,
+                or_(
+                    and_(PackSession.status == "ABANDONED", PackSession.ended_at >= since, ~later_done),
+                    # G3 J-07 (DEC-340): quá hạn bỏ dở nhưng kết luận đã lưu chưa đủ → giữ phiên, cần quản lý
+                    # xem.
+                    and_(
+                        PackSession.status.in_(("OPEN", "MISMATCH")),
+                        PackSession.flags.contains(["AUTO_CLOSE_BLOCKED"]),
+                    ),
+                ),
             )
         )
         or 0

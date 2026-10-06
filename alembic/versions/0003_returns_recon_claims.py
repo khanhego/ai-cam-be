@@ -851,8 +851,10 @@ def _remove_archived_rows(bind: sa.Connection) -> None:
         f"DELETE FROM package p WHERE p.id IN (SELECT id FROM {ARCHIVE}.placeholder_package) "
         "AND NOT EXISTS (SELECT 1 FROM session s WHERE s.package_id = p.id)"
     )
-    # Kiện tạm còn phiên không phải RETURN (hiếm — chỉnh tay API-122): giữ lại, trạng thái `CANCELLED` (không vào
-    # luồng đóng gói / bàn giao của code cũ; mã `TAM-` tự nói là kiện tạm) thay vì `DELIVERED` giả (G3 M-F9, DEC-338).
+    # Kiện tạm còn phiên không phải RETURN (hiếm — chỉnh tay API-122): giữ lại, trạng thái `CANCELLED` (không
+    # vào
+    # luồng đóng gói / bàn giao của code cũ; mã `TAM-` tự nói là kiện tạm) thay vì `DELIVERED` giả (G3 M-F9,
+    # DEC-338).
     kept = (
         bind.execute(
             sa.text(
@@ -897,7 +899,8 @@ def _restore_phase2(bind: sa.Connection) -> None:
     restored["placeholder_package"] = _copy_back(
         bind, "placeholder_package", "package", "ON CONFLICT (id) DO NOTHING"
     )
-    # Kiện: code cũ chưa đổi trạng thái từ lúc downgrade → trả trạng thái hoàn + mốc; đã đổi → giữ trạng thái mới.
+    # Kiện: code cũ chưa đổi trạng thái từ lúc downgrade → trả trạng thái hoàn + mốc; đã đổi → giữ trạng thái
+    # mới.
     changed = bind.execute(
         sa.text(
             f"SELECT count(*) FROM package p JOIN {ARCHIVE}.package_cols a ON a.id = p.id "
@@ -940,6 +943,7 @@ def _restore_phase2(bind: sa.Connection) -> None:
     )
     for archived, target in order:
         restored[archived] = _copy_back(bind, archived, target)
+    _detach_changed_packages(bind)
     bind.execute(
         sa.text(
             f"UPDATE session s SET ({_SESSION_COLS}) = (SELECT {_SESSION_COLS} FROM {ARCHIVE}.session_cols a "
@@ -969,6 +973,47 @@ def _restore_phase2(bind: sa.Connection) -> None:
     log.info("0003: khôi phục từ %s %s", ARCHIVE, json.dumps(restored, ensure_ascii=False))
     if short:
         log.warning("0003: số dòng khôi phục khác lúc chép (chép, khôi phục) %s", short)
+
+
+_OPEN_CASES = "'EXPECTED', 'INSPECTING', 'PARTIALLY_RECEIVED', 'MISSING'"
+_ACTIVE_PACKAGES = (
+    "'RETURN_EXPECTED', 'RETURN_INSPECTING', 'RETURN_MISSING', 'RETURN_RECEIVED_OK', 'RETURN_RECEIVED_ISSUE'"
+)
+
+
+def _detach_changed_packages(bind: sa.Connection) -> None:
+    """G3 BB-15 (DEC-338): kiện hoàn mà bản cũ đã đổi trạng thái (vd. xác nhận đã giao) không còn chờ về — gỡ khỏi
+    hồ sơ hàng hoàn đang mở; hồ sơ không còn kiện nào trong luồng hoàn → `CANCELLED` (như API-122 → DELIVERED).
+    Hồ sơ còn kiện khác: trạng thái hồ sơ được tính lại ở thao tác / J-14 kế tiếp. Log từng hồ sơ."""
+    detached = bind.execute(
+        sa.text(
+            "DELETE FROM return_case_package rcp USING return_case rc, package p, "
+            f"{ARCHIVE}.package_cols a WHERE rcp.return_case_id = rc.id AND rc.status IN ({_OPEN_CASES}) "
+            "AND p.id = rcp.package_id AND a.id = p.id AND a.downgraded_to IS NOT NULL AND NOT a.is_placeholder "
+            "AND p.warehouse_status <> a.warehouse_status RETURNING rc.id, rc.code, p.tracking_number"
+        )
+    ).all()
+    if not detached:
+        return
+    cancelled = (
+        bind.execute(
+            sa.text(
+                f"UPDATE return_case rc SET status = 'CANCELLED', updated_at = now() WHERE rc.id = ANY(:ids) "
+                f"AND rc.status IN ({_OPEN_CASES}) AND NOT EXISTS (SELECT 1 FROM return_case_package x JOIN package p "
+                f"ON p.id = x.package_id WHERE x.return_case_id = rc.id AND p.warehouse_status IN ({_ACTIVE_PACKAGES})) "
+                "RETURNING rc.code"
+            ),
+            {"ids": list({r.id for r in detached})},
+        )
+        .scalars()
+        .all()
+    )
+    log.warning(
+        "0003: gỡ %s kiện đã đổi trạng thái khi chạy bản cũ khỏi hồ sơ mở (%s); hủy hồ sơ không còn kiện: %s",
+        len(detached),
+        ", ".join(f"{r.code}/{r.tracking_number}" for r in detached),
+        ", ".join(cancelled) or "-",
+    )
 
 
 def _restore_sequences(bind: sa.Connection) -> None:

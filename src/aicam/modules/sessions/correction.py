@@ -146,6 +146,9 @@ async def correct(
         created_claim = result.claim.code if result else None
     elif not was_ok and now_ok:
         closed_claims = [c.code for c in await claims.close_auto_on_correct_ok(session, pack)]
+    elif old is not None and old != data.conclusion:  # lỗi → lỗi khác (G3 SM-F9)
+        retyped, result = await claims.retype_auto_on_correct(session, pack, case, old)
+        created_claim = result.claim.code if result else (retyped[0] if retyped else None)
     audit.record(
         session, "INSPECTION_CORRECT", user_id=actor, object_type="SESSION", object_id=pack.id, ip=ip,
         data={

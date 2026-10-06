@@ -600,6 +600,11 @@ async def open_return_by_request(
         code = package.tracking_number
     else:
         assert code is not None  # noqa: S101 — kiểm ở trên
+        # G3 SM-F8: hai station cùng mở "chưa xác định" cho một mã → tuần tự theo mã (khóa đầu tiên của
+        # transaction), bên sau tra lại thấy hồ sơ bên trước vừa tạo.
+        await session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"return_code:{code}"}
+        )
         resolution = await returns.resolve_code(session, code)
     if resolution.order is not None:
         await orders.lock_orders(session, [resolution.order.platform_order_sn])
@@ -890,6 +895,29 @@ async def timer_base(session: AsyncSession, pack: PackSession) -> datetime:
     return max(pack.started_at, resolved) if resolved else pack.started_at
 
 
+AUTO_CLOSE_BLOCKED = "AUTO_CLOSE_BLOCKED"
+
+
+async def _saved_inspection_complete(session: AsyncSession, pack: PackSession) -> bool:
+    """Kết luận + dòng kiểm đã lưu qua được kiểm tra của API-102 (BR-22: ghi chú khi Khác, nhất quán
+    Nguyên vẹn)."""
+    from aicam.modules.sessions import inspection
+
+    current = await inspection.lines_of(session, pack.id)
+    try:
+        inspection.validate(
+            lines_mode=pack.inspection_lines_mode or "FULL", conclusion=pack.inspection_conclusion,
+            note=pack.inspection_note, current=current,
+            lines=[
+                inspection.LineInput(x.order_item_id, x.quantity_received, x.condition, x.note)
+                for x in current
+            ],
+        )  # fmt: skip
+    except AppError:
+        return False
+    return True
+
+
 async def check_timeouts(session: AsyncSession, settings: Settings) -> dict[str, int]:
     """J-07 (BR-16): mở quá `warn` phút → cảnh báo một lần; quá `abandon` phút → ABANDONED.
 
@@ -931,7 +959,29 @@ async def check_timeouts(session: AsyncSession, settings: Settings) -> dict[str,
                 continue
             warn_after, abandon_after = limits[pack.type]
             age = clock.now() - await timer_base(session, pack)
-            if age >= abandon_after and pack.type == "RETURN" and pack.inspection_conclusion is not None:
+            if (
+                age >= abandon_after
+                and pack.type == "RETURN"
+                and pack.inspection_conclusion is not None
+                and not await _saved_inspection_complete(session, pack)
+            ):
+                # G3 J-07 (DEC-340): kết luận đã lưu nhưng chưa đủ (vd. "Khác" thiếu ghi chú) → không tự hoàn
+                # tất
+                # bằng dữ liệu dở: giữ phiên (cờ AUTO_CLOSE_BLOCKED, báo station một lần), D2 đếm ở "phiên
+                # hoàn
+                # bỏ dở" để quản lý xử lý.
+                if AUTO_CLOSE_BLOCKED in pack.flags:
+                    await rollback(session)
+                    continue
+                set_flag(pack, AUTO_CLOSE_BLOCKED)
+                await commit(session)
+                counts["blocked"] = counts.get("blocked", 0) + 1
+                await publish.to_station(
+                    station_id,
+                    "alert",
+                    {"code": "SESSION_WARN", "session_id": str(session_id), "minutes": minutes[pack.type]},
+                )
+            elif age >= abandon_after and pack.type == "RETURN" and pack.inspection_conclusion is not None:
                 # EX-R15, DEC-253: kết luận đã lưu → tự hoàn tất như quét đóng (cờ AUTO_CLOSED).
                 station = await stations.get_station(session, station_id)
                 case = await returns.lock_case(session, pack.return_case_id) if pack.return_case_id else None

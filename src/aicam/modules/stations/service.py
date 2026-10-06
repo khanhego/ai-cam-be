@@ -200,6 +200,8 @@ async def patch_station(
     mode_changed = False
     if data.kind is not None and data.kind != station.kind:
         await lock_station(session, station.id)
+        # G3 BB-16: đọc lại sau khóa — API-100 đổi chế độ / patch khác vừa commit thì quyết theo giá trị mới.
+        await session.refresh(station)
         if await is_busy(session, station.id):
             raise AppError(
                 "STATION_BUSY", "Station đang có phiên hoặc yêu cầu duyệt. Đổi loại sau khi xong.", 409

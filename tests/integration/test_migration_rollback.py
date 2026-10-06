@@ -575,3 +575,19 @@ def test_placeholder_with_pack_session_kept_cancelled(mig_db: None) -> None:
     assert run(f"SELECT warehouse_status FROM package WHERE id = '{PT}'") == [("CANCELLED",)]
     command.upgrade(cfg, "head")
     assert run(f"SELECT warehouse_status FROM package WHERE id = '{PT}'") == before
+
+
+def test_restore_detaches_package_changed_by_old_code(mig_db: None) -> None:
+    """BB-15: bản cũ xác nhận kiện đang về (P2, hồ sơ RC2 mở) đã giao → lên lại: kiện giữ DELIVERED, rời hồ sơ,
+    hồ sơ không còn kiện trong luồng hoàn → CANCELLED."""
+    cfg = alembic_config()
+    seed_phase1()
+    command.upgrade(cfg, "head")
+    seed_phase2()
+    command.downgrade(cfg, "0002")
+    run(f"UPDATE package SET warehouse_status = 'DELIVERED' WHERE id = '{P[2]}'")
+    command.upgrade(cfg, "head")
+    assert run(f"SELECT warehouse_status FROM package WHERE id = '{P[2]}'") == [("DELIVERED",)]
+    assert run(f"SELECT count(*) FROM return_case_package WHERE package_id = '{P[2]}'") == [(0,)]
+    assert run(f"SELECT status FROM return_case WHERE id = '{RC2}'") == [("CANCELLED",)]
+    assert run(f"SELECT status FROM return_case WHERE id = '{RC1}'") == [("RECEIVED_ISSUE",)]

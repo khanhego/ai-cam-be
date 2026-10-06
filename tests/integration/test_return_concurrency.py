@@ -102,15 +102,44 @@ async def test_pack_scan_waits_for_manual_adjust(committed: AsyncEngine, test_se
         await db.commit()
     headers = await _station("pack", mode="PACK")
 
-    async with sessionmaker()() as adjust, _client(test_settings) as client:
-        package = await orders.find_package(adjust, "SPXTST0000021", for_update=True)
+    from aicam.modules.orders import adjust as adjust_mod
+
+    async with sessionmaker()() as db:
+        package = await orders.find_package(db, "SPXTST0000021")
         assert package is not None
-        await orders.transition(adjust, package, "HANDED_OVER", source="MANUAL")
-        scan = asyncio.create_task(_scan(client, headers, "SPXTST0000021"))
-        await asyncio.sleep(0.5)
-        assert not scan.done()  # bị chặn bởi khóa kiện
-        await adjust.commit()
-        result = await asyncio.wait_for(scan, timeout=5)
+        package_id = package.id
+        sup = User(username="tst_rconc_sup", display_name="Sup", role="SUPERVISOR", password_hash="x")
+        db.add(sup)
+        await db.commit()
+        sup_id = sup.id
+    locked, release = asyncio.Event(), asyncio.Event()
+    real_commit = adjust_mod.commit
+
+    async def held_commit(session: Any) -> None:  # API-122 thật giữ khóa kiện tới khi test cho commit
+        locked.set()
+        await release.wait()
+        await real_commit(session)
+
+    async def run_adjust() -> None:
+        async with sessionmaker()() as db:
+            await adjust_mod.adjust_status(
+                db, package_id, adjust_mod.AdjustIn(to_status="HANDED_OVER", reason="ĐVVC đã lấy hàng"),
+                actor=sup_id, ip=None, tz="Asia/Ho_Chi_Minh",
+            )  # fmt: skip
+
+    adjust_mod.commit = held_commit  # type: ignore[assignment]
+    try:
+        async with _client(test_settings) as client:
+            adjusting = asyncio.create_task(run_adjust())
+            await asyncio.wait_for(locked.wait(), timeout=5)
+            scan = asyncio.create_task(_scan(client, headers, "SPXTST0000021"))
+            await asyncio.sleep(0.5)
+            assert not scan.done()  # bị chặn bởi khóa kiện
+            release.set()
+            await asyncio.wait_for(adjusting, timeout=5)
+            result = await asyncio.wait_for(scan, timeout=5)
+    finally:
+        adjust_mod.commit = real_commit  # type: ignore[assignment]
 
     assert result["outcome"] == "ALERT"
     assert result["alert"]["code"] == "ALREADY_HANDED_OVER"
@@ -187,17 +216,27 @@ async def test_scan_j13_j06_same_order_no_deadlock(committed: AsyncEngine, test_
         mock.shipping[code] = "DELIVERY_FAILED"
         mock.put_return(replace(platform_return(n), updated_at=clock.now()))
 
+    gate = asyncio.Event()  # G3 BB-17 (a): ba đường cùng xuất phát — ép chồng nhau
+
     async def j13() -> object:
+        await gate.wait()
         async with sessionmaker()() as db:
             return await sync.sync_returns(db, mock, test_settings)
 
     async def j06() -> object:
+        await gate.wait()
         async with sessionmaker()() as db:
             return await sync.sync_shipping_status(db, mock, test_settings)
 
+    async def scan61(client: AsyncClient) -> object:
+        await gate.wait()
+        return await _scan(client, headers, "SPXTST0000061")
+
     async with _client(test_settings) as client:
-        scans = [_scan(client, headers, f"SPXTST{n:07d}") for n in (61,)]
-        await asyncio.wait_for(asyncio.gather(*scans, j13(), j06()), timeout=5)
+        tasks = [asyncio.create_task(c) for c in (scan61(client), j13(), j06())]
+        await asyncio.sleep(0.05)
+        gate.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
 
     async with sessionmaker()() as db:
         for n in range(61, 66):
@@ -240,3 +279,139 @@ async def test_j14_skips_locked_package(committed: AsyncEngine, test_settings: S
         package = await db.get(Package, package_id)
         assert package is not None
         assert package.warehouse_status == "RETURN_MISSING"
+
+
+# ---------------------------------------------------------------- G3 (SM-F4, SM-F5, SM-F8, BB-17 c)
+
+
+async def test_platform_cancel_waits_for_pack_scan(committed: AsyncEngine, test_settings: Settings) -> None:
+    """SM-F4: quét PACK đang giữ kiện (NEW → PACKING, chưa commit) ∥ J-04 đơn hủy → J-04 chờ khóa kiện, đọc
+    lại
+    thấy PACKING → đẩy task gắn cờ phiên, KHÔNG ghi đè thành CANCELLED."""
+    from aicam.modules.media import jobs
+    from aicam.modules.platforms.base import PlatformItem, PlatformOrder
+
+    async with sessionmaker()() as db:
+        await make_order(db, 31, status="READY_TO_SHIP", warehouse_status="NEW")
+        await db.commit()
+    sent: list[Any] = []
+    jobs.set_sender(lambda task, args, queue, countdown: sent.append((task, args)))
+    data = PlatformOrder("2410TST00031", "CANCELLED", ("SPXTST0000031",),
+                         (PlatformItem("Áo thun basic", 2, "AT-DEN-L", "Đen / L"),))  # fmt: skip
+    try:
+        async with sessionmaker()() as scan:
+            package = await orders.find_package(scan, "SPXTST0000031", for_update=True)
+            assert package is not None
+            await orders.transition(scan, package, "PACKING", source="WAREHOUSE")
+
+            async def j04() -> None:
+                async with sessionmaker()() as db:
+                    await orders.lock_orders(db, [data.platform_order_sn])
+                    await orders.upsert_platform_order(db, data)
+                    from aicam.core.db import commit
+
+                    await commit(db)
+
+            task = asyncio.create_task(j04())
+            await asyncio.sleep(0.4)
+            assert not task.done()  # chờ khóa kiện
+            await scan.commit()
+        await asyncio.wait_for(task, timeout=5)
+    finally:
+        jobs.set_sender(None)
+    async with sessionmaker()() as db:
+        package = await orders.find_package(db, "SPXTST0000031")
+        assert package is not None
+        assert package.warehouse_status == "PACKING"
+    assert ("sessions.flag_order_cancelled", [str(package.id)]) in sent
+
+
+async def test_two_desks_open_same_unknown_code(committed: AsyncEngine, test_settings: Settings) -> None:
+    """SM-F8: hai bàn cùng mở "chưa xác định" cho một mã lạ → một hồ sơ, bên kia thấy đang kiểm nơi khác."""
+    from aicam.modules.returns.models import ReturnCase
+
+    a = await _station("ua", mode="RETURN")
+    b = await _station("ub", mode="RETURN")
+
+    async def open_unknown(client: AsyncClient, headers: dict[str, str]) -> dict[str, Any]:
+        body = {"client_scan_id": str(uuid.uuid4()), "unidentified_code": "SPXVN0000000999"}
+        res = await client.post("/api/v1/station/return-sessions", headers=headers, json=body)
+        assert res.status_code == 200, res.text
+        return res.json()  # type: ignore[no-any-return]
+
+    async with _client(test_settings) as client:
+        results = await asyncio.wait_for(
+            asyncio.gather(open_unknown(client, a), open_unknown(client, b)), timeout=5
+        )
+    assert sorted(r["outcome"] for r in results) == ["ALERT", "SESSION_OPENED"]
+    async with sessionmaker()() as db:
+        n = await db.scalar(
+            select(func.count()).select_from(ReturnCase).where(ReturnCase.kind == "UNIDENTIFIED")
+        )
+        assert n == 1
+
+
+async def test_claim_from_alert_vs_manual_resolve(committed: AsyncEngine, test_settings: Settings) -> None:
+    """BB-17 (c): tạo hồ sơ từ cảnh báo ∥ API-121 xử lý cùng cảnh báo → không lỗi 500 / không deadlock; cảnh
+    báo
+    đóng đúng một lần (một bên thắng)."""
+    from datetime import UTC, datetime
+
+    from aicam.core.deps import Principal
+    from aicam.core.errors import AppError
+    from aicam.modules.claims import service as claims
+    from aicam.modules.claims.schemas import ClaimCreateIn
+    from aicam.modules.reconciliation import service as recon
+    from aicam.modules.reconciliation.models import ReconAlert
+
+    async with sessionmaker()() as db:
+        _, (package,) = await make_order(db, 32, warehouse_status="NEW")
+        user = User(username="tst_rconc_cskh", display_name="CSKH", role="SUPERVISOR", password_hash="x")
+        db.add(user)
+        now = datetime.now(UTC)
+        alert = ReconAlert(package_id=package.id, rule="SHIPPED_NOT_PACKED", severity="HIGH", status="OPEN",
+                           context={}, context_key="SHIPPED", detected_at=now, last_seen_at=now)  # fmt: skip
+        db.add(alert)
+        await db.commit()
+        ids = (package.id, user.id, alert.id)
+    package_id, user_id, alert_id = ids
+    gate = asyncio.Event()
+
+    async def create() -> str:
+        await gate.wait()
+        async with sessionmaker()() as db:
+            try:
+                body = ClaimCreateIn(package_id=package_id, type="OTHER", counterparty="PLATFORM",
+                                     recon_alert_id=alert_id)  # fmt: skip
+                await claims.create_manual(db, body, Principal(user_id=user_id, role="SUPERVISOR",
+                                                                station_id=None, ip=None))  # fmt: skip
+                from aicam.core.db import commit
+
+                await commit(db)
+                return "claim"
+            except AppError as exc:
+                await db.rollback()
+                return exc.code
+
+    async def resolve() -> str:
+        await gate.wait()
+        async with sessionmaker()() as db:
+            try:
+                await recon.resolve(db, alert_id, "đã kiểm", actor=user_id, ip=None, tz="Asia/Ho_Chi_Minh")
+                return "resolved"
+            except AppError as exc:
+                await db.rollback()
+                return exc.code
+
+    tasks = [asyncio.create_task(create()), asyncio.create_task(resolve())]
+    gate.set()
+    results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
+    async with sessionmaker()() as db:
+        row = await db.get(ReconAlert, alert_id)
+        assert row is not None
+        assert row.status == "RESOLVED"
+        assert row.resolution_action in ("OPEN_CLAIM", "RESOLVE")
+    assert "INTERNAL" not in results
+    await asyncio.sleep(0)
+    async with committed.begin() as conn:
+        await conn.execute(text("TRUNCATE recon_alert, claim CASCADE"))

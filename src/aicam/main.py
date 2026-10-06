@@ -3,14 +3,15 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại giữa module phân giải được
 from aicam import __version__
 from aicam.core import schema_guard
 from aicam.core.db import dispose_engine, init_engine
-from aicam.core.errors import install_error_handlers
+from aicam.core.errors import error_body, install_error_handlers
 from aicam.core.limits import BodySizeLimitMiddleware
 from aicam.core.logging import configure_logging
 from aicam.core.redis import close_redis, init_redis
@@ -20,6 +21,7 @@ from aicam.modules.claims.router import router as claims_router
 from aicam.modules.imports.router import router as imports_router
 from aicam.modules.media.router import router as media_router
 from aicam.modules.orders.router import router as orders_router
+from aicam.modules.orders.service import InvalidTransition
 from aicam.modules.platforms.router import router as platforms_router
 from aicam.modules.reconciliation.router import router as recon_router
 from aicam.modules.reports.router import router as reports_router
@@ -66,6 +68,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     install_error_handlers(app)
+
+    @app.exception_handler(InvalidTransition)
+    async def _invalid_transition(_: Request, exc: InvalidTransition) -> JSONResponse:
+        # G3 SM-F4: trạng thái kiện vừa đổi bởi đường khác (vd. đơn bị hủy trên sàn) — lỗi có mã, không 500.
+        return JSONResponse(
+            error_body(
+                "TRANSITION_NOT_ALLOWED",
+                "Trạng thái kiện vừa thay đổi. Quét lại hoặc tải lại để xem trạng thái mới.",
+                {"from": exc.from_status, "to": exc.to_status},
+            ),
+            status_code=409,
+        )
+
     app.add_middleware(BodySizeLimitMiddleware)  # G3-N2: chặn body quá lớn trước khi Starlette spool ra đĩa
     if settings.cors_origins:
         app.add_middleware(

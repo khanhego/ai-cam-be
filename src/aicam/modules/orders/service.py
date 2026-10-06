@@ -118,6 +118,16 @@ async def lock_orders(session: AsyncSession, platform_order_sns: Sequence[str]) 
         await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"order:{sn}"})
 
 
+async def try_lock_order(session: AsyncSession, platform_order_sn: str) -> bool:
+    """Khóa `order:{sn}` không chờ (G3 SM-F5 / SM-F6): dùng khi đã giữ khóa station / hồ sơ / kiện — đã
+    giữ (cùng transaction, khóa advisory tái nhập) hoặc chưa ai giữ → True; transaction khác đang giữ → False
+    (không chờ → không khóa chéo với đường lấy đơn trước)."""
+    got = await session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:k))"), {"k": f"order:{platform_order_sn}"}
+    )
+    return bool(got)
+
+
 class CsvWriteConflict(Exception):
     """Lúc ghi (sau khi khóa) dữ liệu đã khác bước phân loại: kiện đã thuộc đơn khác (G3-F5), hoặc đơn
     phân loại NEW vừa được nơi khác tạo."""
@@ -263,8 +273,21 @@ async def upsert_platform_order(
         packages.append(package)
     if data.is_cancelled:
         # Đơn hủy trên sàn thường không còn mã vận đơn trong dữ liệu sàn → xét mọi kiện đã gắn đơn (EX-P10).
-        linked = (await session.scalars(select(Package).where(Package.order_id == order.id))).all()
-        for package in {p.id: p for p in [*packages, *linked]}.values():
+        # G3 SM-F4: khóa kiện (theo id) + đọc lại trước khi quyết — quét PACK vừa chuyển NEW → PACKING thì
+        # nhánh PACKING (đánh cờ phiên) chạy, không ghi đè PACKING bằng CANCELLED.
+        ids = sorted({p.id for p in packages} | set(
+            (await session.scalars(select(Package.id).where(Package.order_id == order.id))).all()
+        ))  # fmt: skip
+        locked = (
+            await session.scalars(
+                select(Package)
+                .where(Package.id.in_(ids))
+                .order_by(Package.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+        for package in locked:
             await apply_platform_cancel(session, package)
     await session.flush()
     return UpsertResult(order=order, created=created, packages=packages)

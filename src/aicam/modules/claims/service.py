@@ -388,6 +388,56 @@ async def create_from_return(
     return CreatedFromReturn(claim, created=True)
 
 
+async def retype_auto_on_correct(
+    session: AsyncSession, pack: PackSession, case: ReturnCase | None, old: str
+) -> tuple[list[str], CreatedFromReturn | None]:
+    """API-113 lỗi → lỗi khác (G3 SM-F9, DEC-344 — quyết định PO theo ủy quyền). Hồ sơ `AUTO_RETURN` của phiên
+    loại `old`: còn `NEW` → đổi loại theo kết luận mới + ghi chú hệ thống (đã có hồ sơ mở loại mới cho kiện →
+    gộp: thêm phiên vào hồ sơ đó, đóng hồ sơ cũ); đã qua `NEW` (đã gửi sàn) → giữ hồ sơ cũ + ghi chú "kết luận
+    đã sửa thành …" và tạo / gộp hồ sơ loại mới theo BR-27. Trả (mã hồ sơ đổi loại, hồ sơ loại mới)."""
+    new = pack.inspection_conclusion or "OTHER"
+    label = CONCLUSION_LABELS.get(new, new)
+    await _lock_create(session, pack.package_id, new)
+    rows = (
+        await session.scalars(
+            select(Claim)
+            .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
+            .where(
+                ClaimEvidence.session_id == pack.id, Claim.source == "AUTO_RETURN", Claim.type == old,
+                Claim.status != "CLOSED",
+            )
+            .order_by(Claim.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).all()  # fmt: skip
+    retyped: list[str] = []
+    for claim in rows:
+        if claim.status == "NEW" and await find_open(session, claim.package_id, new) is None:
+            claim.type = new
+            claim.version += 1
+            add_note(
+                session,
+                claim,
+                "SYSTEM",
+                f"Loại hồ sơ đổi theo kết luận đã sửa: {CONCLUSION_LABELS.get(old, old)} → {label}.",
+            )
+            notify(session, claim)
+            retyped.append(claim.code)
+            continue
+        if claim.status == "NEW":  # đã có hồ sơ mở loại mới: gộp vào đó, đóng hồ sơ này
+            claim.status, claim.closed_at = "CLOSED", clock.now()
+            claim.close_reason = f"Kết luận đã sửa thành {label} — gộp vào hồ sơ cùng loại"
+            add_note(session, claim, "STATUS_CHANGE", f"Mới → Đóng: kết luận đã sửa thành {label}.")
+        else:
+            add_note(session, claim, "SYSTEM", f"Kết luận phiên mở hoàn đã sửa thành {label}.")
+        claim.version += 1
+        notify(session, claim)
+    if retyped:
+        return retyped, None
+    return retyped, await create_from_return(session, pack, case)
+
+
 async def close_auto_on_correct_ok(session: AsyncSession, pack: PackSession) -> list[Claim]:
     """API-113 ISSUE → OK (T-115): hồ sơ `AUTO_RETURN` đang `NEW` của phiên → `CLOSED` (lý do hệ thống)."""
     rows = await session.scalars(

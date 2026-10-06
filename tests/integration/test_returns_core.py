@@ -121,7 +121,8 @@ async def test_late_platform_report_attaches_to_received_unannounced(db: AsyncSe
 
 
 async def test_cancelled_case_does_not_absorb_new_signal(db: AsyncSession) -> None:
-    """R3-6, R3-7: hồ sơ `CANCELLED` không nhận tín hiệu mới; khóa của hồ sơ hủy không chặn đợt mới."""
+    """R3-6, R3-7, G3 BB-7: cùng khóa đợt → không tạo lại hồ sơ dù hồ sơ cũ đã hủy (J-04 / J-06 lặp lại);
+    hồ sơ `CANCELLED` không nhận tín hiệu mới — đợt mới (mốc khác) tạo hồ sơ mới."""
     order, _ = await make_order(db, 43, warehouse_status="HANDED_OVER")
     signal = returns.Signal(returns.SIGNAL_FAILED_DELIVERY, key="FAILED:2410TST00043:1")
     first = await returns.attach_or_create(db, order, signal)
@@ -129,11 +130,28 @@ async def test_cancelled_case_does_not_absorb_new_signal(db: AsyncSession) -> No
     first.case.status = "CANCELLED"
     await db.flush()
 
-    second = await returns.attach_or_create(db, order, signal)
+    same = await returns.attach_or_create(db, order, signal)
+    assert same.case is not None
+    assert (same.case.id, same.created) == (first.case.id, False)
 
+    new_wave = returns.Signal(returns.SIGNAL_FAILED_DELIVERY, key="FAILED:2410TST00043:2")
+    second = await returns.attach_or_create(db, order, new_wave)
     assert second.case is not None
     assert second.created
     assert second.case.id != first.case.id
+
+
+async def test_failed_signal_without_time_not_deduped(db: AsyncSession) -> None:
+    """G3 F-13: thiếu mốc cập nhật → khóa `…:-` chỉ đánh dấu, không chặn đợt sau."""
+    assert returns.failed_signal_key("2410TST00044", None) == "FAILED:2410TST00044:-"
+    order, _ = await make_order(db, 44, warehouse_status="HANDED_OVER")
+    signal = returns.Signal(returns.SIGNAL_FAILED_DELIVERY, key="FAILED:2410TST00044:-")
+    first = await returns.attach_or_create(db, order, signal)
+    assert first.case is not None
+    first.case.status = "CANCELLED"
+    await db.flush()
+    again = await returns.attach_or_create(db, order, signal)
+    assert again.created
 
 
 async def test_known_return_sn_not_reattached(db: AsyncSession) -> None:

@@ -138,6 +138,14 @@ async def prepare(
     if not is_valid_code(code, settings):
         return Prepared()
     resolution, checked = await lookup_with_platform(session, code, adapter, settings)
+    if (
+        resolution.order is None
+        and resolution.package is not None
+        and resolution.package.order_id is not None
+    ):
+        resolution.order = await session.get(
+            Order, resolution.package.order_id
+        )  # G3 SM-F6: đơn đích khóa ở đây
     if resolution.order is not None:
         await orders.lock_orders(session, [resolution.order.platform_order_sn])
     return Prepared(resolution, checked)
@@ -176,7 +184,9 @@ async def check_openable(
     session: AsyncSession, package: Package, case: ReturnCase | None, order: Order | None, code: str, tz: str
 ) -> AlertOut | None:
     """Trả ALERT nếu kiện không mở được phiên hoàn; None = mở được. Dùng chung API-11 / API-104 / API-105."""
-    if package.is_placeholder:
+    if package.is_placeholder and (
+        case is None or case.kind != "UNIDENTIFIED"
+    ):  # G3 SM-F8: kiện tạm của hồ sơ
         return _alert(
             "RETURN_NOT_FOUND", f"Không có đơn nào khớp mã {code}.", code=code, can_open_unidentified=True
         )
@@ -370,12 +380,27 @@ async def open_from_resolution(
     )
     cases = await returns.lock_cases(session, case_ids)
     case = cases[0] if cases else None
+    if case is not None and case.status not in (*OPEN_CASE_STATUSES, *returns.RECEIVED_CASE_STATUSES):
+        # G3 SM-F1: hồ sơ đã hủy (kể cả J-13 hủy giữa lúc tra và lúc khóa) → như hàng hoàn mới (EX-R7).
+        case = None
     locked = await returns.lock_packages(session, [package_id])
     if not locked:
         return "ALERT", _alert("RETURN_NOT_FOUND", f"Không có đơn nào khớp mã {code}.", code=code,
                                can_open_unidentified=True)  # fmt: skip
     package = locked[0]
     order = await session.get(Order, package.order_id) if package.order_id else None
+    if (
+        order is not None
+        and (resolution.order is None or resolution.order.id != order.id)
+        and not await orders.try_lock_order(session, order.platform_order_sn)
+    ):
+        # G3 SM-F6: đơn của kiện đổi / chưa khóa ở bước ngoài station, đang bị J-04 / J-13 giữ → không chờ
+        # khóa đơn
+        # sau khóa station (khóa chéo) — báo quét lại.
+        return "ALERT", _alert(
+            "RETURN_IN_PROGRESS_ELSEWHERE", f"{code} đang được hệ thống cập nhật. Quét lại sau vài giây.",
+            station_name=None,
+        )  # fmt: skip
     alert = await check_openable(session, package, case, order, code, settings.tz_display)
     if alert is not None:
         return "ALERT", alert
@@ -498,9 +523,16 @@ async def close_return_session(
     await session.flush()
     if case.pending_merge_order_id is not None and case.order_id is None:
         order = await session.get(Order, case.pending_merge_order_id)
-        if order is not None:
+        # G3 SM-F5: chỉ gộp khi giữ được `order:{sn}` (đã khóa ở prepare / J-07, hoặc chưa ai giữ). Đơn chờ
+        # gộp
+        # đổi sau bước khóa và đang bị giữ → để chờ: lượt J-04 / J-13 kế (merge_unidentified_by_code) gộp sau.
+        if order is not None and await orders.try_lock_order(session, order.platform_order_sn):
             await returns.merge_unidentified(session, case, order, pack.open_code, actor_label=actor_label)
             await session.refresh(pack, ["package_id", "return_case_id"])  # UPDATE hàng loạt khi gộp
+        elif order is not None:
+            log.info(
+                "unidentified_merge_deferred", return_case_id=str(case.id), order_sn=order.platform_order_sn
+            )
     destination = await session.get(ReturnCase, case.merged_into_id) if case.merged_into_id else case
     target = destination or case
     await returns.recompute(session, target)
