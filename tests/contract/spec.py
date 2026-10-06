@@ -314,7 +314,7 @@ CLAIM_DETAIL = (
 )
 CLAIM_DETAIL_ENUMS = {
     **CLAIM_ENUMS,
-    "deadline_source": _e("PLATFORM", "DEFAULT", "MANUAL"),
+    "deadline_source": _e("PLATFORM", "DEFAULT", "MANUAL", "DEFAULT_PLATFORM_PASSED"),  # + BR-42 (Phase 3)
     "evidence[].kind": _e("SESSION", "SNAPSHOT"),
     "missing[]": _e("NO_PACK_CLIP", "PACK_CLIP_DELETED", "RETURN_CLIP_PENDING"),
     "notes[].kind": _e("NOTE", "STATUS_CHANGE", "SYSTEM"),

@@ -105,7 +105,10 @@ async def create_pack(
     claim = await db.get(Claim, claim_id)
     if claim is None:
         raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ khiếu nại.", 404)
-    if await db.scalar(select(ClaimEvidence.id).where(ClaimEvidence.claim_id == claim.id).limit(1)) is None:
+    active = select(ClaimEvidence.id).where(
+        ClaimEvidence.claim_id == claim.id, ClaimEvidence.removed_at.is_(None)
+    )
+    if await db.scalar(active.limit(1)) is None:
         raise AppError("NO_EVIDENCE", "Hồ sơ chưa có bằng chứng.", 409)
     active = await db.scalar(
         select(EvidencePack)
@@ -332,7 +335,9 @@ async def _session_rows(
     (BR-39, DEC-448), phiên mở hoàn khác theo giờ (phiên trước → `mo-hoan-phien-truoc`), phiên thêm tay."""
     evidence = (
         await db.scalars(
-            select(ClaimEvidence).where(ClaimEvidence.claim_id == claim.id).order_by(ClaimEvidence.added_at)
+            select(ClaimEvidence)
+            .where(ClaimEvidence.claim_id == claim.id, ClaimEvidence.removed_at.is_(None))  # BR-38
+            .order_by(ClaimEvidence.added_at)
         )
     ).all()
     session_ids = [e.session_id for e in evidence if e.session_id]

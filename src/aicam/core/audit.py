@@ -49,6 +49,8 @@ ACTIONS = frozenset(
         "RETENTION_REDUCED",
         "RETENTION_RAISED_TO_MINIMUM",
         "CLIP_PROTECTION_MIGRATED",
+        # Phase 3 (02 API-92) — thêm dần theo task; đủ 15 + v0.3 ở T-228.
+        "CLAIM_EVIDENCE_REMOVE",
     }
 )
 

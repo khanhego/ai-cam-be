@@ -33,7 +33,7 @@ from aicam.modules.claims import evidence_rules
 from aicam.modules.claims.models import Claim, ClaimEvidence, ClaimNote
 from aicam.modules.claims.schemas import ClaimCreateIn, ClaimPatchIn, EvidenceIn
 from aicam.modules.media.models import Snapshot
-from aicam.modules.media.protection import lock_session_clips
+from aicam.modules.media.protection import clip_days, lock_session_clips
 from aicam.modules.orders.models import Package
 from aicam.modules.reconciliation import service as recon
 from aicam.modules.returns.models import ReturnCase, ReturnCasePackage
@@ -162,7 +162,11 @@ async def code_for_session(session: AsyncSession, session_id: uuid.UUID) -> str 
     code: str | None = await session.scalar(
         select(Claim.code)
         .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
-        .where(ClaimEvidence.session_id == session_id, Claim.source != "LEGACY_HOLD")
+        .where(
+            ClaimEvidence.session_id == session_id,
+            ClaimEvidence.removed_at.is_(None),
+            Claim.source != "LEGACY_HOLD",
+        )
         .order_by(Claim.created_at)
         .limit(1)
     )
@@ -292,10 +296,26 @@ async def auto_evidence(
 
 
 def _deadline(case: ReturnCase | None, claim_deadline_days: int) -> tuple[datetime, str]:
-    """BR-27: hạn người bán do sàn trả; không có → ngày tạo + `claim_deadline_days`."""
+    """BR-27: hạn người bán do sàn trả; không có → ngày tạo + `claim_deadline_days`. BR-42 (L14): hạn sàn
+    đã qua lúc tạo → hạn mặc định, nguồn `DEFAULT_PLATFORM_PASSED` (người gọi ghi chú hệ thống)."""
+    now = clock.now()
     if case is not None and case.seller_due_at is not None:
-        return case.seller_due_at, "PLATFORM"
-    return clock.now() + timedelta(days=claim_deadline_days), "DEFAULT"
+        if case.seller_due_at >= now:
+            return case.seller_due_at, "PLATFORM"
+        return now + timedelta(days=claim_deadline_days), "DEFAULT_PLATFORM_PASSED"
+    return now + timedelta(days=claim_deadline_days), "DEFAULT"
+
+
+def _note_platform_deadline_passed(session: AsyncSession, claim: Claim, case: ReturnCase | None) -> None:
+    """BR-42: ghi chú hệ thống khi hạn sàn đã qua lúc tạo hồ sơ."""
+    if claim.deadline_source == "DEFAULT_PLATFORM_PASSED" and case is not None and case.seller_due_at:
+        due = case.seller_due_at.astimezone(ZoneInfo(get_settings().tz_display)).strftime("%d/%m %H:%M")
+        add_note(
+            session,
+            claim,
+            "SYSTEM",
+            f"Hạn sàn ({due}) đã qua khi tạo hồ sơ — dùng hạn mặc định. Kiểm hạn thật trên sàn.",
+        )
 
 
 def add_note(
@@ -383,6 +403,7 @@ async def create_from_return(
     )
     await auto_evidence(session, claim, package.id, [pack], prior=True)
     add_note(session, claim, "SYSTEM", f"Tạo tự động từ phiên mở hoàn ({label}).")
+    _note_platform_deadline_passed(session, claim, case)
     audit.record(
         session,
         "CLAIM_CREATE",
@@ -417,7 +438,8 @@ async def retype_auto_on_correct(
             select(Claim)
             .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
             .where(
-                ClaimEvidence.session_id == pack.id, Claim.source == "AUTO_RETURN", Claim.type == old,
+                ClaimEvidence.session_id == pack.id, ClaimEvidence.removed_at.is_(None),
+                Claim.source == "AUTO_RETURN", Claim.type == old,
                 Claim.status != "CLOSED",
             )
             .order_by(Claim.id)
@@ -457,7 +479,12 @@ async def close_auto_on_correct_ok(session: AsyncSession, pack: PackSession) -> 
     rows = await session.scalars(
         select(Claim)
         .join(ClaimEvidence, ClaimEvidence.claim_id == Claim.id)
-        .where(ClaimEvidence.session_id == pack.id, Claim.source == "AUTO_RETURN", Claim.status == "NEW")
+        .where(
+            ClaimEvidence.session_id == pack.id,
+            ClaimEvidence.removed_at.is_(None),
+            Claim.source == "AUTO_RETURN",
+            Claim.status == "NEW",
+        )
         .order_by(Claim.id)
         .with_for_update()
         .execution_options(populate_existing=True)
@@ -534,6 +561,7 @@ async def create_manual(session: AsyncSession, data: ClaimCreateIn, p: Principal
         await completed_return_sessions(session, package.id, case.id if case else None),
         prior=True,
     )
+    _note_platform_deadline_passed(session, claim, case)
     if alert is not None:
         add_note(
             session, claim, "SYSTEM", f"Tạo từ cảnh báo lệch: {RULE_LABELS.get(alert.rule, alert.rule)}."
@@ -694,8 +722,18 @@ async def allowed_sessions(session: AsyncSession, claim: Claim) -> set[uuid.UUID
     return set((await session.scalars(select(PackSession.id).where(cond))).all())
 
 
+async def keep_days(session: AsyncSession) -> int:
+    """Số ngày giữ clip thực dùng (BR-25 sàn) — hạn giữ bằng chứng đã bỏ (BR-38)."""
+    cfg = await settings_service.get(session)
+    return clip_days(cfg.retention_clip_days, get_settings().retention_clip_min_days)
+
+
 async def set_evidence(session: AsyncSession, claim: Claim, data: EvidenceIn, p: Principal) -> bool:
-    """API-134: thay tập bằng chứng. Người gọi đã khóa hồ sơ + kiểm `version`. Trả True nếu đổi."""
+    """API-134: thay tập bằng chứng. Người gọi đã khóa hồ sơ + kiểm `version`. Trả True nếu đổi.
+
+    BR-38 (L15, DEC-449): bỏ = ghi `removed_at/by/reason` (dòng không xóa — clip / ảnh còn được giữ tới
+    max(lúc kết thúc, lúc bỏ) + số ngày giữ); bỏ **bất kỳ** bằng chứng nào cần `note` 5–500; thêm lại phiên /
+    ảnh đã bỏ = xóa `removed_*`. Audit `CLAIM_EVIDENCE_REMOVE` mỗi mục bỏ + `CLAIM_EVIDENCE_UPDATE`."""
     if claim.status == "CLOSED":
         raise AppError("CLAIM_CLOSED", "Hồ sơ đã đóng, chỉ thêm được ghi chú.", 409)
     allowed = await allowed_sessions(session, claim)
@@ -713,34 +751,77 @@ async def set_evidence(session: AsyncSession, claim: Claim, data: EvidenceIn, p:
         )
         if any(snap_sessions.get(s) not in allowed for s in wanted_snaps):
             raise _validation("snapshot_ids", "Ảnh không thuộc kiện / hồ sơ hàng hoàn của hồ sơ này")
-    current = (await session.scalars(select(ClaimEvidence).where(ClaimEvidence.claim_id == claim.id))).all()
+    current = (
+        await session.scalars(
+            select(ClaimEvidence).where(ClaimEvidence.claim_id == claim.id).order_by(ClaimEvidence.id)
+        )
+    ).all()
+    active = [e for e in current if e.removed_at is None]
     removed = [
         e
-        for e in current
+        for e in active
         if (e.kind == "SESSION" and e.session_id not in wanted_sessions)
         or (e.kind == "SNAPSHOT" and e.snapshot_id not in wanted_snaps)
     ]
+    restored = [
+        e
+        for e in current
+        if e.removed_at is not None
+        and ((e.kind == "SESSION" and e.session_id in wanted_sessions) or (e.snapshot_id in wanted_snaps))
+    ]
     note = (data.note or "").strip()
-    if any(e.auto for e in removed) and len(note) < 5:
-        raise _validation("note", "Nhập lý do bỏ bằng chứng tự chọn (5–500 ký tự)")
+    if removed and not 5 <= len(note) <= 500:
+        raise _validation("note", "Nhập lý do bỏ bằng chứng (5–500 ký tự).")
     have_sessions = {e.session_id for e in current if e.kind == "SESSION"}
     have_snaps = {e.snapshot_id for e in current if e.kind == "SNAPSHOT"}
-    for evidence in removed:
-        await session.delete(evidence)
-    await session.flush()
+    now = clock.now()
+    # Thêm mới + thêm lại: khóa clip / ảnh như thêm bằng chứng (DEC-251) rồi mới gỡ `removed_*`.
     added = await add_evidence(
         session,
         claim,
-        [s for s in wanted_sessions if s not in have_sessions],
-        [s for s in wanted_snaps if s not in have_snaps],
+        [s for s in wanted_sessions if s not in have_sessions]
+        + [e.session_id for e in restored if e.session_id],
+        [s for s in wanted_snaps if s not in have_snaps] + [e.snapshot_id for e in restored if e.snapshot_id],
         auto=False,
         added_by=p.user_id,
     )
-    if not removed and not added:
+    for evidence in restored:
+        evidence.removed_at = evidence.removed_by = evidence.removed_reason = None
+    days = await keep_days(session) if removed else 0
+    until = await evidence_rules.keep_until(
+        session,
+        [e.session_id for e in removed if e.session_id],
+        [e.snapshot_id for e in removed if e.snapshot_id],
+        now,
+        days,
+    )
+    for evidence in removed:
+        evidence.removed_at, evidence.removed_by, evidence.removed_reason = now, p.user_id, note
+        target = evidence.session_id or evidence.snapshot_id
+        audit.record(
+            session,
+            "CLAIM_EVIDENCE_REMOVE",
+            user_id=p.user_id,
+            object_type="CLAIM",
+            object_id=claim.id,
+            ip=p.ip,
+            data={
+                "evidence_id": str(evidence.id),
+                "kind": evidence.kind,
+                "session_id": str(evidence.session_id) if evidence.session_id else None,
+                "snapshot_id": str(evidence.snapshot_id) if evidence.snapshot_id else None,
+                "reason": note,
+                "keep_until": clock.iso_z(until[target]) if target in until else None,
+            },
+        )
+    await session.flush()
+    if not removed and not added and not restored:
         return False
     parts = []
     if added:
         parts.append(f"thêm {added}")
+    if restored:
+        parts.append(f"thêm lại {len(restored)}")
     if removed:
         parts.append(f"bỏ {len(removed)}")
     summary = f"Cập nhật bằng chứng: {', '.join(parts)}." + (f" Lý do: {note}" if note else "")
@@ -755,6 +836,7 @@ async def set_evidence(session: AsyncSession, claim: Claim, data: EvidenceIn, p:
         ip=p.ip,
         data={
             "added": added,
+            "restored": [str(e.id) for e in restored],
             "removed": [str(e.id) for e in removed],
             "note": note or None,
             "session_ids": [str(s) for s in wanted_sessions],
@@ -815,7 +897,11 @@ async def move_claims_to_package(
         claim.version += 1
         if into is not None:
             evidence = (
-                await session.scalars(select(ClaimEvidence).where(ClaimEvidence.claim_id == claim.id))
+                await session.scalars(
+                    select(ClaimEvidence).where(
+                        ClaimEvidence.claim_id == claim.id, ClaimEvidence.removed_at.is_(None)
+                    )
+                )
             ).all()
             await add_evidence(
                 session,

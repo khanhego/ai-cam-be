@@ -11,6 +11,7 @@ from aicam.core import clock
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings
 from aicam.modules.claims import evidence_rules
+from aicam.modules.claims import service as claims_service
 from aicam.modules.claims.evidence_rules import primary_session as primary_session
 from aicam.modules.claims.models import CLAIM_STATUSES, Claim, ClaimEvidence, ClaimNote
 from aicam.modules.claims.schemas import (
@@ -29,6 +30,7 @@ from aicam.modules.claims.schemas import (
     NoteOut,
     OtherSession,
     PriorReturnSession,
+    RemovedInfo,
     StatusCounts,
     UserBrief,
 )
@@ -239,48 +241,92 @@ async def claim_detail(
         }
 
     evidence: list[EvidenceOut] = []
+    removed_evidence: list[EvidenceOut] = []
+    removed_rows: dict[uuid.UUID, ClaimEvidence] = {}
     for e in evidence_rows:
+        item: EvidenceOut | None = None
         if e.session_id and e.session_id in sessions:
             s, name = sessions[e.session_id]
-            evidence.append(
-                EvidenceOut(
-                    id=e.id,
-                    kind="SESSION",
-                    auto=e.auto,
-                    session=EvidenceSession(
-                        id=s.id,
-                        type=s.type,
-                        status=s.status,
-                        station_name=name,
-                        operator_name=s.operator_name,
-                        started_at=s.started_at,
-                        ended_at=s.ended_at,
-                        flags=list(s.flags),
-                        clips=clips[s.id],
-                    ),
-                )
+            item = EvidenceOut(
+                id=e.id,
+                kind="SESSION",
+                auto=e.auto,
+                session=EvidenceSession(
+                    id=s.id,
+                    type=s.type,
+                    status=s.status,
+                    station_name=name,
+                    operator_name=s.operator_name,
+                    started_at=s.started_at,
+                    ended_at=s.ended_at,
+                    flags=list(s.flags),
+                    clips=clips[s.id],
+                ),
             )
         elif e.snapshot_id and e.snapshot_id in snaps:
             snap = snaps[e.snapshot_id]
-            evidence.append(
-                EvidenceOut(
-                    id=e.id,
-                    kind="SNAPSHOT",
-                    auto=e.auto,
-                    snapshot=EvidenceSnapshot(
-                        id=snap.id,
-                        kind=snap.kind,
-                        taken_at=snap.taken_at,
-                        status=snap.status,
-                        url=media_snapshots.url_for(settings, snap.id, viewer)
-                        if snap.status == "READY"
-                        else None,
-                    ),
-                )
+            item = EvidenceOut(
+                id=e.id,
+                kind="SNAPSHOT",
+                auto=e.auto,
+                snapshot=EvidenceSnapshot(
+                    id=snap.id,
+                    kind=snap.kind,
+                    taken_at=snap.taken_at,
+                    status=snap.status,
+                    url=media_snapshots.url_for(settings, snap.id, viewer)
+                    if snap.status == "READY"
+                    else None,
+                ),
             )
-    # BR-39 (DEC-448): phiên mở hoàn trước, phiên chính — suy ra lúc đọc.
-    in_evidence = [s for s, _ in sessions.values()]
-    with_clip = await evidence_rules.live_clip_sessions(db, sessions)
+        if item is None:
+            continue
+        if e.removed_at is None:
+            evidence.append(item)
+        else:  # BR-38: bằng chứng đã bỏ — không vào gói / link, hiện riêng
+            removed_evidence.append(item)
+            removed_rows[e.id] = e
+    # BR-38 (L15): hạn giữ nếu bỏ bây giờ (dòng đang dùng) / theo lúc đã bỏ (dòng đã bỏ).
+    days = await claims_service.keep_days(db)
+    keep_now = await evidence_rules.keep_until(
+        db,
+        [x.session.id for x in evidence if x.session],
+        [x.snapshot.id for x in evidence if x.snapshot],
+        clock.now(),
+        days,
+    )
+    removed_at = {
+        (r.session_id or r.snapshot_id): r.removed_at
+        for r in removed_rows.values()
+        if r.removed_at is not None
+    }
+    keep_removed = await evidence_rules.keep_until(
+        db,
+        [r.session_id for r in removed_rows.values() if r.session_id],
+        [r.snapshot_id for r in removed_rows.values() if r.snapshot_id],
+        removed_at,  # type: ignore[arg-type]
+        days,
+    )
+    for x in evidence:
+        x.removal_keep_until = keep_now.get(
+            x.session.id if x.session else x.snapshot.id if x.snapshot else x.id
+        )
+    removed_by = await _users(db, {r.removed_by for r in removed_rows.values() if r.removed_by})
+    for x in removed_evidence:
+        row = removed_rows[x.id]
+        key = row.session_id or row.snapshot_id
+        if row.removed_at is None or key is None:  # chỉ dòng đã bỏ có trong `removed_rows`
+            continue
+        x.removed = RemovedInfo(
+            at=row.removed_at,
+            by=removed_by.get(row.removed_by) if row.removed_by else None,
+            reason=row.removed_reason or "",
+            keep_until=keep_removed[key],
+        )
+    active_sessions = {x.session.id for x in evidence if x.session}
+    # BR-39 (DEC-448): phiên mở hoàn trước, phiên chính — suy ra lúc đọc (chỉ bằng chứng đang dùng).
+    in_evidence = [sessions[sid][0] for sid in active_sessions]
+    with_clip = await evidence_rules.live_clip_sessions(db, active_sessions)
     effective = await effective_pack_session(db, claim.package_id)
     primary = primary_session(in_evidence, with_clip, effective.id if effective else None)
     latest_done = await evidence_rules.latest_completed_return_start(
@@ -355,9 +401,10 @@ async def claim_detail(
         closed_at=claim.closed_at,
         evidence=evidence,
         other_sessions=others,
+        removed_evidence=removed_evidence,
         prior_return_sessions=[
             PriorReturnSession(
-                session_id=s.id, status=s.status, started_at=s.started_at, in_evidence=s.id in sessions
+                session_id=s.id, status=s.status, started_at=s.started_at, in_evidence=s.id in active_sessions
             )
             for s in priors
         ],

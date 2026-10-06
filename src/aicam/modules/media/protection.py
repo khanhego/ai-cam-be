@@ -8,6 +8,9 @@ Clip / ảnh của một phiên **không bị retention xóa** khi:
     `PARTIALLY_RECEIVED`/`MISSING`, hoặc `RECEIVED_*` trong 7 ngày sau `received_at`;
 (c) như (b) với `NO_PARCEL` trong 30 ngày từ lúc sàn báo;
 (d) clip `held` (đường khẩn cấp, API-42 chỉ ADMIN).
+BR-38 (Phase 3, L15, DEC-449): bằng chứng **đã bỏ** khỏi hồ sơ (`claim_evidence.removed_at`) giữ như hồ sơ đã
+đóng lúc bỏ — (a) thành `(removed_at IS NULL AND (status <> 'CLOSED' OR closed_at >= cutoff)) OR removed_at >=
+cutoff` (hạn = max(`end_at`, `removed_at`) + số ngày giữ).
 Ảnh còn được bảo vệ khi chính nó là bằng chứng (a). Số ngày giữ = max(`retention_clip_days`,
 `RETENTION_CLIP_MIN_DAYS`) (BR-25, DEC-257).
 
@@ -77,27 +80,29 @@ def _case_protects(now: datetime) -> ColumnElement[bool]:
     )
 
 
+def _evidence_protects(cutoff: datetime) -> ColumnElement[bool]:
+    """(a) + BR-38: dòng đang dùng của hồ sơ chưa đóng / đóng chưa quá hạn; dòng đã bỏ chưa quá hạn giữ."""
+    return or_(
+        and_(ClaimEvidence.removed_at.is_(None), or_(Claim.status != "CLOSED", Claim.closed_at >= cutoff)),
+        ClaimEvidence.removed_at >= cutoff,
+    )
+
+
 def claim_session_ids(cutoff: datetime) -> Select[uuid.UUID | None]:
-    """(a) phiên làm bằng chứng của hồ sơ chưa đóng / đóng chưa quá hạn giữ."""
+    """(a) phiên làm bằng chứng của hồ sơ chưa đóng / đóng chưa quá hạn giữ / đã bỏ chưa quá hạn (BR-38)."""
     return (
         select(ClaimEvidence.session_id)
         .join(Claim, Claim.id == ClaimEvidence.claim_id)
-        .where(
-            ClaimEvidence.kind == "SESSION",
-            or_(Claim.status != "CLOSED", Claim.closed_at >= cutoff),
-        )
+        .where(ClaimEvidence.kind == "SESSION", _evidence_protects(cutoff))
     )
 
 
 def claim_snapshot_ids(cutoff: datetime) -> Select[uuid.UUID | None]:
-    """(a) ảnh tự là bằng chứng."""
+    """(a) ảnh tự là bằng chứng (BR-38 như phiên)."""
     return (
         select(ClaimEvidence.snapshot_id)
         .join(Claim, Claim.id == ClaimEvidence.claim_id)
-        .where(
-            ClaimEvidence.kind == "SNAPSHOT",
-            or_(Claim.status != "CLOSED", Claim.closed_at >= cutoff),
-        )
+        .where(ClaimEvidence.kind == "SNAPSHOT", _evidence_protects(cutoff))
     )
 
 
@@ -202,9 +207,16 @@ async def sessions_protection(
     if not session_ids:
         return out
     ids = list(session_ids)
-    for sid, claim_id, code, status, closed_at in (
+    for sid, claim_id, code, status, closed_at, removed_at in (
         await session.execute(
-            select(ClaimEvidence.session_id, Claim.id, Claim.code, Claim.status, Claim.closed_at)
+            select(
+                ClaimEvidence.session_id,
+                Claim.id,
+                Claim.code,
+                Claim.status,
+                Claim.closed_at,
+                ClaimEvidence.removed_at,
+            )
             .join(Claim, Claim.id == ClaimEvidence.claim_id)
             .where(ClaimEvidence.kind == "SESSION", ClaimEvidence.session_id.in_(ids))
             .order_by(Claim.created_at)
@@ -213,10 +225,12 @@ async def sessions_protection(
         if sid is None:  # CHECK: bằng chứng SESSION luôn có session_id
             continue
         info = out[sid]
-        if status != "CLOSED":
+        # BR-38: dòng đã bỏ giữ như hồ sơ đóng lúc bỏ; dòng đang dùng theo trạng thái hồ sơ.
+        ended = removed_at if removed_at is not None else (closed_at if status == "CLOSED" else None)
+        if removed_at is None and status != "CLOSED":
             info.claims.append((claim_id, code))
-        elif closed_at is not None and (info.closed_claim_at is None or closed_at > info.closed_claim_at):
-            info.closed_claim_at = closed_at
+        elif ended is not None and (info.closed_claim_at is None or ended > info.closed_claim_at):
+            info.closed_claim_at = ended
 
     sessions = (await session.scalars(select(PackSession).where(PackSession.id.in_(ids)))).all()
     package_ids = {s.package_id for s in sessions}

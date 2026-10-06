@@ -1050,7 +1050,8 @@
                 "enum": [
                   "PLATFORM",
                   "DEFAULT",
-                  "MANUAL"
+                  "MANUAL",
+                  "DEFAULT_PLATFORM_PASSED"
                 ],
                 "type": "string"
               },
@@ -1150,6 +1151,14 @@
               }
             ],
             "title": "Recovered Amount"
+          },
+          "removed_evidence": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EvidenceOut"
+            },
+            "title": "Removed Evidence",
+            "type": "array"
           },
           "return_case": {
             "anyOf": [
@@ -2183,6 +2192,28 @@
             "default": false,
             "title": "Prior Return",
             "type": "boolean"
+          },
+          "removal_keep_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removal Keep Until"
+          },
+          "removed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemovedInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "session": {
             "anyOf": [
@@ -5159,6 +5190,43 @@
           "client"
         ],
         "title": "RefreshIn",
+        "type": "object"
+      },
+      "RemovedInfo": {
+        "description": "API-132 `removed_evidence[].removed` (BR-38): bằng chứng đã bỏ — dòng không bị xóa.",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "keep_until": {
+            "format": "date-time",
+            "title": "Keep Until",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "by",
+          "reason",
+          "keep_until"
+        ],
+        "title": "RemovedInfo",
         "type": "object"
       },
       "RequestedItem": {

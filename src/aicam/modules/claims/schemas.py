@@ -14,7 +14,8 @@ ClaimType = Literal[
 ClaimStatus = Literal["NEW", "SUBMITTED", "WAITING", "WON", "LOST", "CLOSED"]
 Counterparty = Literal["PLATFORM", "CARRIER"]
 ClaimSource = Literal["AUTO_RETURN", "MANUAL", "RECON", "LEGACY_HOLD"]
-DeadlineSource = Literal["PLATFORM", "DEFAULT", "MANUAL"]
+# BR-42 (Phase 3): hạn sàn đã qua lúc tạo → hạn mặc định.
+DeadlineSource = Literal["PLATFORM", "DEFAULT", "MANUAL", "DEFAULT_PLATFORM_PASSED"]
 NoteKind = Literal["NOTE", "STATUS_CHANGE", "SYSTEM"]
 Missing = Literal["NO_PACK_CLIP", "PACK_CLIP_DELETED", "RETURN_CLIP_PENDING"]
 
@@ -114,6 +115,18 @@ class EvidenceOut(BaseModel):
     # BR-39 (Phase 3, DEC-448 — suy ra lúc đọc): phiên mở hoàn trước đã hủy / bỏ dở; phiên chính (đúng một).
     prior_return: bool = False
     primary: bool = False
+    # BR-38 (L15): nếu bỏ bây giờ thì clip / ảnh được giữ tới (trừ khi còn bảo vệ vì lý do khác).
+    removal_keep_until: datetime | None = None
+    removed: "RemovedInfo | None" = None  # chỉ ở `removed_evidence[]`
+
+
+class RemovedInfo(BaseModel):
+    """API-132 `removed_evidence[].removed` (BR-38): bằng chứng đã bỏ — dòng không bị xóa."""
+
+    at: datetime
+    by: "UserBrief | None"
+    reason: str
+    keep_until: datetime
 
 
 class PriorReturnSession(BaseModel):
@@ -162,6 +175,7 @@ class ClaimDetail(BaseModel):
     evidence: list[EvidenceOut]
     other_sessions: list[OtherSession]
     prior_return_sessions: list[PriorReturnSession] = []
+    removed_evidence: list[EvidenceOut] = []
     missing: list[Missing]
     notes: list[NoteOut]
     allowed_transitions: list[ClaimStatus]

@@ -12,12 +12,12 @@ Luật loại phiên quét nhầm / "Cần soát" (BR-39 v0.3–v0.5: `EXCLUDED_
 
 import uuid
 from collections.abc import Iterable, Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import ColumnElement, or_, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aicam.modules.media.models import Clip
+from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.returns.models import ReturnCasePackage
 from aicam.modules.sessions.models import PackSession
 
@@ -118,3 +118,46 @@ def primary_session(
     if effective_pack_id is not None and any(s.id == effective_pack_id for s in sessions):
         return effective_pack_id
     return None
+
+
+# ---------------------------------------------------------------- BR-38 (L15): giữ sau khi bỏ
+
+
+async def keep_until(
+    db: AsyncSession,
+    session_ids: Iterable[uuid.UUID],
+    snapshot_ids: Iterable[uuid.UUID],
+    base: datetime | dict[uuid.UUID, datetime],
+    days: int,
+) -> dict[uuid.UUID, datetime]:
+    """Hạn giữ khi bỏ khỏi hồ sơ = max(`end_at` muộn nhất của clip phiên / `taken_at` ảnh, mốc bỏ) + số ngày
+    giữ (BR-38). `base` = mốc bỏ chung (API-132 `removal_keep_until` = lúc hiện tại) hoặc theo id (dòng đã
+    bỏ). Khóa: id phiên / id ảnh."""
+    keep = timedelta(days=days)
+    sids, snaps = sorted(set(session_ids)), sorted(set(snapshot_ids))
+    out: dict[uuid.UUID, datetime] = {}
+
+    def _base(key: uuid.UUID) -> datetime:
+        return base[key] if isinstance(base, dict) else base
+
+    if sids:
+        ends = dict(
+            (
+                await db.execute(
+                    select(Clip.session_id, func.max(Clip.end_at))
+                    .where(Clip.session_id.in_(sids))
+                    .group_by(Clip.session_id)
+                )
+            ).all()
+        )
+        for sid in sids:
+            end = ends.get(sid)
+            out[sid] = max(end, _base(sid)) + keep if end else _base(sid) + keep
+    if snaps:
+        taken = dict(
+            (await db.execute(select(Snapshot.id, Snapshot.taken_at).where(Snapshot.id.in_(snaps)))).all()
+        )
+        for snap in snaps:
+            at = taken.get(snap)
+            out[snap] = max(at, _base(snap)) + keep if at else _base(snap) + keep
+    return out
