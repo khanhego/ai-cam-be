@@ -30,7 +30,7 @@ pytestmark = pytest.mark.integration
 
 TABLES = (
     "scan_dedup, session_event, approval_request, clip, export, inspection_line, session, status_history, "
-    'return_case_package, return_case, order_item, package, "order", camera, station, refresh_token'
+    'return_case_package, return_case, order_item, package, "order", camera, station, refresh_token, shop'
 )
 
 
@@ -145,3 +145,69 @@ async def test_flag_order_cancelled_races_closing_scan(
                 package = await orders.find_package(db, code)
             assert package is not None
             assert package.warehouse_status == "CANCELLED_AFTER_PACK", code
+
+
+async def test_scan_j13_j06_same_order_no_deadlock(committed: AsyncEngine, test_settings: Settings) -> None:
+    """02a §11 "Đồng thời" (R3-4, DEC-266): API-11 RETURN mở hồ sơ mới ∥ J-13 cùng đơn ∥ J-06 cùng kiện →
+    không deadlock (≤ 5 giây), đúng một hồ sơ mở mỗi đơn, kiện ở trạng thái hợp lệ."""
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from aicam.core import clock
+    from aicam.core.security import Cipher
+    from aicam.modules.orders.models import Shop
+    from aicam.modules.platforms import service as platforms
+    from aicam.modules.platforms import sync
+    from aicam.modules.platforms.base import ShopCredentials
+    from aicam.modules.returns.models import OPEN_CASE_STATUSES, ReturnCase
+
+    from .returns_helpers import platform_return
+
+    test_settings.shopee_enabled = True
+    async with sessionmaker()() as db:
+        shop = Shop(platform="SHOPEE", platform_shop_id="990001", name="TST Shop", auth_status="CONNECTED")
+        platforms.store_credentials(
+            shop, ShopCredentials("990001", "a", "r", clock.now() + timedelta(hours=4)),
+            Cipher(test_settings.fernet_key),
+        )  # fmt: skip
+        db.add(shop)
+        for n in range(61, 66):
+            await make_order(db, n, status="SHIPPED", warehouse_status="HANDED_OVER")
+        await db.commit()
+    headers = await _station("sync", mode="RETURN")
+    mock = MockAdapter()
+    mock.returns = {}
+    for n in range(61, 66):
+        code = f"SPXTST{n:07d}"
+        mock.orders[f"2410TST{n:05d}"] = replace(
+            mock.orders["2410TST00001"], platform_order_sn=f"2410TST{n:05d}", status="SHIPPED",
+            tracking_numbers=(code,),
+        )  # fmt: skip
+        mock.shipping[code] = "DELIVERY_FAILED"
+        mock.put_return(replace(platform_return(n), updated_at=clock.now()))
+
+    async def j13() -> object:
+        async with sessionmaker()() as db:
+            return await sync.sync_returns(db, mock, test_settings)
+
+    async def j06() -> object:
+        async with sessionmaker()() as db:
+            return await sync.sync_shipping_status(db, mock, test_settings)
+
+    async with _client(test_settings) as client:
+        scans = [_scan(client, headers, f"SPXTST{n:07d}") for n in (61,)]
+        await asyncio.wait_for(asyncio.gather(*scans, j13(), j06()), timeout=5)
+
+    async with sessionmaker()() as db:
+        for n in range(61, 66):
+            order_id = await db.scalar(select(text("id")).select_from(text('"order"')).where(
+                text("platform_order_sn = :sn")).params(sn=f"2410TST{n:05d}"))  # fmt: skip
+            open_cases = await db.scalar(
+                select(func.count())
+                .select_from(ReturnCase)
+                .where(ReturnCase.order_id == order_id, ReturnCase.status.in_(OPEN_CASE_STATUSES))
+            )
+            assert open_cases == 1, n
+            package = await orders.find_package(db, f"SPXTST{n:07d}")
+            assert package is not None
+            assert package.warehouse_status in ("RETURN_EXPECTED", "RETURN_INSPECTING"), n

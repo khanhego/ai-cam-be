@@ -1,0 +1,539 @@
+"""J-13 `sync_returns`, J-06 / J-04 mở rộng (T-105) — FR-05.05, 05.11, 05.12, 03.15;
+DEC-248, 254, 258, 259, 267.
+
+TC-05.30..05.43 (trừ 05.44 / 05.45: **chưa test với Shopee thật — thiếu partner T-3**). Adapter mock (PRE-9) +
+adapter Shopee trên HTTP giả (respx) cho TC-05.42.
+"""
+
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import httpx
+import pytest
+import respx
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from aicam.core import clock
+from aicam.core.security import Cipher
+from aicam.core.settings import Settings
+from aicam.modules.orders import service as orders
+from aicam.modules.orders.models import Order, Package, Shop, StatusHistory
+from aicam.modules.platforms import service as platforms
+from aicam.modules.platforms import sync
+from aicam.modules.platforms.base import PlatformItem, PlatformOrder, ShopCredentials
+from aicam.modules.platforms.mock.adapter import MOCK_SHOP_ID, MockAdapter
+from aicam.modules.platforms.shopee.adapter import ShopeeAdapter
+from aicam.modules.platforms.shopee.client import ShopeeClient
+from aicam.modules.returns import service as returns
+from aicam.modules.returns.models import ReturnCase, ReturnCasePackage
+from aicam.realtime import publish
+
+from .factories import make_station_account
+from .returns_helpers import make_order, platform_return, return_session
+
+pytestmark = pytest.mark.integration
+
+NOW = datetime(2026, 10, 5, 1, 0, tzinfo=UTC)
+BASE = "https://partner.test-stable.shopeemobile.com"
+
+
+@pytest.fixture(autouse=True)
+def _env(test_settings: Settings, redis_client: object) -> None:
+    clock.freeze(NOW)
+    test_settings.shopee_enabled = True
+
+
+@pytest.fixture
+def mock() -> MockAdapter:
+    return MockAdapter()
+
+
+@pytest.fixture
+def ws(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, Any]]]:
+    sent: list[tuple[str, dict[str, Any]]] = []
+
+    async def _capture(event: str, data: dict[str, Any]) -> None:
+        sent.append((event, data))
+
+    monkeypatch.setattr(publish, "to_dashboard", _capture)
+    return sent
+
+
+async def _shop(db: AsyncSession, settings: Settings) -> Shop:
+    shop = Shop(platform="SHOPEE", platform_shop_id=MOCK_SHOP_ID, name="TST Shop")
+    platforms.store_credentials(
+        shop,
+        ShopCredentials(MOCK_SHOP_ID, "acc-1", "ref-1", NOW + timedelta(hours=4)),
+        Cipher(settings.fernet_key),
+    )
+    db.add(shop)
+    await db.flush()
+    return shop
+
+
+async def _case_of(db: AsyncSession, order: Order) -> list[ReturnCase]:
+    return list(
+        (
+            await db.scalars(
+                select(ReturnCase)
+                .where(ReturnCase.order_id == order.id)
+                .order_by(ReturnCase.created_at)
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+    )
+
+
+async def _history(db: AsyncSession, package: Package) -> list[tuple[str | None, str, str]]:
+    rows = (
+        await db.scalars(
+            select(StatusHistory)
+            .where(StatusHistory.package_id == package.id)
+            .order_by(StatusHistory.at, StatusHistory.id)
+        )
+    ).all()
+    return [(h.from_status, h.to_status, h.source) for h in rows]
+
+
+def _platform_order(n: int, status: str, quantity: int) -> PlatformOrder:
+    return PlatformOrder(
+        platform_order_sn=f"2410TST{n:05d}",
+        status=status,
+        tracking_numbers=(f"SPXTST{n:07d}",),
+        items=(PlatformItem("Áo thun basic", quantity, "AT-DEN-L", "Đen / L"),),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+
+def _only(mock: MockAdapter, *return_sns: str) -> None:
+    mock.returns = {sn: r for sn, r in mock.returns.items() if sn in return_sns}
+
+
+# ---------------------------------------------------------------- J-13
+
+
+async def test_j13_buyer_return_expected(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings, ws: list[tuple[str, dict[str, Any]]]
+) -> None:
+    """TC-05.30: yêu cầu trả có kiện về → hồ sơ `BUYER_RETURN` `EXPECTED`, mã chiều về, lý do, hạn người bán;
+    kiện `DELIVERED → RETURN_EXPECTED` (PLATFORM); WS `return.updated`; cursor tiến."""
+    shop = await _shop(db, test_settings)
+    order, (package,) = await make_order(db, 41)
+    _only(mock, "2410RTTST041")
+
+    out = await sync.sync_returns(db, mock, test_settings)
+
+    assert out[str(shop.id)]["status"] == "OK"
+    assert out[str(shop.id)]["changed"] == 1
+    (case,) = await _case_of(db, order)
+    assert (case.kind, case.status, case.source) == ("BUYER_RETURN", "EXPECTED", "PLATFORM")
+    assert (case.platform_return_sn, case.return_tracking_number) == ("2410RTTST041", "SPXRTTST000041")
+    assert (case.reason, case.reason_text) == ("ITEM_DAMAGED", "Áo bị rách ở tay")
+    assert case.seller_due_at is not None
+    assert case.requested_items[0]["quantity"] == 2
+    await db.refresh(package)
+    assert package.warehouse_status == "RETURN_EXPECTED"
+    assert (await _history(db, package))[-1] == ("DELIVERED", "RETURN_EXPECTED", "PLATFORM")
+    assert ("return.updated", {"return_case_id": str(case.id), "status": "EXPECTED"}) in ws
+    await db.refresh(shop)
+    assert shop.last_return_cursor == NOW
+
+    # Chạy lại: idempotent theo `platform_return_sn`, không đổi gì.
+    out = await sync.sync_returns(db, mock, test_settings)
+    assert out[str(shop.id)]["changed"] == 0
+    assert len(await _case_of(db, order)) == 1
+
+
+async def test_j13_refund_only_no_parcel(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.31: chỉ hoàn tiền → hồ sơ `REFUND_ONLY` / `NO_PARCEL`; kiện vẫn `DELIVERED`."""
+    await _shop(db, test_settings)
+    order, (package,) = await make_order(db, 44)
+    _only(mock, "2410RTTST044")
+    await sync.sync_returns(db, mock, test_settings)
+    (case,) = await _case_of(db, order)
+    assert (case.kind, case.status, case.needs_parcel) == ("REFUND_ONLY", "NO_PARCEL", False)
+    await db.refresh(package)
+    assert package.warehouse_status == "DELIVERED"
+
+
+async def test_j13_cancelled_before_arrival(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.32 (EX-R7): lần 1 `ACCEPTED` → `EXPECTED`; sàn hủy → hồ sơ `CANCELLED`, kiện `RETURN_EXPECTED →
+    DELIVERED`. Yêu cầu đã hủy mà chưa từng thấy → không tạo hồ sơ."""
+    await _shop(db, test_settings)
+    order, (package,) = await make_order(db, 45)
+    _only(mock, "2410RTTST045")
+    mock.set_return_status("2410RTTST045", "ACCEPTED", NOW)
+    await sync.sync_returns(db, mock, test_settings)
+    (case,) = await _case_of(db, order)
+    assert case.status == "EXPECTED"
+
+    clock.advance(timedelta(minutes=20))
+    mock.set_return_status("2410RTTST045", "CANCELLED", clock.now())
+    await sync.sync_returns(db, mock, test_settings)
+    (case,) = await _case_of(db, order)
+    assert (case.status, case.platform_status) == ("CANCELLED", "CANCELLED")
+    await db.refresh(package)
+    assert package.warehouse_status == "DELIVERED"
+    assert (await _history(db, package))[-1] == ("RETURN_EXPECTED", "DELIVERED", "PLATFORM")
+
+    other, _ = await make_order(db, 46)
+    mock.put_return(
+        replace(platform_return(46), status="CANCELLED", status_group="CANCELLED", updated_at=clock.now())
+    )
+    await sync.sync_returns(db, mock, test_settings)
+    assert await _case_of(db, other) == []
+
+
+async def test_j13_new_package_and_unknown_order(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.39 (DEC-254): đơn chưa có trong hệ thống → `get_order` + upsert; kiện `NEW → RETURN_EXPECTED`."""
+    await _shop(db, test_settings)
+    _only(mock, "2410RTTST041")
+    await sync.sync_returns(db, mock, test_settings)
+    package = await orders.find_package(db, "SPXTST0000041")
+    assert package is not None
+    assert package.warehouse_status == "RETURN_EXPECTED"
+    assert (await _history(db, package))[-1] == ("NEW", "RETURN_EXPECTED", "PLATFORM")
+
+
+async def test_j13_done_status_kept_for_br19(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """Nhóm `DONE` (`REFUND_PAID`) khi kiện chưa về: hồ sơ vẫn chờ kiện, lưu `platform_status` (BR-19 xét)."""
+    await _shop(db, test_settings)
+    order, (package,) = await make_order(db, 51)
+    mock.put_return(replace(platform_return(51), status="REFUND_PAID", status_group="DONE", updated_at=NOW))
+    await sync.sync_returns(db, mock, test_settings)
+    (case,) = await _case_of(db, order)
+    assert (case.status, case.platform_status) == ("EXPECTED", "REFUND_PAID")
+    await db.refresh(package)
+    assert package.warehouse_status == "RETURN_EXPECTED"
+
+
+async def test_j13_platform_reports_after_received(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.38 (EX-R1, DEC-267 b): hồ sơ `UNANNOUNCED` đã nhận → sàn báo yêu cầu trả → gắn vào **chính**
+    hồ sơ đó (`kind = BUYER_RETURN`, mã sàn), không hồ sơ mới, kiện đã nhận giữ nguyên."""
+    await _shop(db, test_settings)
+    order, (package,) = await make_order(db, 46)
+    scan = await returns.attach_or_create(db, order, returns.Signal(returns.SIGNAL_WAREHOUSE_SCAN,
+                                                                    package_ids=(package.id,)))  # fmt: skip
+    case = scan.case
+    assert case is not None
+    package.warehouse_status = "RETURN_RECEIVED_OK"
+    case.status, case.received_at, case.conclusion = "RECEIVED_OK", NOW, "OK"
+    await db.flush()
+    _only(mock)
+    mock.put_return(replace(platform_return(46), updated_at=NOW))
+
+    await sync.sync_returns(db, mock, test_settings)
+
+    (only,) = await _case_of(db, order)
+    assert only.id == case.id
+    assert (only.kind, only.platform_return_sn, only.status) == (
+        "BUYER_RETURN",
+        "2410RTTST046",
+        "RECEIVED_OK",
+    )
+    await db.refresh(package)
+    assert package.warehouse_status == "RETURN_RECEIVED_OK"
+
+
+async def test_j13_merges_unidentified_by_return_tracking(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """02 §6.3 #6 / DEC-316: hồ sơ chưa xác định mở bằng mã chiều về (phiên đã đóng) → J-13 thấy yêu cầu có mã
+    đó → gộp vào hồ sơ của đơn; kiện tạm xóa; kiện thật `RETURN_RECEIVED_*` theo kết luận."""
+    await _shop(db, test_settings)
+    order, (package,) = await make_order(db, 41)
+    _, station = await make_station_account(db)
+    case, placeholder = await returns.create_unidentified(db)
+    db.add(return_session(station, placeholder, case, conclusion="DAMAGED", open_code="SPXRTTST000041"))
+    case.status = "RECEIVED_ISSUE"
+    placeholder.warehouse_status = "RETURN_RECEIVED_ISSUE"
+    await db.flush()
+    _only(mock, "2410RTTST041")
+
+    await sync.sync_returns(db, mock, test_settings)
+
+    merged = await db.get(ReturnCase, case.id, populate_existing=True)
+    assert merged is not None
+    (destination,) = [c for c in await _case_of(db, order) if c.id != case.id]
+    assert (merged.status, merged.merged_into_id) == ("CANCELLED", destination.id)
+    assert destination.status == "RECEIVED_ISSUE"
+    await db.refresh(package)
+    assert package.warehouse_status == "RETURN_RECEIVED_ISSUE"
+    assert await db.get(Package, placeholder.id, populate_existing=True) is None
+
+
+async def test_j13_failure_sets_last_error_and_lock(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.43: lỗi cuối → `shop.last_error.code = SYNC_FAILED` (`job = returns`), cursor không tiến;
+    lượt sau thành công xóa lỗi của J-13. J-13 chạy chồng → bỏ lượt (lock `sync_returns:{shop}`)."""
+    shop = await _shop(db, test_settings)
+    mock.fail_returns_times = 5
+    out = await sync.sync_returns(db, mock, test_settings)
+    assert out[str(shop.id)]["status"] == "FAILED"
+    await db.refresh(shop)
+    assert shop.last_error is not None
+    assert (shop.last_error["code"], shop.last_error["job"]) == ("SYNC_FAILED", "returns")
+    assert shop.last_return_cursor is None
+
+    mock.fail_returns_times = 0
+    token = await sync._acquire_returns_lock(shop.id)
+    assert token is not None
+    out = await sync.sync_returns(db, mock, test_settings)
+    assert out[str(shop.id)] == {"status": "SKIPPED", "reason": "locked"}
+    await sync._release_returns_lock(shop.id, token)
+
+    out = await sync.sync_returns(db, mock, test_settings)
+    assert out[str(shop.id)]["status"] == "OK"
+    await db.refresh(shop)
+    assert shop.last_error is None
+
+
+async def test_j13_disabled(db: AsyncSession, mock: MockAdapter, test_settings: Settings) -> None:
+    test_settings.shopee_enabled = False
+    assert await sync.sync_returns(db, mock, test_settings) == {"skipped": "not_configured"}
+
+
+@respx.mock
+async def test_j13_shopee_503_twice_then_ok(db: AsyncSession, test_settings: Settings) -> None:
+    """TC-05.42 (adapter Shopee, HTTP giả): `get_return_list` 503 hai lần rồi OK → hồ sơ tạo, không
+    `last_error`.     Định dạng theo tài liệu công khai — **chưa test với Shopee thật (T-3)**."""
+
+    async def _no_sleep(_: float) -> None:
+        return None
+
+    adapter = ShopeeAdapter(ShopeeClient(2001234, "k", BASE, sleep=_no_sleep))
+    order, _ = await make_order(db, 41)
+    ok = httpx.Response(200, json={"error": "", "response": {"more": False, "return": [
+        {"return_sn": "2410RTSPE041", "order_sn": order.platform_order_sn, "status": "ACCEPTED",
+         "needs_logistics": True, "tracking_number": "SPXRTSPE000041", "reason": "ITEM_DAMAGED",
+         "update_time": int(NOW.timestamp()), "create_time": int(NOW.timestamp()),
+         "item": [{"item_sku": "AT-DEN-L", "name": "Áo thun basic", "amount": 1}]}]}})  # fmt: skip
+    respx.get(f"{BASE}/api/v2/returns/get_return_list").mock(
+        side_effect=[httpx.Response(503), httpx.Response(503), ok]
+    )
+    shop = await _shop(db, test_settings)
+    out = await sync.sync_returns(db, adapter, test_settings)
+    assert out[str(shop.id)]["status"] == "OK"
+    (case,) = await _case_of(db, order)
+    assert (case.kind, case.return_tracking_number) == ("BUYER_RETURN", "SPXRTSPE000041")
+    await db.refresh(shop)
+    assert shop.last_error is None
+
+
+# ---------------------------------------------------------------- J-06 / J-04 giao thất bại
+
+
+async def _handed_over(db: AsyncSession, mock: MockAdapter, n: int) -> Package:
+    result = await orders.upsert_platform_order(db, mock.orders[f"2410TST{n:05d}"])
+    package = result.packages[0]
+    package.warehouse_status = "HANDED_OVER"
+    await db.flush()
+    return package
+
+
+async def test_j06_delivery_failed_creates_failed_case(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.33: kiện `HANDED_OVER` giao thất bại → hồ sơ `FAILED_DELIVERY` `EXPECTED`, kiện
+    `RETURN_EXPECTED`; J-06 chạy lại không tạo thêm."""
+    await _shop(db, test_settings)
+    package = await _handed_over(db, mock, 12)
+    mock.shipping["SPXTST0000012"] = "DELIVERY_FAILED"
+    await sync.sync_shipping_status(db, mock, test_settings)
+    await db.refresh(package)
+    assert package.warehouse_status == "RETURN_EXPECTED"
+    order = await db.get(Order, package.order_id)
+    assert order is not None
+    (case,) = await _case_of(db, order)
+    assert (case.kind, case.status, case.source) == ("FAILED_DELIVERY", "EXPECTED", "PLATFORM")
+    assert case.signal_keys[0].startswith("FAILED:2410TST00012:")
+    await sync.sync_shipping_status(db, mock, test_settings)
+    assert len(await _case_of(db, order)) == 1
+
+
+@pytest.mark.parametrize("how", ["cod_rejected", "cancelled_after_pickup"])
+async def test_j06_boom_cod_and_cancel_after_pickup(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings, how: str
+) -> None:
+    """TC-05.35 (EX-R14, DEC-258): boom COD hoặc đơn hủy khi kiện đã giao ĐVVC → giao thất bại."""
+    await _shop(db, test_settings)
+    package = await _handed_over(db, mock, 13)
+    if how == "cod_rejected":
+        mock.shipping["SPXTST0000013"] = "COD_REJECTED"
+    else:
+        mock.set_status("2410TST00013", "CANCELLED", NOW)
+    await sync.sync_shipping_status(db, mock, test_settings)
+    await db.refresh(package)
+    assert package.warehouse_status == "RETURN_EXPECTED"
+    order = await db.get(Order, package.order_id)
+    assert order is not None
+    (case,) = await _case_of(db, order)
+    assert case.kind == "FAILED_DELIVERY"
+
+
+async def test_j04_cancel_after_pickup_and_to_return(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.35 qua J-04: đơn hủy, kiện `HANDED_OVER` → giao thất bại (không `return` sớm — DEC-258); đơn
+    `TO_RETURN` 2 kiện (`PACKED` + `HANDED_OVER`) → một hồ sơ, cả hai `RETURN_EXPECTED`."""
+    await _shop(db, test_settings)
+    package = await _handed_over(db, mock, 14)
+    mock.set_status("2410TST00014", "CANCELLED", NOW)
+    two = PlatformOrder(
+        platform_order_sn="2410TST00043", status="TO_RETURN",
+        tracking_numbers=("SPXTST0000043-1", "SPXTST0000043-2"),
+        items=(PlatformItem("Áo thun basic", 2, "AT-DEN-L", "Đen / L"),), created_at=NOW, updated_at=NOW,
+    )  # fmt: skip
+    first = await orders.upsert_platform_order(db, replace(two, status="READY_TO_SHIP"))
+    first.packages[0].warehouse_status = "PACKED"
+    first.packages[1].warehouse_status = "HANDED_OVER"
+    await db.flush()
+    mock.put(two)
+
+    await sync.sync_orders(db, mock, test_settings)
+
+    await db.refresh(package)
+    assert package.warehouse_status == "RETURN_EXPECTED"
+    order43 = first.order
+    (case,) = await _case_of(db, order43)
+    assert case.kind == "FAILED_DELIVERY"
+    linked = set(
+        (
+            await db.scalars(
+                select(ReturnCasePackage.package_id).where(ReturnCasePackage.return_case_id == case.id)
+            )
+        ).all()
+    )
+    assert linked == {p.id for p in first.packages}
+    for p in first.packages:
+        await db.refresh(p)
+        assert p.warehouse_status == "RETURN_EXPECTED"
+    assert (await _history(db, first.packages[0]))[-2:] == [
+        ("PACKED", "HANDED_OVER", "PLATFORM"),
+        ("HANDED_OVER", "RETURN_EXPECTED", "PLATFORM"),
+    ]
+
+
+async def test_to_return_then_buyer_return_one_case(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.36 (DEC-248): `TO_RETURN` (J-06) rồi yêu cầu trả (J-13) cùng đơn → đúng 1 hồ sơ mở,
+    `BUYER_RETURN`."""
+    await _shop(db, test_settings)
+    package = await _handed_over(db, mock, 15)
+    mock.set_status("2410TST00015", "TO_RETURN", NOW)
+    await sync.sync_shipping_status(db, mock, test_settings)
+    _only(mock)
+    mock.put_return(replace(platform_return(15), updated_at=NOW))
+    await sync.sync_returns(db, mock, test_settings)
+    order = await db.get(Order, package.order_id)
+    assert order is not None
+    (case,) = await _case_of(db, order)
+    assert (case.kind, case.status, case.platform_return_sn) == ("BUYER_RETURN", "EXPECTED", "2410RTTST015")
+
+
+async def test_buyer_return_then_to_return_one_case(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.36 chiều ngược: J-13 trước rồi J-04 thấy `TO_RETURN` → vẫn một hồ sơ `BUYER_RETURN`."""
+    await _shop(db, test_settings)
+    order, (package,) = await make_order(db, 16, warehouse_status="HANDED_OVER", status="SHIPPED")
+    _only(mock)
+    mock.put_return(replace(platform_return(16), updated_at=NOW))
+    mock.put(_platform_order(16, "TO_RETURN", 2))
+    await sync.sync_returns(db, mock, test_settings)
+    await sync.sync_orders(db, mock, test_settings)
+    (case,) = await _case_of(db, order)
+    assert case.kind == "BUYER_RETURN"
+    await db.refresh(package)
+    assert package.warehouse_status == "RETURN_EXPECTED"
+
+
+async def test_to_return_repeated_after_received_no_new_case(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.37 (DEC-267): hồ sơ giao thất bại đã `RECEIVED_OK` — J-04 / J-06 chạy 3 lần cùng tín hiệu
+    `TO_RETURN` → không tạo hồ sơ mới."""
+    await _shop(db, test_settings)
+    package = await _handed_over(db, mock, 17)
+    mock.set_status("2410TST00017", "TO_RETURN", NOW)
+    await sync.sync_shipping_status(db, mock, test_settings)
+    order = await db.get(Order, package.order_id)
+    assert order is not None
+    (case,) = await _case_of(db, order)
+    await db.refresh(package)
+    package.warehouse_status = "RETURN_RECEIVED_OK"
+    case.status, case.received_at = "RECEIVED_OK", NOW
+    await db.flush()
+    for _ in range(3):
+        clock.advance(timedelta(minutes=5))
+        mock.set_status("2410TST00017", "TO_RETURN", clock.now())  # mốc cập nhật mới mỗi lần
+        await sync.sync_orders(db, mock, test_settings)
+        await sync.sync_shipping_status(db, mock, test_settings)
+    assert len(await _case_of(db, order)) == 1
+
+
+async def test_j06_redelivery_cancels_failed_case(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """02 §5.3 / 02a J-06: kiện của hồ sơ giao thất bại được giao lại thành công → `RETURN_EXPECTED →
+    DELIVERED`, kiện rời hồ sơ, hồ sơ `CANCELLED`."""
+    await _shop(db, test_settings)
+    package = await _handed_over(db, mock, 18)
+    mock.shipping["SPXTST0000018"] = "DELIVERY_FAILED"
+    await sync.sync_shipping_status(db, mock, test_settings)
+    mock.shipping["SPXTST0000018"] = "DELIVERED"
+    mock.set_status("2410TST00018", "COMPLETED", NOW)
+    out = await sync.sync_shipping_status(db, mock, test_settings)
+    assert out["changed"] == 1
+    await db.refresh(package)
+    assert package.warehouse_status == "DELIVERED"
+    order = await db.get(Order, package.order_id)
+    assert order is not None
+    (case,) = await _case_of(db, order)
+    assert case.status == "CANCELLED"
+    count = await db.scalar(
+        select(func.count()).select_from(ReturnCasePackage).where(ReturnCasePackage.return_case_id == case.id)
+    )
+    assert count == 0
+
+
+async def test_j04_merges_unidentified_after_order_sync(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-05.40 (DEC-269): hồ sơ chưa xác định `open_code = SPXTST0000099` (phiên đã đóng); J-04 thấy đơn có
+    kiện đó → gộp, phiên sang kiện thật, kiện tạm xóa."""
+    await _shop(db, test_settings)
+    _, station = await make_station_account(db)
+    case, placeholder = await returns.create_unidentified(db)
+    session_row = return_session(station, placeholder, case, conclusion="OK", open_code="SPXTST0000099")
+    db.add(session_row)
+    case.status = "RECEIVED_OK"
+    placeholder.warehouse_status = "RETURN_RECEIVED_OK"
+    await db.flush()
+    mock.put(_platform_order(99, "COMPLETED", 1))
+
+    await sync.sync_orders(db, mock, test_settings)
+
+    real = await orders.find_package(db, "SPXTST0000099")
+    assert real is not None
+    await db.refresh(session_row)
+    assert session_row.package_id == real.id
+    merged = await db.get(ReturnCase, case.id, populate_existing=True)
+    assert merged is not None
+    assert (merged.kind, merged.order_id) == ("UNANNOUNCED", real.order_id)
+    assert await db.get(Package, placeholder.id, populate_existing=True) is None

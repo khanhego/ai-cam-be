@@ -285,7 +285,15 @@ class ShopeeAdapter:
                         logistics[number] = str(p.get("logistics_status") or "")
             for code in codes:
                 raw = logistics.get(code, "")
-                out.append(ShippingStatus(code, raw or status, mapping.warehouse_hint(status, raw), status))
+                out.append(
+                    ShippingStatus(
+                        code,
+                        raw or status,
+                        mapping.warehouse_hint(status, raw),
+                        status,
+                        _ts(detail.get("update_time")),
+                    )
+                )
         return out
 
     # ------------------------------------------------------- yêu cầu trả (FR-05.05, 05.12 — chưa test, T-3)

@@ -77,12 +77,14 @@ class ShippingStatus:
     RETURN_EXPECTED: tín hiệu hoàn (`TO_RETURN`, giao thất bại, boom COD — DEC-259).
 
     `order_status`: trạng thái đơn trên sàn lúc tra (để J-06 bắt đơn hủy sau khi đóng — EX-P10).
+    `updated_at`: mốc cập nhật đơn trên sàn — khóa đợt giao thất bại `FAILED:{order_sn}:{mốc}` (R3-7).
     """
 
     tracking_number: str
     raw_status: str
     warehouse_hint: str | None
     order_status: str | None = None
+    updated_at: datetime | None = None
 
 
 @dataclass(frozen=True)

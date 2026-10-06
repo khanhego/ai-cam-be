@@ -1,21 +1,23 @@
 """Job đồng bộ sàn (02a §7, FR-05.02..04, ADR-007 polling): J-04 đơn mới, J-05 xác minh lại kiện,
-J-06 trạng thái vận chuyển, J-12 làm mới token.
+J-06 trạng thái vận chuyển, J-12 làm mới token, J-13 yêu cầu trả (Phase 2 — FR-05.05, 05.11, 05.12).
 
 Mọi job không làm gì khi chưa cấu hình Shopee (`SHOPEE_ENABLED=false`). Thử lại từng lời gọi HTTP nằm trong
 adapter (5 lần, giãn cách mũ — FR-05.08); lỗi cuối ghi `shop.last_error` → dashboard `SYNC_ERROR` (API-32).
 """
 
+import secrets
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import clock
 from aicam.core.db import after_commit, commit, rollback
+from aicam.core.redis import get_redis
 from aicam.core.security import Cipher
 from aicam.core.settings import Settings
 from aicam.modules.orders import service as orders
@@ -27,9 +29,13 @@ from aicam.modules.platforms.base import (
     PlatformAuthError,
     PlatformError,
     PlatformOrder,
+    PlatformReturn,
     ShipmentRef,
+    ShippingStatus,
     ShopCredentials,
 )
+from aicam.modules.returns import service as returns
+from aicam.modules.returns.models import OPEN_CASE_STATUSES, ReturnCase, ReturnCasePackage
 from aicam.realtime import publish
 
 log = structlog.get_logger()
@@ -162,19 +168,81 @@ async def _order_packages(session: AsyncSession, order_sn: str) -> dict[Any, str
 async def _upsert(session: AsyncSession, order: PlatformOrder, shop_id: Any) -> bool:
     """Một đơn trong savepoint; station vừa tra cùng đơn (IntegrityError) → thử lại một lần.
 
+    Phase 2 (02a §7 J-04 mở rộng, T-105): sau upsert gộp hồ sơ chưa xác định theo mã (DEC-269); đơn
+    `TO_RETURN` hoặc hủy khi kiện đã giao ĐVVC → tín hiệu giao thất bại (DEC-258, 259).
     True = có kiện đổi `warehouse_status` (vd hủy sau khi đóng) → báo dashboard tính lại.
     """
     for attempt in (1, 2):
         try:
             async with session.begin_nested():
                 before = await _order_packages(session, order.platform_order_sn)
-                await orders.upsert_platform_order(session, order, shop_id=shop_id)
+                result = await orders.upsert_platform_order(session, order, shop_id=shop_id)
+                merged = await returns.merge_unidentified_by_code(session, result.order)
+                signalled = await _order_return_signal(session, result.order, order)
                 after = await _order_packages(session, order.platform_order_sn)
-                return any(before.get(pid, status) != status for pid, status in after.items())
+                return (
+                    any(before.get(pid, status) != status for pid, status in after.items())
+                    or bool(merged)
+                    or signalled
+                )
         except IntegrityError:
             if attempt == 2:
                 raise
     return False
+
+
+# Đơn `TO_RETURN` trên sàn: kiện chưa ghi nhận rời kho / đang trên đường → giao thất bại (DEC-259, DEC-254).
+# Kiện `DELIVERED` không tính: hoàn sau khi giao là yêu cầu trả (J-13) — DEC-316.
+_TO_RETURN_FROM = ("NEW", "PACKED", "HANDED_OVER")
+
+
+async def _order_return_signal(session: AsyncSession, order: Order, data: PlatformOrder) -> bool:
+    """J-04: đơn `TO_RETURN` → kiện `NEW` / `PACKED` / `HANDED_OVER`; đơn hủy → kiện `HANDED_OVER` (hủy sau
+    khi ĐVVC lấy hàng, boom COD — DEC-258). Người gọi đã khóa `order:{sn}`."""
+    if data.status == "TO_RETURN":
+        wanted: tuple[str, ...] = _TO_RETURN_FROM
+    elif data.is_cancelled:
+        wanted = ("HANDED_OVER",)
+    else:
+        return False
+    packages = [p for p in await returns.packages_of_order(session, order.id) if p.warehouse_status in wanted]
+    return await _failed_delivery(session, order, packages, data.updated_at)
+
+
+async def _failed_delivery(
+    session: AsyncSession, order: Order, packages: list[Package], at: datetime | None
+) -> bool:
+    """Tín hiệu giao thất bại cho các kiện (đã khóa `order:{sn}`): `PACKED → HANDED_OVER` rồi
+    `returns.attach_or_create(FAILED_DELIVERY)` chuyển `→ RETURN_EXPECTED` (02 §5.3, DEC-259). Khóa hồ sơ mở
+    của đơn trước kiện (DEC-266). True = có kiện đổi trạng thái."""
+    if not packages:
+        return False
+    await returns.open_case_of_order(session, order.id, for_update=True)
+    changed = False
+    eligible: list[Any] = []
+    for package in await returns.lock_packages(session, [p.id for p in packages]):
+        if package.warehouse_status == "PACKED":
+            changed = await orders.transition(
+                session, package, "HANDED_OVER", source="PLATFORM", actor_label="Sàn"
+            )
+        if package.warehouse_status in ("NEW", "HANDED_OVER"):
+            eligible.append(package.id)
+    if not eligible:
+        return changed
+    signal = returns.Signal(
+        returns.SIGNAL_FAILED_DELIVERY,
+        key=returns.failed_signal_key(order.platform_order_sn, at),
+        package_ids=tuple(eligible),
+    )
+    result = await returns.attach_or_create(session, order, signal)
+    if result.case is not None and (result.created or result.moved_packages):
+        returns.notify_updated(session, result.case)
+        log.info(
+            "failed_delivery_signal", return_case_id=str(result.case.id), order_sn=order.platform_order_sn,
+            moved=len(result.moved_packages), created=result.created,
+        )  # fmt: skip
+        return True
+    return changed
 
 
 @dataclass
@@ -334,22 +402,59 @@ async def verify_unverified(
 # ---------------------------------------------------------------- J-06
 
 
-async def _apply_shipping(session: AsyncSession, package: Package, order: Order, raw: str, hint: str | None,
-                          order_status: str | None) -> bool:  # fmt: skip
-    changed = False
-    package.platform_logistics_status = raw or package.platform_logistics_status
-    if order_status:
-        order.platform_status = order_status
-        if order_status in CANCELLED_STATUSES:
-            return await orders.apply_platform_cancel(session, package)
+async def _apply_shipping(session: AsyncSession, package_id: Any, order_id: Any, st: ShippingStatus) -> bool:
+    """Áp một trạng thái vận chuyển. Khóa `order:{sn}` → hồ sơ mở của đơn → kiện, đọc lại sau khóa (R3-4).
+
+    - Đơn hủy: `apply_platform_cancel` (NEW / PACKED / PACKING — BR-21); kiện `HANDED_OVER` → giao thất bại
+      (hủy sau khi ĐVVC lấy, DEC-258).
+    - Hint `RETURN_EXPECTED` (DEC-259): `PACKED → HANDED_OVER → RETURN_EXPECTED`,
+      `HANDED_OVER → RETURN_EXPECTED` qua `attach_or_create(FAILED_DELIVERY)` (chỉ tạo hồ sơ khi đơn không có
+      hồ sơ mở).
+    - Kiện `RETURN_EXPECTED` / `MISSING` của hồ sơ giao thất bại, hint `HANDED_OVER` / `DELIVERED` → giao lại.
+    """
+    order = await session.get(Order, order_id)
+    if order is None:
+        return False
+    await orders.lock_orders(session, [order.platform_order_sn])
+    order = await session.scalar(
+        select(Order).where(Order.id == order_id).execution_options(populate_existing=True)
+    )
+    if order is None:
+        return False
+    case = await returns.open_case_of_order(session, order.id, for_update=True)
+    locked = await returns.lock_packages(session, [package_id])
+    if not locked:
+        return False
+    package = locked[0]
+    package.platform_logistics_status = st.raw_status or package.platform_logistics_status
+    if st.order_status:
+        order.platform_status = st.order_status
+        if st.order_status in CANCELLED_STATUSES:
+            changed = await orders.apply_platform_cancel(session, package)
+            if package.warehouse_status == "HANDED_OVER":
+                changed = await _failed_delivery(session, order, [package], st.updated_at) or changed
+            return changed
+    hint = st.warehouse_hint
+    status = package.warehouse_status
+    if status in ("RETURN_EXPECTED", "RETURN_MISSING"):
+        if (
+            case is not None
+            and case.kind == "FAILED_DELIVERY"
+            and hint in ("HANDED_OVER", "DELIVERED")
+            and case.id in await returns.open_case_ids_of_package(session, package.id)
+            and await returns.apply_redelivery(session, case, package, hint)
+        ):
+            returns.notify_updated(session, case)
+            return True
+        return False
+    if hint == "RETURN_EXPECTED" and status in ("NEW", "PACKED", "HANDED_OVER"):
+        return await _failed_delivery(session, order, [package], st.updated_at)
     steps = {
         ("PACKED", "HANDED_OVER"): ["HANDED_OVER"],
         ("PACKED", "DELIVERED"): ["HANDED_OVER", "DELIVERED"],
         ("HANDED_OVER", "DELIVERED"): ["DELIVERED"],
-        # Tín hiệu hoàn (DEC-259): T-103 chỉ áp bước "đã rời kho" như Phase 1; `→ RETURN_EXPECTED` + hồ sơ
-        # hàng hoàn qua `returns.attach_or_create` ở T-105 (DEC-304).
-        ("PACKED", "RETURN_EXPECTED"): ["HANDED_OVER"],
-    }.get((package.warehouse_status, hint or ""), [])
+    }.get((status, hint or ""), [])
+    changed = False
     for to in steps:
         changed = (
             await orders.transition(session, package, to, source="PLATFORM", actor_label="Sàn") or changed
@@ -361,22 +466,37 @@ async def sync_shipping_status(
     session: AsyncSession, adapter: PlatformAdapter, settings: Settings
 ) -> dict[str, int]:
     """J-06 (15 phút): kiện `PACKED` / `HANDED_OVER` → vận chuyển sàn → `HANDED_OVER` / `DELIVERED`;
-    đơn bị hủy sau khi đóng → `CANCELLED_AFTER_PACK` (FR-05.04, EX-P10)."""
+    đơn bị hủy sau khi đóng → `CANCELLED_AFTER_PACK` (FR-05.04, EX-P10). Phase 2 (T-105): giao thất bại / boom
+    COD → hồ sơ `FAILED_DELIVERY`, kiện `RETURN_EXPECTED`; kiện của hồ sơ giao thất bại được giao lại."""
     out = {"checked": 0, "changed": 0}
     if not platforms.is_configured(settings):
         return out
     target = await platforms.lookup_target(session, adapter, settings)
     if target is None:
         return out
+    failed_packages = (
+        select(ReturnCasePackage.package_id)
+        .join(ReturnCase, ReturnCase.id == ReturnCasePackage.return_case_id)
+        .where(ReturnCase.kind == "FAILED_DELIVERY", ReturnCase.status.in_(OPEN_CASE_STATUSES))
+    )
     rows = (
         await session.execute(
             select(Package, Order)
             .join(Order, Order.id == Package.order_id)
-            .where(Package.warehouse_status.in_(("PACKED", "HANDED_OVER")))
+            .where(
+                or_(
+                    Package.warehouse_status.in_(("PACKED", "HANDED_OVER")),
+                    and_(
+                        Package.warehouse_status.in_(("RETURN_EXPECTED", "RETURN_MISSING")),
+                        Package.id.in_(failed_packages),
+                    ),
+                )
+            )
             .order_by(Package.updated_at)
             .limit(SHIPPING_MAX)
         )
     ).all()
+    await commit(session)
     for i in range(0, len(rows), SHIPPING_BATCH):
         chunk = rows[i : i + SHIPPING_BATCH]
         by_code = {p.tracking_number.upper(): (p, o) for p, o in chunk}
@@ -392,12 +512,140 @@ async def sync_shipping_status(
             if pair is None:
                 continue
             out["checked"] += 1
-            if await _apply_shipping(
-                session, pair[0], pair[1], st.raw_status, st.warehouse_hint, st.order_status
-            ):
+            if await _apply_shipping(session, pair[0].id, pair[1].id, st):
                 changed += 1
+                _report_updated(session, settings)
+            await commit(session)  # nhả `order:{sn}` + khóa kiện sau mỗi kiện (như J-04 — DEC-162)
         out["changed"] += changed
-        if changed:
-            _report_updated(session, settings)
+    return out
+
+
+# ---------------------------------------------------------------- J-13 (Phase 2, T-105)
+
+RETURNS_LOCK_TTL_S = 600  # 02a §6: J-13 chạy chồng → lock Redis `sync_returns:{shop}` 600 giây
+RETURNS_JOB = "returns"  # đánh dấu `shop.last_error.job` — J-13 thành công chỉ xóa lỗi của chính nó
+
+_RELEASE_IF_OWNER = """
+if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end
+return 0
+"""
+
+
+def returns_lock_key(shop_id: Any) -> str:
+    return f"sync_returns:{shop_id}"
+
+
+async def _acquire_returns_lock(shop_id: Any) -> str | None:
+    token = secrets.token_hex(8)
+    ok = await get_redis().set(returns_lock_key(shop_id), token, nx=True, ex=RETURNS_LOCK_TTL_S)
+    return token if ok else None
+
+
+async def _release_returns_lock(shop_id: Any, token: str) -> None:
+    await get_redis().eval(_RELEASE_IF_OWNER, 1, returns_lock_key(shop_id), token)  # type: ignore[misc]
+
+
+async def _sync_one_return(
+    session: AsyncSession, ret: PlatformReturn, adapter: PlatformAdapter, creds: ShopCredentials | None,
+    shop_id: Any,
+) -> returns.AttachResult | None:  # fmt: skip
+    """Một yêu cầu trả: đơn chưa có → `get_order` + upsert (savepoint) như J-04; rồi
+    `returns.upsert_from_platform` + gộp hồ sơ chưa xác định theo mã chiều về (02 §6.3 #6)."""
+    order = await session.scalar(select(Order).where(Order.platform_order_sn == ret.order_sn))
+    if order is None:
+        data = await adapter.get_order(creds, ret.order_sn)
+        if data is None:
+            log.warning("return_order_not_found", return_sn=ret.return_sn, order_sn=ret.order_sn)
+            return None
+        for attempt in (1, 2):
+            try:
+                async with session.begin_nested():
+                    order = (await orders.upsert_platform_order(session, data, shop_id=shop_id)).order
+                    await returns.merge_unidentified_by_code(session, order)
+                break
+            except IntegrityError:
+                if attempt == 2:
+                    raise
+        if order is None:
+            return None
+    result = await returns.upsert_from_platform(session, order, ret)
+    if (
+        result.case is not None
+        and result.case.return_tracking_number
+        and await returns.merge_unidentified_by_code(session, order)
+    ):
+        result.changed = True
+    if result.case is not None and result.changed:
+        returns.notify_updated(session, result.case)
+    return result
+
+
+async def sync_shop_returns(
+    session: AsyncSession, shop: Shop, adapter: PlatformAdapter, settings: Settings
+) -> SyncResult:
+    """J-13 cho một shop (đã giữ lock `sync_returns:{shop}`). `since` = cursor − 10 phút; lần đầu lùi
+    `SHOPEE_INITIAL_SYNC_DAYS`. Commit sau mỗi yêu cầu (nhả `order:{sn}` trước lời gọi mạng kế — DEC-162).
+
+    Không tự làm mới token (refresh token Shopee dùng một lần, chỉ J-04 / J-12 làm dưới lock `sync:{shop}` —
+    DEC-316): token hết hạn → `EXPIRED`, bỏ lượt. Lỗi sàn cuối → `shop.last_error` `SYNC_FAILED` (`job =
+    returns`), cursor không tiến."""
+    result = SyncResult()
+    creds = platforms.credentials(shop, Cipher(settings.fernet_key))
+    if creds is not None and creds.expires_at <= clock.now():
+        log.info("returns_sync_token_expired", shop_id=str(shop.id))
+        return SyncResult(status="EXPIRED")
+    started = clock.now()
+    since = (
+        shop.last_return_cursor or started - timedelta(days=settings.shopee_initial_sync_days)
+    ) - CURSOR_OVERLAP
+    kinds: dict[str, int] = {}
+    try:
+        async for ret in adapter.list_returns(creds, since):
+            result.orders += 1
+            attached = await _sync_one_return(session, ret, adapter, creds, shop.id)
+            if attached is not None and attached.case is not None and attached.changed:
+                result.changed += 1
+                kinds[attached.case.kind] = kinds.get(attached.case.kind, 0) + 1
+                _report_updated(session, settings)
+            await commit(session)
+        shop.last_return_cursor = started
+        if shop.last_error and shop.last_error.get("job") == RETURNS_JOB:
+            shop.last_error = None
         await commit(session)
+    except PlatformError as exc:
+        await rollback(session)
+        shop = await session.get(Shop, shop.id) or shop
+        shop.last_error = {**_error("SYNC_FAILED", exc), "job": RETURNS_JOB}
+        result.status = "FAILED"
+        result.error = str(exc)
+        _report_updated(session, settings)
+        await commit(session)
+        # metric `aicam_returns_sync_errors_total{shop}` (02a §10) — log có cấu trúc
+        log.warning("returns_sync_failed", shop_id=str(shop.id), error=str(exc), returns=result.orders)
+    # metric `aicam_returns_synced_total{kind}` (02a §10)
+    log.info("returns_sync", shop_id=str(shop.id), synced_by_kind=kinds, **result.as_dict())
+    return result
+
+
+async def sync_returns(
+    session: AsyncSession, adapter: PlatformAdapter, settings: Settings, shop_id: Any = None
+) -> dict[str, Any]:
+    """J-13 (15 phút / mọi shop `CONNECTED`; sau khi kết nối cho một shop). Không làm gì khi chưa cấu hình."""
+    if not platforms.is_configured(settings):
+        return {"skipped": "not_configured"}
+    query = select(Shop).where(Shop.auth_status == "CONNECTED")
+    if shop_id is not None:
+        query = query.where(Shop.id == shop_id)
+    out: dict[str, Any] = {}
+    shops = (await session.scalars(query)).all()
+    await commit(session)
+    for shop in shops:
+        token = await _acquire_returns_lock(shop.id)
+        if token is None:
+            out[str(shop.id)] = {"status": "SKIPPED", "reason": "locked"}
+            continue
+        try:
+            out[str(shop.id)] = (await sync_shop_returns(session, shop, adapter, settings)).as_dict()
+        finally:
+            await _release_returns_lock(shop.id, token)
     return out

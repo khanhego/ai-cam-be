@@ -25,7 +25,7 @@ app.conf.update(
         "media.render_export": {"queue": "export"},
         "media.capture_pack_snapshot": {"queue": "video"},  # J-17
         "claims.build_evidence_pack": {"queue": "export"},  # J-16 — cùng worker encode J-03
-        "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12 (gọi Shopee) tách khỏi cắt clip
+        "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12, J-13 (gọi Shopee) tách khỏi cắt clip
     },
     beat_schedule={
         "j07-session-timeouts": {"task": "sessions.check_timeouts", "schedule": 30.0},
@@ -36,6 +36,7 @@ app.conf.update(
         "j04-sync-orders": {"task": "platforms.sync_orders", "schedule": 300.0},
         "j05-verify-unverified": {"task": "platforms.verify_unverified", "schedule": 600.0},
         "j06-sync-shipping-status": {"task": "platforms.sync_shipping_status", "schedule": 900.0},
+        "j13-sync-returns": {"task": "platforms.sync_returns", "schedule": 900.0},  # NFR-35 ≤ 15 phút
         "j12-refresh-tokens": {"task": "platforms.refresh_tokens", "schedule": 1800.0},
         "j15-claim-deadlines": {"task": "claims.check_deadlines", "schedule": 3600.0},
         # 02:00 giờ VN (UTC+7, không đổi giờ mùa hè) = 19:00 UTC.

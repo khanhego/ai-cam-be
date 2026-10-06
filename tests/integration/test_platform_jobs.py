@@ -441,20 +441,32 @@ async def test_j04_config_error_keeps_shop_connected(
     assert shop.last_error["code"] == "SYNC_FAILED"
 
 
-async def test_j06_return_hint_keeps_phase1_step(
+async def test_j06_return_hint_packed_fast_failure(
     db: AsyncSession, mock: MockAdapter, test_settings: Settings
 ) -> None:
-    """T-103 / DEC-304: hint `RETURN_EXPECTED` (giao thất bại) — kiện PACKED vẫn sang HANDED_OVER như Phase 1;
-    `→ RETURN_EXPECTED` + hồ sơ hàng hoàn ở T-105. Kiện HANDED_OVER giữ nguyên (không InvalidTransition)."""
+    """TC-05.34 (DEC-259, T-105 thay DEC-304): kiện PACKED giao thất bại nhanh → `PACKED → HANDED_OVER →
+    RETURN_EXPECTED` một lượt (2 dòng lịch sử nguồn PLATFORM), hồ sơ `FAILED_DELIVERY`; chạy lại không đổi."""
     await _shop(db, test_settings)
     package = await _packed(db, mock, 11)
     mock.shipping["SPXTST0000011"] = "DELIVERY_FAILED"
 
-    await sync.sync_shipping_status(db, mock, test_settings)
+    out = await sync.sync_shipping_status(db, mock, test_settings)
     await db.refresh(package)
-    assert package.warehouse_status == "HANDED_OVER"
+    assert package.warehouse_status == "RETURN_EXPECTED"
+    assert out["changed"] == 1
+    history = (
+        await db.scalars(
+            select(StatusHistory)
+            .where(StatusHistory.package_id == package.id)
+            .order_by(StatusHistory.at, StatusHistory.id)
+        )
+    ).all()
+    assert [(h.from_status, h.to_status, h.source) for h in history][-2:] == [
+        ("PACKED", "HANDED_OVER", "PLATFORM"),
+        ("HANDED_OVER", "RETURN_EXPECTED", "PLATFORM"),
+    ]
 
     out = await sync.sync_shipping_status(db, mock, test_settings)
     await db.refresh(package)
-    assert package.warehouse_status == "HANDED_OVER"
+    assert package.warehouse_status == "RETURN_EXPECTED"
     assert out["changed"] == 0

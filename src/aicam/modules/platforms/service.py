@@ -42,6 +42,7 @@ PLATFORM = "SHOPEE"
 STATE_TTL_S = 600  # API-71: state chống CSRF hạn 10 phút
 SYNC_LOCK_TTL_S = 600  # 02a §6: lock Redis `sync:{shop}` TTL 10 phút
 SYNC_TASK = "platforms.sync_orders"
+SYNC_RETURNS_TASK = "platforms.sync_returns"  # J-13
 CALLBACK_PATH = "/api/v1/shops/shopee/callback"
 RESULT_PATH = "/admin/settings/shopee"
 
@@ -357,6 +358,7 @@ async def handle_callback(
 
     async def _sync_now() -> None:
         await enqueue_sync(shop_uuid, lock_held=False)
+        await enqueue_sync_returns(shop_uuid)  # J-13 ngay sau khi kết nối (02a §7)
 
     after_commit(session, _sync_now)  # J-04 ngay sau khi kết nối (02a API-72)
     await commit(session)
@@ -397,6 +399,13 @@ async def enqueue_sync(shop_id: uuid.UUID, *, lock_held: bool | str) -> None:
     from aicam.modules.media import jobs  # gửi Celery theo tên task (test thay sender)
 
     await jobs.send(SYNC_TASK, [str(shop_id), lock_held], "sync")
+
+
+async def enqueue_sync_returns(shop_id: uuid.UUID) -> None:
+    """J-13 cho một shop (queue `sync`)."""
+    from aicam.modules.media import jobs
+
+    await jobs.send(SYNC_RETURNS_TASK, [str(shop_id)], "sync")
 
 
 async def request_sync(session: AsyncSession, shop_id: uuid.UUID, settings: Settings) -> None:

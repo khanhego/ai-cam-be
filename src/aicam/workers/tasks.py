@@ -196,3 +196,14 @@ def refresh_tokens() -> dict[str, int]:
     """J-12 (30 phút): làm mới token sắp hết hạn; bị từ chối → shop EXPIRED."""
     settings = get_settings()
     return _run(lambda db: platform_sync.refresh_tokens(db, platforms.get_adapter(settings), settings))
+
+
+@app.task(name="platforms.sync_returns", soft_time_limit=240, time_limit=270)  # type: ignore[untyped-decorator]
+def sync_returns(shop_id: str | None = None) -> dict[str, Any]:
+    """J-13 (15 phút / mọi shop CONNECTED; sau khi kết nối): yêu cầu trả → hồ sơ hàng hoàn. Timeout 4 phút."""
+    settings = get_settings()
+    return _run(
+        lambda db: platform_sync.sync_returns(
+            db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None
+        )
+    )

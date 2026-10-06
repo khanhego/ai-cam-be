@@ -220,7 +220,15 @@ class MockAdapter:
             hint = _SHIPPING_HINTS.get(raw or "")
             if order is not None and order.status == "TO_RETURN":
                 hint = "RETURN_EXPECTED"
-            out.append(ShippingStatus(ref.tracking_number, raw or "", hint, order.status if order else None))
+            out.append(
+                ShippingStatus(
+                    ref.tracking_number,
+                    raw or "",
+                    hint,
+                    order.status if order else None,
+                    order.updated_at if order else None,
+                )
+            )
         return out
 
     # ----- PlatformAdapter: yêu cầu trả (Phase 2)

@@ -13,7 +13,7 @@ Hàm ở đây không lấy khóa station; người gọi giữ station thì ph�
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
@@ -473,6 +473,93 @@ async def _create(session: AsyncSession, order: Order, signal: Signal, actor_lab
     return AttachResult(case, created=True, changed=True, moved_packages=moved)
 
 
+# ---------------------------------------------------------------- J-13 / J-04 / J-06 (T-105, DEC-316)
+
+
+def return_signal_key(return_sn: str) -> str:
+    return f"RETURN:{return_sn}"
+
+
+def failed_signal_key(order_sn: str, at: datetime | None) -> str:
+    """`FAILED:{order_sn}:{mốc cập nhật}` (R3-7). Shopee chưa cho mốc cập nhật vận chuyển riêng (T-3) → dùng
+    `update_time` của đơn; J-04 và J-06 cùng mốc nên một đợt giao thất bại chỉ một khóa."""
+    return f"FAILED:{order_sn}:{int(at.timestamp()) if at else '-'}"
+
+
+async def upsert_from_platform(
+    session: AsyncSession, order: Order, ret: PlatformReturn, *, actor_label: str = "Sàn"
+) -> AttachResult:
+    """J-13: một yêu cầu trả của sàn → hồ sơ (02a §7 J-13, DEC-248, DEC-316).
+
+    Chưa có hồ sơ mang mã yêu cầu: nhóm `OPEN` / `DONE` → `attach_or_create` (kiện → `RETURN_EXPECTED`,
+    `NO_PARCEL` khi chỉ hoàn tiền); `CANCELLED` / `CLOSED` chưa từng thấy → bỏ qua (không có gì để chờ).
+    Đã có: cập nhật trường sàn; `CANCELLED` khi chưa kiện nào về → hồ sơ `CANCELLED`, kiện → `DELIVERED`.
+    Khóa `order:{sn}` → hồ sơ → kiện (DEC-266). `changed` = có gì đổi cần báo dashboard.
+    """
+    await orders.lock_orders(session, [order.platform_order_sn])
+    known: ReturnCase | None = await session.scalar(
+        select(ReturnCase)
+        .where(ReturnCase.platform_return_sn == ret.return_sn)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if known is None:
+        if ret.status_group in ("CANCELLED", "CLOSED"):
+            return AttachResult(None)
+        signal = Signal(SIGNAL_PLATFORM_RETURN, key=return_signal_key(ret.return_sn), ret=ret)
+        result = await attach_or_create(session, order, signal, actor_label=actor_label)
+        result.changed = result.created or bool(result.moved_packages) or result.changed
+        return result
+    before = (known.status, known.platform_status, known.return_tracking_number, known.seller_due_at)
+    await _apply_platform_fields(session, known, ret)
+    moved: list[uuid.UUID] = []
+    if ret.status_group == "CANCELLED":
+        moved = await _cancel_platform_return(session, known, actor_label)
+    await session.flush()
+    after = (known.status, known.platform_status, known.return_tracking_number, known.seller_due_at)
+    return AttachResult(known, changed=before != after or bool(moved), moved_packages=moved)
+
+
+async def _cancel_platform_return(
+    session: AsyncSession, case: ReturnCase, actor_label: str
+) -> list[uuid.UUID]:
+    """Sàn hủy yêu cầu trả trước khi kiện về (EX-R7): hồ sơ `EXPECTED` / `MISSING` / `NO_PARCEL` →
+    `CANCELLED`, kiện chờ về → `DELIVERED` (PLATFORM). Hồ sơ còn tín hiệu giao thất bại (`FAILED:…`) giữ
+    nguyên — kiện vẫn đang về theo luồng giao thất bại. Kiện đang kiểm / đã nhận: không đụng (chỉ lưu
+    trạng thái sàn)."""
+    if case.status not in ("EXPECTED", "MISSING", "NO_PARCEL"):
+        return []
+    if any(k.startswith("FAILED:") for k in case.signal_keys or []):
+        return []
+    moved: list[uuid.UUID] = []
+    packages = await lock_packages(session, [p.id for p in await packages_of_case(session, case.id)])
+    if any(p.warehouse_status in ("RETURN_INSPECTING", *RECEIVED_STATUSES) for p in packages):
+        return []
+    for package in packages:
+        if package.warehouse_status in ("RETURN_EXPECTED", "RETURN_MISSING"):
+            await orders.transition(session, package, "DELIVERED", source="PLATFORM", actor_label=actor_label)
+            moved.append(package.id)
+    case.status = "CANCELLED"
+    log.info("return_case_cancelled_by_platform", return_case_id=str(case.id))
+    return moved
+
+
+async def apply_redelivery(
+    session: AsyncSession, case: ReturnCase, package: Package, to_status: str, *, actor_label: str = "Sàn"
+) -> bool:
+    """J-06: kiện của hồ sơ giao thất bại được giao lại (`RETURN_EXPECTED` / `MISSING` → `HANDED_OVER` /
+    `DELIVERED`, 02 §5.3). Kiện rời hồ sơ; hồ sơ không còn kiện nào đang về / đã nhận → `CANCELLED`, còn →
+    tính lại (BR-24). Người gọi đã khóa đơn → hồ sơ → kiện (DEC-266)."""
+    if package.warehouse_status not in ("RETURN_EXPECTED", "RETURN_MISSING"):
+        return False
+    await orders.transition(session, package, to_status, source="PLATFORM", actor_label=actor_label)
+    await unlink_package(session, case.id, package.id)
+    await session.flush()
+    if not await cancel_if_no_active_package(session, case):
+        await recompute(session, case)
+    return True
+
+
 # ---------------------------------------------------------------- tra mã ở bàn hoàn (DEC-202, DEC-229)
 
 
@@ -757,6 +844,9 @@ async def merge_unidentified_by_code(session: AsyncSession, order: Order) -> lis
     Người gọi đã giữ (hoặc được phép lấy) `order:{sn}`; không giữ station. Trả id hồ sơ đã gộp ngay.
     """
     codes = [p.tracking_number for p in await packages_of_order(session, order.id)]
+    open_case = await open_case_of_order(session, order.id)
+    if open_case is not None and open_case.return_tracking_number:
+        codes.append(open_case.return_tracking_number)  # J-13: mã chiều về của yêu cầu mới (02 §6.3 #6)
     merged: list[uuid.UUID] = []
     for candidate, code in await _unidentified_candidates(session, codes):
         await orders.lock_orders(session, [order.platform_order_sn])
@@ -794,6 +884,12 @@ async def merge_unidentified(
         (p for p in await packages_of_order(session, order.id) if p.tracking_number.upper() == code.upper()),
         None,
     )
+    if target is None:
+        # Mã quét là mã chiều về của yêu cầu trả (J-13 báo sau khi kho đã nhận — DEC-316): kiện chưa nhận đầu
+        # tiên của hồ sơ mở mang mã đó.
+        by_return = await open_case_of_order(session, order.id)
+        if by_return is not None and (by_return.return_tracking_number or "").upper() == code.upper():
+            target = await _first_unreceived(session, by_return)
     if target is None:
         return False
     sessions = await return_sessions_of_case(session, case.id)
