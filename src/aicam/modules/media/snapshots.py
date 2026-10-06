@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -86,7 +86,10 @@ async def _insert_pack_close(
             id=uuid7(), session_id=session_id, kind="PACK_CLOSE", camera_role="CAM1", taken_at=taken_at,
             path=rel, sha256=sha, size_bytes=size, status="READY", created_at=clock.now(),
         )
-        .on_conflict_do_nothing(index_elements=["session_id"], index_where=Snapshot.kind == "PACK_CLOSE")
+        .on_conflict_do_nothing(
+            # Điều kiện literal: Postgres không suy ra index unique một phần từ tham số bind (`kind = $1`).
+            index_elements=["session_id"], index_where=text("kind = 'PACK_CLOSE'")
+        )
         .returning(Snapshot.id)
     )  # fmt: skip
     if inserted is None:
