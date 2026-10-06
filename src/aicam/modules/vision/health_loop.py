@@ -30,9 +30,14 @@ async def run_health_loop(redis: Redis, mediamtx: MediaMTX, stop: asyncio.Event)
     while not stop.is_set():
         now = time.monotonic()
         if now - refreshed_at >= WATCH_REFRESH_S or not watched:
-            async with sessionmaker()() as session:
-                watched = await stations.watched_paths(session)
-            refreshed_at = now
+            # DB chập chờn / đang reset schema: giữ danh sách cũ, thử lại vòng sau. Không để lỗi giết
+            # tiến trình vision (trước đây lỗi này làm vision thoát → Cam 2 ngừng đọc khay — QA G3 Phase 2).
+            try:
+                async with sessionmaker()() as session:
+                    watched = await stations.watched_paths(session)
+                refreshed_at = now
+            except Exception:
+                log.exception("vision_watch_refresh_failed")
         try:
             paths = await mediamtx.list_paths()
         except MediaMTXError as exc:

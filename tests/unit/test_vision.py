@@ -9,6 +9,7 @@ import time
 import uuid
 
 import numpy as np
+import pytest
 import zxingcpp
 
 from aicam.modules.vision.capture import CameraReader, Observation
@@ -244,3 +245,48 @@ def test_cam2_reader_decodes_and_sends_frames() -> None:
     reader.stop()
     reader.join(5)
     assert len(got) > len(frames) >= 2
+
+
+async def test_health_loop_survives_db_error_on_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """QA G3 Phase 2: reset schema làm `watched_paths` lỗi → vision không thoát, vòng sau đọc lại."""
+    import asyncio
+
+    from aicam.modules.vision import health_loop
+
+    calls = {"n": 0}
+
+    async def flaky(_session: object) -> list[str]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError('relation "camera" does not exist')
+        return ["cam-x"]
+
+    class _Session:
+        async def __aenter__(self) -> "_Session":
+            return self
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+    class _MediaMTX:
+        async def list_paths(self) -> dict[str, object]:
+            return {}
+
+    class _Redis:
+        async def publish(self, *_a: object) -> None:
+            return None
+
+    monkeypatch.setattr(health_loop, "sessionmaker", lambda: lambda: _Session())
+    monkeypatch.setattr(health_loop.stations, "watched_paths", flaky)
+    monkeypatch.setattr(health_loop, "INTERVAL_S", 0.01)
+    monkeypatch.setattr(health_loop, "WATCH_REFRESH_S", 0.0)
+    stop = asyncio.Event()
+    task = asyncio.create_task(health_loop.run_health_loop(_Redis(), _MediaMTX(), stop))  # type: ignore[arg-type]
+    for _ in range(100):
+        if calls["n"] >= 2:
+            break
+        await asyncio.sleep(0.01)
+    stop.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert calls["n"] >= 2
