@@ -190,3 +190,39 @@ class NoteIn(BaseModel):
     """API-135 — 1–1000 ký tự (kiểm sau khi strip ở service)."""
 
     text: str = Field(max_length=1000)
+
+
+PackStatus = Literal["QUEUED", "RUNNING", "READY", "FAILED"]
+
+
+class EvidencePackCreated(BaseModel):
+    """API-136 — 202."""
+
+    id: uuid.UUID
+    status: PackStatus
+    progress: int
+
+
+class PackFiles(BaseModel):
+    zip: str
+
+
+class PackMissing(BaseModel):
+    session_id: uuid.UUID
+    camera_role: Literal["CAM1", "CAM2"]
+    reason: str  # CLIP_DELETED | CLIP_NOT_READY | CLIP_FAILED | CLIP_MISSING | SNAPSHOT_DELETED | …
+    snapshot_id: uuid.UUID | None = None
+
+
+class EvidencePackOut(BaseModel):
+    """API-137 / WS-02 `evidence_pack.updated`."""
+
+    id: uuid.UUID
+    claim_id: uuid.UUID
+    status: PackStatus
+    progress: int
+    sha256: str | None
+    size_bytes: int | None
+    missing: list[PackMissing]
+    files: PackFiles | None
+    expires_at: datetime | None

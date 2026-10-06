@@ -1,16 +1,17 @@
-"""API-130..135 — 02 §6.2 "API-130..135" (hồ sơ khiếu nại)."""
+"""API-130..138 — 02 §6.2 "API-130..135" (hồ sơ khiếu nại), "API-136 / API-137 / API-138" (gói bằng chứng)."""
 
 import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core.db import commit, get_session
 from aicam.core.deps import Principal, require_roles
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings, get_settings
-from aicam.modules.claims import service, views
+from aicam.modules.claims import pack, service, views
 from aicam.modules.claims.models import Claim
 from aicam.modules.claims.schemas import (
     ClaimCreateIn,
@@ -21,6 +22,8 @@ from aicam.modules.claims.schemas import (
     ClaimType,
     Counterparty,
     EvidenceIn,
+    EvidencePackCreated,
+    EvidencePackOut,
     NoteIn,
     NoteOut,
     UserBrief,
@@ -129,3 +132,37 @@ async def add_note(claim_id: uuid.UUID, body: NoteIn, p: Staff, db: DbSession) -
     out = views.note_out(note, UserBrief(id=user.id, display_name=user.display_name) if user else None)
     await commit(db)
     return out
+
+
+@router.post("/claims/{claim_id}/evidence-packs", response_model=EvidencePackCreated, status_code=202)
+async def create_evidence_pack(
+    claim_id: uuid.UUID, p: Staff, db: DbSession, settings: AppSettings
+) -> EvidencePackCreated:
+    """API-136: tạo gói bằng chứng zip (nền, J-16) — FR-08.05."""
+    return await pack.create_pack(db, claim_id, p, settings)
+
+
+@router.get("/evidence-packs/{pack_id}", response_model=EvidencePackOut)
+async def get_evidence_pack(
+    pack_id: uuid.UUID, p: Staff, db: DbSession, settings: AppSettings
+) -> EvidencePackOut:
+    """API-137: trạng thái gói + link tải ký HMAC (người tạo hoặc ADMIN)."""
+    return await pack.get_pack(db, pack_id, p, settings)
+
+
+@router.get("/media/evidence-packs/{pack_id}/pack.zip", response_class=FileResponse)
+async def evidence_pack_zip(
+    pack_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    settings: AppSettings,
+    uid: Annotated[uuid.UUID, Query()],
+    exp: Annotated[int, Query()],
+    sig: Annotated[str, Query(max_length=128)],
+) -> FileResponse:
+    """API-138: tải zip bằng chữ ký `pack:` (không cần Bearer); audit `DOWNLOAD_CLAIM_PACK`."""
+    path, filename = await pack.open_pack_file(
+        db, pack_id, uid=uid, exp=exp, sig=sig, range_header=request.headers.get("range"),
+        ip=request.client.host if request.client else None, settings=settings,
+    )  # fmt: skip
+    return FileResponse(path, media_type="application/zip", filename=filename)

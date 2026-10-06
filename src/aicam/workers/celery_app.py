@@ -24,6 +24,7 @@ app.conf.update(
         "media.build_session_clips": {"queue": "video"},
         "media.render_export": {"queue": "export"},
         "media.capture_pack_snapshot": {"queue": "video"},  # J-17
+        "claims.build_evidence_pack": {"queue": "export"},  # J-16 — cùng worker encode J-03
         "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12 (gọi Shopee) tách khỏi cắt clip
     },
     beat_schedule={

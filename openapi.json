@@ -2086,6 +2086,130 @@
         "title": "EvidenceOut",
         "type": "object"
       },
+      "EvidencePackCreated": {
+        "description": "API-136 — 202.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "READY",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "progress"
+        ],
+        "title": "EvidencePackCreated",
+        "type": "object"
+      },
+      "EvidencePackOut": {
+        "description": "API-137 / WS-02 `evidence_pack.updated`.",
+        "properties": {
+          "claim_id": {
+            "format": "uuid",
+            "title": "Claim Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackFiles"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "$ref": "#/components/schemas/PackMissing"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "integer"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "READY",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "claim_id",
+          "status",
+          "progress",
+          "sha256",
+          "size_bytes",
+          "missing",
+          "files",
+          "expires_at"
+        ],
+        "title": "EvidencePackOut",
+        "type": "object"
+      },
       "EvidenceSession": {
         "properties": {
           "clips": {
@@ -3774,6 +3898,59 @@
           "started_at"
         ],
         "title": "OtherSession",
+        "type": "object"
+      },
+      "PackFiles": {
+        "properties": {
+          "zip": {
+            "title": "Zip",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zip"
+        ],
+        "title": "PackFiles",
+        "type": "object"
+      },
+      "PackMissing": {
+        "properties": {
+          "camera_role": {
+            "enum": [
+              "CAM1",
+              "CAM2"
+            ],
+            "title": "Camera Role",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "camera_role",
+          "reason"
+        ],
+        "title": "PackMissing",
         "type": "object"
       },
       "PackReference": {
@@ -8204,6 +8381,50 @@
         ]
       }
     },
+    "/api/v1/claims/{claim_id}/evidence-packs": {
+      "post": {
+        "description": "API-136: tạo gói bằng chứng zip (nền, J-16) — FR-08.05.",
+        "operationId": "create_evidence_pack_api_v1_claims__claim_id__evidence_packs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Claim Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidencePackCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Evidence Pack",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
     "/api/v1/claims/{claim_id}/notes": {
       "post": {
         "description": "API-135: thêm ghi chú (hồ sơ đã đóng vẫn thêm được).",
@@ -8353,6 +8574,50 @@
         "summary": "Play Url",
         "tags": [
           "media"
+        ]
+      }
+    },
+    "/api/v1/evidence-packs/{pack_id}": {
+      "get": {
+        "description": "API-137: trạng thái gói + link tải ký HMAC (người tạo hoặc ADMIN).",
+        "operationId": "get_evidence_pack_api_v1_evidence_packs__pack_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pack_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pack Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidencePackOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Evidence Pack",
+        "tags": [
+          "claims"
         ]
       }
     },
@@ -8698,6 +8963,72 @@
         "summary": "Clip Media",
         "tags": [
           "media"
+        ]
+      }
+    },
+    "/api/v1/media/evidence-packs/{pack_id}/pack.zip": {
+      "get": {
+        "description": "API-138: tải zip bằng chữ ký `pack:` (không cần Bearer); audit `DOWNLOAD_CLAIM_PACK`.",
+        "operationId": "evidence_pack_zip_api_v1_media_evidence_packs__pack_id__pack_zip_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pack_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pack Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "uid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Uid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exp",
+            "required": true,
+            "schema": {
+              "title": "Exp",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sig",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "title": "Sig",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Evidence Pack Zip",
+        "tags": [
+          "claims"
         ]
       }
     },

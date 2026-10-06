@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     snapshot_max_per_session: int = 20
     snapshot_jpeg_quality: int = 85
     export_font_file: Path = Path("/usr/share/fonts/truetype/bevietnampro/BeVietnamPro-SemiBold.ttf")
+    # Phase 2 (02a §9): gói bằng chứng hồ sơ khiếu nại (J-16, API-136..138), dọn ở J-10.
+    evidence_pack_ttl_hours: int = 24
+    evidence_pack_timeout_s: int = 900
     # Phase 2 (02a §9): sàn giữ clip (BR-25, DEC-210) — chỉ đổi qua env; migration 0003 nâng setting lên sàn.
     retention_clip_min_days: int = 60
     import_root: Path = Path("/data/imports")  # file CSV / xlsx gốc (T-17); J-11 xóa sau 90 ngày

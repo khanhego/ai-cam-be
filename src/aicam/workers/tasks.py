@@ -13,6 +13,7 @@ import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại g
 from aicam.core.db import dispose_engine, init_engine, sessionmaker
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import get_settings
+from aicam.modules.claims import pack as claim_packs
 from aicam.modules.claims import service as claims
 from aicam.modules.imports import service as imports
 from aicam.modules.media import exports, jobs, snapshots
@@ -114,6 +115,7 @@ def index_segments() -> dict[str, int]:
             log.warning("mediamtx_unreachable", error=str(exc))
         out["indexed"] = await media.index_segments(db, settings)
         out["exports_expired"] = await exports.cleanup_expired(db, settings)
+        out["evidence_packs_expired"] = await claim_packs.cleanup_expired(db, settings)
         return out
 
     return _run(_job)
@@ -129,6 +131,12 @@ def enforce_retention() -> dict[str, int]:
 def render_export(export_id: str) -> str:
     """J-03 (queue `export`, worker riêng concurrency 1 — DEC-32): encode bản xuất có overlay."""
     return _run(lambda db: exports.render_export(db, uuid.UUID(export_id), get_settings()))
+
+
+@app.task(name="claims.build_evidence_pack", soft_time_limit=900, time_limit=960)  # type: ignore[untyped-decorator]
+def build_evidence_pack(pack_id: str) -> str:
+    """J-16 (queue `export`, cùng worker J-03 concurrency 1): dựng gói bằng chứng zip (FR-08.05)."""
+    return _run(lambda db: claim_packs.build_evidence_pack(db, uuid.UUID(pack_id), get_settings()))
 
 
 @app.task(name="maintenance.housekeeping", soft_time_limit=240)  # type: ignore[untyped-decorator]

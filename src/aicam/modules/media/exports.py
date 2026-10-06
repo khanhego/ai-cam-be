@@ -9,8 +9,9 @@ import json
 import shutil
 import tempfile
 import uuid
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -259,26 +260,30 @@ async def _publish(db: AsyncSession, export: Export, settings: Settings) -> None
 
 
 @asynccontextmanager
-async def _render_lock(db: AsyncSession, export_id: uuid.UUID) -> AsyncIterator[bool]:
+async def session_lock(db: AsyncSession, key: str) -> AsyncIterator[bool]:
     """Khóa advisory mức session trên một connection riêng giữ suốt lúc encode (G3-N12).
 
     Celery giao trùng (acks_late, broker giao lại) → lần thứ hai không lấy được khóa → SKIPPED. Worker chết →
-    connection đóng → khóa tự nhả, lần giao lại sau đó chạy tiếp được (export đang RUNNING dở).
+    connection đóng → khóa tự nhả, lần giao lại sau đó chạy tiếp được (việc đang RUNNING dở).
     """
     bind = db.bind
     engine = bind.engine if isinstance(bind, AsyncConnection) else bind
     if not isinstance(engine, AsyncEngine):
         raise TypeError("Session chưa gắn engine")
-    key = {"k": f"export:{export_id}"}
+    params = {"k": key}
     async with engine.connect() as conn:
-        got = bool(await conn.scalar(text("SELECT pg_try_advisory_lock(hashtext(:k))"), key))
+        got = bool(await conn.scalar(text("SELECT pg_try_advisory_lock(hashtext(:k))"), params))
         await conn.commit()
         try:
             yield got
         finally:
             if got:
-                await conn.execute(text("SELECT pg_advisory_unlock(hashtext(:k))"), key)
+                await conn.execute(text("SELECT pg_advisory_unlock(hashtext(:k))"), params)
                 await conn.commit()
+
+
+def _render_lock(db: AsyncSession, export_id: uuid.UUID) -> AbstractAsyncContextManager[bool]:
+    return session_lock(db, f"export:{export_id}")
 
 
 async def render_export(db: AsyncSession, export_id: uuid.UUID, settings: Settings) -> str:
@@ -288,6 +293,151 @@ async def render_export(db: AsyncSession, export_id: uuid.UUID, settings: Settin
             log.warning("export_already_rendering", export_id=str(export_id))
             return "SKIPPED"
         return await _render(db, export_id, settings)
+
+
+@dataclass
+class Rendered:
+    """Kết quả dựng video có chữ của một phiên (J-03, J-16)."""
+
+    sha256: str
+    start: datetime
+    end: datetime
+    gaps: list[dict[str, Any]]
+
+
+Progress = Callable[[int], Awaitable[None]]
+
+
+async def overlay_lines(db: AsyncSession, pack: PackSession) -> list[str]:
+    """Chữ trên video: mã vận đơn, mã đơn sàn, station; phiên RETURN thêm "Người kiểm: …" (02 API-45)."""
+    package = await db.get(Package, pack.package_id)
+    order = await db.get(Order, package.order_id) if package and package.order_id else None
+    station = await db.get(Station, pack.station_id)
+    code = pack.open_code if pack.type == "RETURN" else (package.tracking_number if package else "?")
+    lines = [code]
+    if order is not None:
+        lines.append(f"Đơn {order.platform_order_sn}")
+    lines.append(station.name if station else "")
+    if pack.type == "RETURN" and pack.operator_name:
+        lines.append(f"Người kiểm: {pack.operator_name}")
+    return lines
+
+
+async def render_side_by_side_to(
+    db: AsyncSession,
+    pack: PackSession,
+    sources: list[Clip],
+    video: Path,
+    settings: Settings,
+    progress: Progress | None = None,
+) -> Rendered:
+    """Encode 1 hoặc 2 clip (ghép cạnh nhau, căn giờ thực) có overlay vào `video` — J-03 và J-16 dùng chung
+    (02a §2 `render_side_by_side_to`). Clip phải READY. Lỗi → `FFmpegError` / `OSError`."""
+    for c in sources:
+        if c.status != "READY" or not c.path:
+            raise ffmpeg.FFmpegError(f"Clip {c.camera_role} không còn sẵn sàng")
+    bounds = [_clip_bounds(c) for c in sources]
+    media = [float(c.duration_s or 0) for c in sources]
+    skips = [0.0] * len(sources)
+    aligned = len(sources) == 2 and any(len(c.timeline or []) > 1 for c in sources)
+    if len(sources) == 2:
+        # Cửa sổ giờ thực chung của hai camera (TC-07.11, lệch ≤ 0,5 giây).
+        common_start = max(b[0] for b in bounds)
+        common_end = min(b[1] for b in bounds)
+        if aligned:
+            # Clip có khe hở (G3-F2): dựng lại từng nửa theo giờ thực, khe hở lấp khung đen.
+            duration = (common_end - common_start).total_seconds()
+        else:
+            skips = [(common_start - b[0]).total_seconds() for b in bounds]
+            duration = min(m - s for m, s in zip(media, skips, strict=True))
+            common_end = common_start + timedelta(seconds=duration)
+    else:
+        # 1 camera: giữ nguyên clip; đồng hồ theo từng đoạn của timeline (đúng giờ sau khe hở).
+        duration = media[0]
+        common_start, common_end = bounds[0]
+    if duration <= 0:
+        raise ffmpeg.FFmpegError("Hai camera không có khoảng thời gian chung")
+    layouts = [
+        align_parts(c.timeline, b[0], m, common_start, common_end)
+        for c, b, m in zip(sources, bounds, media, strict=True)
+    ]
+    gaps = [
+        {"camera_role": c.camera_role, "from": clock.iso_z(a), "to": clock.iso_z(b),
+         "seconds": round((b - a).total_seconds(), 1)}
+        for c, parts in zip(sources, layouts, strict=True)
+        for a, b in wall_gaps(parts, common_start)
+    ]  # fmt: skip
+    video.parent.mkdir(parents=True, exist_ok=True)
+    font = settings.export_font_file if settings.export_font_file.is_file() else None
+    lines = await overlay_lines(db, pack)
+    if gaps:
+        lines.append("Có đoạn không có video")  # cảnh báo khe hở cho mọi layout (G3-F2)
+
+    async def _noop(_: int) -> None:
+        return None
+
+    with tempfile.TemporaryDirectory(prefix="aicam-export-") as tmp:
+        text_file = Path(tmp) / "overlay.txt"
+        text_file.write_text(" · ".join(x for x in lines if x))
+        if aligned:
+            gap_file = Path(tmp) / "gap.txt"
+            gap_file.write_text("Không có video")
+            clock_ = ffmpeg.clock_overlays(
+                clock_pieces(None, common_start, 0.0, duration, settings.tz_display), font
+            )
+            cmd = ffmpeg.aligned_export_command(
+                settings.ffmpeg_bin,
+                [
+                    (absolute(settings, c.path or ""), parts)
+                    for c, parts in zip(sources, layouts, strict=True)
+                ],
+                video,
+                text_file=text_file,
+                gap_text_file=gap_file,
+                clock=clock_,
+                font_file=font,
+                duration=duration,
+                preset=settings.export_preset,
+                side_scale=settings.export_side_scale,
+            )
+        else:
+            clock_ = ffmpeg.clock_overlays(
+                clock_pieces(sources[0].timeline, bounds[0][0], skips[0], duration, settings.tz_display),
+                font,
+            )
+            cmd = ffmpeg.export_command(
+                settings.ffmpeg_bin,
+                [(absolute(settings, c.path or ""), s) for c, s in zip(sources, skips, strict=True)],
+                video,
+                text_file=text_file,
+                clock=clock_,
+                font_file=font,
+                duration=duration,
+                preset=settings.export_preset,
+                side_scale=settings.export_side_scale,
+            )
+        await ffmpeg.run_with_progress(cmd, duration, settings.export_timeout_s, progress or _noop)
+    return Rendered(ffmpeg.sha256_file(video), common_start, common_end, gaps)
+
+
+def session_info_fields(pack: PackSession) -> dict[str, Any]:
+    """Trường `info.json` mở rộng (L5, 02 API-45, DEC-261): loại / trạng thái / cờ phiên, người kiểm, độ lệch
+    giờ camera **chụp lúc đóng phiên** (`session.camera_clock`; phiên trước nâng cấp → null)."""
+    clocks = {str(c.get("camera_role")): c for c in pack.camera_clock or []}
+    return {
+        "session_type": pack.type,
+        "session_status": pack.status,
+        "flags": list(pack.flags),
+        "operator_name": pack.operator_name,
+        "cameras": [
+            {
+                "camera_role": role,
+                "clock_offset_ms": clocks.get(role, {}).get("clock_offset_ms"),
+                "clock_checked_at": clocks.get(role, {}).get("checked_at"),
+            }
+            for role in ("CAM1", "CAM2")
+        ],
+    }
 
 
 async def _render(db: AsyncSession, export_id: uuid.UUID, settings: Settings) -> str:
@@ -306,49 +456,6 @@ async def _render(db: AsyncSession, export_id: uuid.UUID, settings: Settings) ->
         station = await db.get(Station, pack.station_id)
         clips = await _clips_by_role(db, export.session_id)
         sources = [clips[r] for r in roles_of(export.layout)]
-        for c in sources:
-            if c.status != "READY" or not c.path:
-                raise ffmpeg.FFmpegError(f"Clip {c.camera_role} không còn sẵn sàng")
-        bounds = [_clip_bounds(c) for c in sources]
-        media = [float(c.duration_s or 0) for c in sources]
-        skips = [0.0] * len(sources)
-        aligned = len(sources) == 2 and any(len(c.timeline or []) > 1 for c in sources)
-        if len(sources) == 2:
-            # Cửa sổ giờ thực chung của hai camera (TC-07.11, lệch ≤ 0,5 giây).
-            common_start = max(b[0] for b in bounds)
-            common_end = min(b[1] for b in bounds)
-            if aligned:
-                # Clip có khe hở (G3-F2): dựng lại từng nửa theo giờ thực, khe hở lấp khung đen.
-                duration = (common_end - common_start).total_seconds()
-            else:
-                skips = [(common_start - b[0]).total_seconds() for b in bounds]
-                duration = min(m - s for m, s in zip(media, skips, strict=True))
-                common_end = common_start + timedelta(seconds=duration)
-        else:
-            # 1 camera: giữ nguyên clip; đồng hồ theo từng đoạn của timeline (đúng giờ sau khe hở).
-            duration = media[0]
-            common_start, common_end = bounds[0]
-        if duration <= 0:
-            raise ffmpeg.FFmpegError("Hai camera không có khoảng thời gian chung")
-        layouts = [
-            align_parts(c.timeline, b[0], m, common_start, common_end)
-            for c, b, m in zip(sources, bounds, media, strict=True)
-        ]
-        gaps = [
-            {"camera_role": c.camera_role, "from": clock.iso_z(a), "to": clock.iso_z(b),
-             "seconds": round((b - a).total_seconds(), 1)}
-            for c, parts in zip(sources, layouts, strict=True)
-            for a, b in wall_gaps(parts, common_start)
-        ]  # fmt: skip
-        out_dir.mkdir(parents=True, exist_ok=True)
-        video = out_dir / "video.mp4"
-        font = settings.export_font_file if settings.export_font_file.is_file() else None
-        lines = [package.tracking_number if package else "?"]
-        if order is not None:
-            lines.append(f"Đơn {order.platform_order_sn}")
-        lines.append(station.name if station else "")
-        if gaps:
-            lines.append("Có đoạn không có video")  # cảnh báo khe hở cho mọi layout (G3-F2)
         last_pct = -10
 
         async def _progress(pct: int) -> None:
@@ -359,48 +466,8 @@ async def _render(db: AsyncSession, export_id: uuid.UUID, settings: Settings) ->
                 await commit(db)
                 await _publish(db, export, settings)
 
-        with tempfile.TemporaryDirectory(prefix="aicam-export-") as tmp:
-            text_file = Path(tmp) / "overlay.txt"
-            text_file.write_text(" · ".join(x for x in lines if x))
-            if aligned:
-                gap_file = Path(tmp) / "gap.txt"
-                gap_file.write_text("Không có video")
-                clock_ = ffmpeg.clock_overlays(
-                    clock_pieces(None, common_start, 0.0, duration, settings.tz_display), font
-                )
-                cmd = ffmpeg.aligned_export_command(
-                    settings.ffmpeg_bin,
-                    [
-                        (absolute(settings, c.path or ""), parts)
-                        for c, parts in zip(sources, layouts, strict=True)
-                    ],
-                    video,
-                    text_file=text_file,
-                    gap_text_file=gap_file,
-                    clock=clock_,
-                    font_file=font,
-                    duration=duration,
-                    preset=settings.export_preset,
-                    side_scale=settings.export_side_scale,
-                )
-            else:
-                clock_ = ffmpeg.clock_overlays(
-                    clock_pieces(sources[0].timeline, bounds[0][0], skips[0], duration, settings.tz_display),
-                    font,
-                )
-                cmd = ffmpeg.export_command(
-                    settings.ffmpeg_bin,
-                    [(absolute(settings, c.path or ""), s) for c, s in zip(sources, skips, strict=True)],
-                    video,
-                    text_file=text_file,
-                    clock=clock_,
-                    font_file=font,
-                    duration=duration,
-                    preset=settings.export_preset,
-                    side_scale=settings.export_side_scale,
-                )
-            await ffmpeg.run_with_progress(cmd, duration, settings.export_timeout_s, _progress)
-        sha = ffmpeg.sha256_file(video)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        rendered = await render_side_by_side_to(db, pack, sources, out_dir / "video.mp4", settings, _progress)
         creator = await get_user_ref(db, export.created_by)
         info = {
             "export_id": str(export.id),
@@ -411,11 +478,12 @@ async def _render(db: AsyncSession, export_id: uuid.UUID, settings: Settings) ->
             "station_name": station.name if station else None,
             "session_started_at": clock.iso_z(pack.started_at),
             "session_ended_at": clock.iso_z(pack.ended_at) if pack.ended_at else None,
-            "video_start_at": clock.iso_z(common_start),
-            "video_end_at": clock.iso_z(common_end),
+            **session_info_fields(pack),
+            "video_start_at": clock.iso_z(rendered.start),
+            "video_end_at": clock.iso_z(rendered.end),
             # Khoảng giờ thực không có video trong bản xuất (> 0,5 giây), mọi layout (G3-F2).
-            "video_gaps": gaps,
-            "sha256": sha,
+            "video_gaps": rendered.gaps,
+            "sha256": rendered.sha256,
             "source_clip_sha256": {c.camera_role: c.sha256 for c in sources},
             "exported_by": {
                 "id": str(export.created_by),
@@ -425,7 +493,7 @@ async def _render(db: AsyncSession, export_id: uuid.UUID, settings: Settings) ->
             "generator": f"Hệ thống X (aicam {__version__})",
         }
         (out_dir / "info.json").write_text(json.dumps(info, ensure_ascii=False, indent=2))
-        export.status, export.progress, export.sha256 = "READY", 100, sha
+        export.status, export.progress, export.sha256 = "READY", 100, rendered.sha256
         export.path_video = f"{export_dir(export.id)}/video.mp4"
         export.path_info = f"{export_dir(export.id)}/info.json"
         export.error = None
