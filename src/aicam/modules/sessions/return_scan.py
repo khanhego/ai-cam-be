@@ -465,7 +465,9 @@ async def _open(
             "INVALID_CODE", "Mã vừa quét không phải mã vận đơn / mã đơn. Quét lại mã trên kiện."
         )
     if not station.operator_name:
-        return "ALERT", _alert("OPERATOR_REQUIRED", "Nhập tên người kiểm trước khi nhận hàng hoàn.")
+        return "ALERT", _alert(
+            "OPERATOR_REQUIRED", "Nhập tên người kiểm trước khi nhận hàng hoàn.", mode="RETURN"
+        )
     resolution = prepared.resolution if prepared and prepared.resolution else None
     if resolution is None:  # chế độ vừa đổi giữa lúc quét: tra trong khóa, không tra sàn
         resolution = await returns.resolve_code(session, code)

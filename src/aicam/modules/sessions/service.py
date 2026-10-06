@@ -39,6 +39,7 @@ from aicam.modules.sessions.schemas import (
     InspectionIn,
     InspectionSavedOut,
     ItemOut,
+    MergedOrderRef,
     MismatchOut,
     OrderBrief,
     PackageBrief,
@@ -152,24 +153,35 @@ async def _package_brief(session: AsyncSession, package: Package) -> PackageBrie
     if package.order_id:
         order = await orders.get_order(session, package.order_id)
         if order is not None:
+            shop = await orders.shop_of(session, order)
+            merged = await orders.merged_orders(session, package.id)
             order_brief = OrderBrief(
-                platform=await orders.platform_of(session, order),
+                platform=shop.platform if shop else None,
+                shop_name=shop.name if shop else None,
                 platform_order_sn=order.platform_order_sn,
                 buyer_note=order.buyer_note,
+                merged_orders=[MergedOrderRef(platform_order_sn=m.platform_order_sn) for m in merged],
             )
-            items = [
-                ItemOut(
-                    order_item_id=i.id,
-                    product_name=i.product_name,
-                    variation=i.variation,
-                    quantity=i.quantity,
-                    image_url=i.image_url,
-                )
-                for i in await orders.items_of(session, order.id)
-            ]
+            for o in (order, *merged):
+                items += [
+                    ItemOut(
+                        order_item_id=i.id,
+                        product_name=i.product_name,
+                        variation=i.variation,
+                        quantity=i.quantity,
+                        image_url=i.image_url,
+                        platform_order_sn=o.platform_order_sn,
+                    )
+                    for i in await orders.items_of(session, o.id)
+                ]
     return PackageBrief(
         id=package.id, tracking_number=package.tracking_number, order=order_brief, items=items
     )
+
+
+def operator_required(packer_name_required: bool, station: Station) -> bool:
+    """API-10 `operator_required` (FR-03.16): setting bật ∧ station đang ở chế độ đóng gói."""
+    return packer_name_required and station.work_mode == "PACK"
 
 
 async def build_state(session: AsyncSession, station: Station, settings: Settings) -> StationStateOut:
@@ -180,9 +192,9 @@ async def build_state(session: AsyncSession, station: Station, settings: Setting
         CameraState(role=c.role, status=c.status) for c in await stations.cameras_of(session, station.id)
     ]
     session_out = None
+    cfg = await settings_service.get(session)
     if current is not None:
         package = await _require_package(session, current.package_id)
-        cfg = await settings_service.get(session)
         is_return = current.type == "RETURN"
         warn_m, abandon_m = (
             (cfg.return_warn_minutes, cfg.return_abandon_minutes)
@@ -223,6 +235,7 @@ async def build_state(session: AsyncSession, station: Station, settings: Setting
             kind=station.kind,
             work_mode=station.work_mode,
             operator_name=station.operator_name,
+            operator_required=operator_required(cfg.packer_name_required, station),
         ),
         state=state,
         cameras=cameras,
@@ -331,7 +344,23 @@ async def _open_session_unsafe(
             "ALREADY_HANDED_OVER", f"{code} là kiện hàng hoàn — nhận ở bàn nhận hoàn.", is_return=True
         )
     if await orders.is_cancelled(session, package):
-        return "ALERT", _alert("ORDER_CANCELLED", f"{code} đã bị hủy trên Shopee. Không đóng gói.")
+        # BR-01 theo nhóm (DEC-455): đang yêu cầu hủy → alert riêng; đã hủy → như Phase 2, bỏ chữ "Shopee".
+        order = await orders.get_order(session, package.order_id) if package.order_id else None
+        shop = await orders.shop_of(session, order) if order else None
+        platform = shop.platform if shop else None
+        if (
+            package.warehouse_status not in ("CANCELLED", "CANCELLED_AFTER_PACK")
+            and order is not None
+            and order.platform_status_group == "CANCEL_REQUESTED"
+        ):
+            return "ALERT", _alert(
+                "ORDER_CANCEL_REQUESTED",
+                f"{code}: người mua đang yêu cầu hủy đơn. Không đóng gói tới khi sàn quyết định.",
+                platform=platform,
+            )
+        return "ALERT", _alert(
+            "ORDER_CANCELLED", f"{code} đã bị hủy trên sàn. Không đóng gói.", platform=platform
+        )
     if package.warehouse_status == "PACKED":
         done = await last_completed(session, package.id)
         station_name = None
@@ -360,6 +389,7 @@ async def _open_session_unsafe(
         open_code=code,
         package_status_before=package.warehouse_status,
         flags=[] if package.verified else ["UNVERIFIED"],
+        operator_name=station.operator_name,  # FR-03.16: người đóng gói của phiên PACK
     )
     # Phiếu đã nằm trên khay và khớp trước khi quét: vision không phát sự kiện mới, nên ghi nhận ngay (BR-18).
     tray = await read_tray(get_redis(), station.id, code)
@@ -493,12 +523,17 @@ async def scan(
 
     valid = re.fullmatch(settings.scan_code_regex, code) is not None
     prepared: return_scan.Prepared | None = None
+    need_operator = (
+        operator_required((await settings_service.get(session)).packer_name_required, station)
+        and not station.operator_name
+    )
     if station.work_mode == "RETURN":
         # Bàn hoàn (02a §4.1, R3-4): tra mã + tra sàn + khóa `order:{sn}` ngoài khóa station.
         prepared = await return_scan.prepare(session, station, code, adapter, settings)
         await session.flush()
     elif (
         valid
+        and not need_operator  # FR-03.16: chưa có tên người đóng gói → không tra sàn
         and await active_session(session, station.id) is None
         and await orders.find_package(session, code) is None
     ):
@@ -525,6 +560,16 @@ async def scan(
         outcome, alert = (
             "ALERT",
             _alert("INVALID_CODE", "Mã vừa quét không phải mã vận đơn. Quét lại mã trên phiếu."),
+        )
+    elif (
+        pack is None
+        and operator_required((await settings_service.get(session)).packer_name_required, station)
+        and not station.operator_name
+    ):
+        # FR-03.16 (kiểm lại dưới khóa station — Admin vừa bật / station vừa đổi tên)
+        outcome, alert = (
+            "ALERT",
+            _alert("OPERATOR_REQUIRED", "Nhập tên người đóng gói trước khi đóng gói.", mode="PACK"),
         )
     elif pack is None:
         outcome, alert = await _open_session(session, station, code, settings)
@@ -625,7 +670,10 @@ async def open_return_by_request(
 
     alert: AlertOut | None
     if not station.operator_name:
-        outcome, alert = "ALERT", _alert("OPERATOR_REQUIRED", "Nhập tên người kiểm trước khi nhận hàng hoàn.")
+        outcome, alert = (
+            "ALERT",
+            _alert("OPERATOR_REQUIRED", "Nhập tên người kiểm trước khi nhận hàng hoàn.", mode="RETURN"),
+        )
     elif body.force_new:
         outcome, alert = await return_scan.open_force_new(
             session, station, code, note or "", resolution, actor=actor, ip=ip, tz=settings.tz_display

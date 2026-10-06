@@ -98,6 +98,7 @@ async def test_initial_state_is_ready(api: AsyncClient, station: tuple[dict[str,
         "kind": "PACK",
         "work_mode": "PACK",
         "operator_name": None,
+        "operator_required": False,  # Phase 3 (T-212)
     }
     assert body["state"] == "READY"
     assert body["session"] is None

@@ -127,7 +127,8 @@
               "NOT_SHIPPED",
               "RETURN_IN_PROGRESS_ELSEWHERE",
               "INSPECTION_REQUIRED",
-              "RETURN_CODE_DIFFERENT"
+              "RETURN_CODE_DIFFERENT",
+              "ORDER_CANCEL_REQUESTED"
             ],
             "title": "Code",
             "type": "string"
@@ -3306,6 +3307,17 @@
             ],
             "title": "Order Item Id"
           },
+          "platform_order_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Order Sn"
+          },
           "product_name": {
             "title": "Product Name",
             "type": "string"
@@ -3858,6 +3870,32 @@
         "title": "MergedClaimRef",
         "type": "object"
       },
+      "MergedOrderOut": {
+        "properties": {
+          "platform_order_sn": {
+            "title": "Platform Order Sn",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform_order_sn"
+        ],
+        "title": "MergedOrderOut",
+        "type": "object"
+      },
+      "MergedOrderRef": {
+        "properties": {
+          "platform_order_sn": {
+            "title": "Platform Order Sn",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform_order_sn"
+        ],
+        "title": "MergedOrderRef",
+        "type": "object"
+      },
       "MismatchOut": {
         "properties": {
           "actual": {
@@ -3994,13 +4032,39 @@
             ],
             "title": "Buyer Note"
           },
+          "merged_orders": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MergedOrderRef"
+            },
+            "title": "Merged Orders",
+            "type": "array"
+          },
           "platform": {
-            "title": "Platform",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
           },
           "platform_order_sn": {
             "title": "Platform Order Sn",
             "type": "string"
+          },
+          "shop_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Name"
           }
         },
         "required": [
@@ -4036,9 +4100,24 @@
             "title": "Items",
             "type": "array"
           },
+          "merged_orders": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MergedOrderOut"
+            },
+            "title": "Merged Orders",
+            "type": "array"
+          },
           "platform": {
-            "title": "Platform",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
           },
           "platform_order_sn": {
             "title": "Platform Order Sn",
@@ -4054,6 +4133,21 @@
               }
             ],
             "title": "Platform Status"
+          },
+          "platform_status_group": {
+            "default": "UNKNOWN",
+            "title": "Platform Status Group",
+            "type": "string"
+          },
+          "shop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShopRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "source": {
             "title": "Source",
@@ -7055,6 +7149,17 @@
             ],
             "title": "Handover Warn Hours"
           },
+          "packer_name_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Packer Name Required"
+          },
           "retention_clip_days": {
             "maximum": 365.0,
             "minimum": 1.0,
@@ -7141,6 +7246,11 @@
           "handover_warn_hours": {
             "title": "Handover Warn Hours",
             "type": "integer"
+          },
+          "packer_name_required": {
+            "default": false,
+            "title": "Packer Name Required",
+            "type": "boolean"
           },
           "retention_clip_days": {
             "title": "Retention Clip Days",
@@ -7291,6 +7401,32 @@
           "last_error"
         ],
         "title": "ShopOut",
+        "type": "object"
+      },
+      "ShopRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ShopRef",
         "type": "object"
       },
       "SnapshotCreated": {
@@ -7785,6 +7921,11 @@
               }
             ],
             "title": "Operator Name"
+          },
+          "operator_required": {
+            "default": false,
+            "title": "Operator Required",
+            "type": "boolean"
           },
           "work_mode": {
             "enum": [

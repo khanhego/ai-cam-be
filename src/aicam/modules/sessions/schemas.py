@@ -22,6 +22,8 @@ class StationStateRef(StationRef):
     kind: Literal["PACK", "RETURN", "BOTH"]
     work_mode: Literal["PACK", "RETURN"]
     operator_name: str | None
+    # Phase 3 (FR-03.16): Admin bật `packer_name_required` ∧ `work_mode = PACK` → quét cần tên người đóng gói.
+    operator_required: bool = False
 
 
 class WorkModeIn(BaseModel):
@@ -47,10 +49,18 @@ class TrayOut(BaseModel):
     updated_at: datetime | None
 
 
+class MergedOrderRef(BaseModel):
+    platform_order_sn: str
+
+
 class OrderBrief(BaseModel):
-    platform: str
+    # Phase 3: `null` khi đơn chưa gắn shop (đơn nhập file — chưa rõ sàn, DEC-541).
+    platform: str | None
+    shop_name: str | None = None
     platform_order_sn: str
     buyer_note: str | None
+    # Kiện gộp (FR-05.22): đơn thêm cùng mã vận đơn; rỗng khi không gộp.
+    merged_orders: list[MergedOrderRef] = []
 
 
 class ItemOut(BaseModel):
@@ -59,6 +69,8 @@ class ItemOut(BaseModel):
     variation: str | None
     quantity: int
     image_url: str | None
+    # Đơn của dòng (kiện gộp có dòng của nhiều đơn) — luôn có khi kiện có đơn.
+    platform_order_sn: str | None = None
 
 
 class PackageBrief(BaseModel):
@@ -223,6 +235,8 @@ class AlertOut(BaseModel):
         "RETURN_IN_PROGRESS_ELSEWHERE",
         "INSPECTION_REQUIRED",
         "RETURN_CODE_DIFFERENT",
+        # Phase 3 (02 §6.2 API-11, DEC-455).
+        "ORDER_CANCEL_REQUESTED",
     ]
     message: str
     data: dict[str, Any] = {}

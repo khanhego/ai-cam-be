@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core import audit, clock
 from aicam.modules.media import jobs
 from aicam.modules.orders.models import (
-    PLATFORMS,
     Order,
     OrderItem,
     Package,
@@ -149,15 +148,15 @@ async def get_order(session: AsyncSession, order_id: uuid.UUID) -> Order | None:
     return await session.get(Order, order_id)
 
 
-# Sàn hiển thị cho đơn chưa gắn shop (đơn nhập file) — giữ hành vi Phase 2 (một sàn); API-10 / API-31 đổi sang
-# `null` + chip "Chưa rõ sàn" ở T-212.
-FILE_ORDER_PLATFORM = PLATFORMS[0]
+async def shop_of(session: AsyncSession, order: Order) -> Shop | None:
+    """Shop của đơn; None = đơn chưa gắn shop (đơn file — "Chưa rõ sàn", T-212)."""
+    return await session.get(Shop, order.shop_id) if order.shop_id else None
 
 
-async def platform_of(session: AsyncSession, order: Order) -> str:
-    """Sàn của đơn theo shop (NFR-28: không gán cứng một sàn trong lõi)."""
-    shop = await session.get(Shop, order.shop_id) if order.shop_id else None
-    return shop.platform if shop else FILE_ORDER_PLATFORM
+async def platform_of(session: AsyncSession, order: Order) -> str | None:
+    """Sàn của đơn theo shop (NFR-28: không gán cứng một sàn trong lõi); đơn file → None."""
+    shop = await shop_of(session, order)
+    return shop.platform if shop else None
 
 
 async def items_of(session: AsyncSession, order_id: uuid.UUID) -> Sequence[OrderItem]:

@@ -94,6 +94,11 @@ STATE_FIELDS = (
     "session.pack_reference.clips[].status",
     "session.pack_reference.snapshot.id",
     "session.pack_reference.snapshot.url",
+    # Phase 3 (02 §6.2 API-10 mở rộng — T-212).
+    "station.operator_required",
+    "session.package.order.shop_name",
+    "session.package.order.merged_orders[].platform_order_sn",
+    "session.package.items[].platform_order_sn",
     "today_return_count",
     "today_return_issue_count",
     "approval_request.id",
@@ -195,6 +200,8 @@ SETTINGS_FIELDS = (
     *SETTINGS_THRESHOLDS,
     "retention_clip_min_days",
     "updated_at",
+    # Phase 3 (02 §6.2 API-80 — T-212).
+    "packer_name_required",
 )
 # `sessions[]` API-31 mở rộng (02 §6.2) — cũng là response API-113.
 SESSION_RETURN_FIELDS = (
@@ -431,6 +438,7 @@ CONTRACT: tuple[Api, ...] = (
             "outcome": _e("SESSION_OPENED", "SESSION_COMPLETED", "MISMATCH", "ALERT", "IGNORED"),
             "alert.code": _e(
                 "ORDER_CANCELLED",
+                "ORDER_CANCEL_REQUESTED",
                 "ALREADY_PACKED",
                 "ALREADY_HANDED_OVER",
                 "INVALID_CODE",
@@ -573,6 +581,11 @@ CONTRACT: tuple[Api, ...] = (
             "order.platform_status",
             "order.buyer_note",
             "order.source",
+            # Phase 3 (02 §6.2 API-31 — T-212).
+            "order.shop.id",
+            "order.shop.name",
+            "order.platform_status_group",
+            "order.merged_orders[].platform_order_sn",
             "order.items[].product_name",
             "order.items[].variation",
             "order.items[].quantity",

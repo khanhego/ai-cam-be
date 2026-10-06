@@ -8,7 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 from aicam.core import audit
-from aicam.core.db import commit
+from aicam.core.db import after_commit, commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.redis import get_redis
@@ -43,6 +43,7 @@ async def get(session: AsyncSession) -> Setting:
 def to_out(row: Setting, settings: Settings) -> SettingsOut:
     return SettingsOut(
         **{f: getattr(row, f) for f in ALL_FIELDS},
+        packer_name_required=row.packer_name_required,
         retention_clip_min_days=settings.retention_clip_min_days,
         updated_at=row.updated_at,
     )
@@ -111,8 +112,17 @@ async def update(session: AsyncSession, data: SettingsIn, p: Principal, settings
             )
     for f, value in after.items():
         setattr(row, f, value)
+    flags_before = {"packer_name_required": row.packer_name_required}
+    flags_after = {
+        "packer_name_required": (
+            row.packer_name_required if data.packer_name_required is None else data.packer_name_required
+        )
+    }
+    row.packer_name_required = flags_after["packer_name_required"]
     audit.record(session, "SETTINGS_UPDATE", user_id=p.user_id, object_type="SETTING", object_id="1", ip=p.ip,
-                 data={"before": before, "after": after})  # fmt: skip
+                 data={"before": {**before, **flags_before}, "after": {**after, **flags_after}})  # fmt: skip
+    if flags_before != flags_after:
+        after_commit(session, lambda: _publish_station_states(session, settings))
     if impact is not None:
         audit.record(
             session, "RETENTION_REDUCED", user_id=p.user_id, object_type="SETTING", object_id="1", ip=p.ip,
@@ -127,6 +137,20 @@ async def update(session: AsyncSession, data: SettingsIn, p: Principal, settings
     out = to_out(row, settings)
     await commit(session)
     return out
+
+
+async def _publish_station_states(session: AsyncSession, settings: Settings) -> None:
+    """`packer_name_required` đổi → WS `station.state` cho mọi station đang bật (02 API-80, FR-03.16)."""
+    from aicam.modules.sessions.service import publish_state  # sessions → settings: import muộn tránh vòng
+    from aicam.modules.stations.models import Station
+
+    ids = (await session.scalars(select(Station.id).where(Station.is_active.is_(True)))).all()
+    for station_id in ids:
+        try:
+            await publish_state(session, station_id, settings)
+        except Exception:  # một station lỗi không chặn station khác; state tới ở lần đổi kế tiếp / poll
+            log.exception("publish_station_state_failed", station_id=str(station_id))
+    await session.commit()
 
 
 async def _check(coro: Any, limit_s: float = 3.0) -> str:
