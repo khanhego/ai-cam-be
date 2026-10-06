@@ -4,7 +4,7 @@
 """
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core import clock
 from aicam.core.settings import Settings
 from aicam.modules.media import snapshots
+from aicam.modules.media.models import Snapshot
 from aicam.modules.media.queries import clips_of_session
 from aicam.modules.orders.models import Package
 from aicam.modules.returns.models import ReturnCase, ReturnCasePackage
@@ -80,6 +81,30 @@ async def pack_reference(
     )
 
 
+# BR-37 (L11, DEC-447): station tự hủy phiên mở hoàn trong 60 giây đầu khi chưa lưu kết luận,
+# chưa chụp ảnh tay.
+SELF_CANCEL_WINDOW = timedelta(seconds=60)
+
+
+async def has_manual_snapshot(session: AsyncSession, session_id: uuid.UUID) -> bool:
+    """Đã chụp ảnh tay (mọi trạng thái — ảnh đã chụp rồi bị xóa vẫn tính là đã chụp)."""
+    return bool(
+        await session.scalar(
+            select(func.count()).where(Snapshot.session_id == session_id, Snapshot.kind == "MANUAL")
+        )
+    )
+
+
+async def self_cancel_until(session: AsyncSession, pack: PackSession) -> datetime | None:
+    """API-10 `session.self_cancel_until` (chỉ phiên RETURN `OPEN`): `started_at + 60 giây` khi chưa lưu
+    kết luận và chưa có ảnh tay; ngược lại None (chỉ "Gọi quản lý"). API-12 quyết lại dưới khóa station."""
+    if pack.type != "RETURN" or pack.status != "OPEN" or pack.inspection_saved_at is not None:
+        return None
+    if await has_manual_snapshot(session, pack.id):
+        return None
+    return pack.started_at + SELF_CANCEL_WINDOW
+
+
 async def fill(
     session: AsyncSession, out: SessionOut, pack: PackSession, settings: Settings, uid: uuid.UUID | None
 ) -> None:
@@ -101,6 +126,7 @@ async def fill(
         else []
     )
     out.pack_reference = await pack_reference(session, pack.package_id, settings, uid)
+    out.self_cancel_until = await self_cancel_until(session, pack)
 
 
 def _day_start(tz: str) -> datetime:

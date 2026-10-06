@@ -784,6 +784,8 @@ async def cancel(
             "VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422,
             {"fields": {"reason": "Lý do không áp dụng cho loại phiên này"}},
         )  # fmt: skip
+    if pack.type == "RETURN":
+        await _check_self_cancel(session, pack)
     await end_without_packing(
         session, pack, status="CANCELLED", reason=reason, note=note and note.strip(), actor_label=station.name
     )
@@ -792,6 +794,20 @@ async def cancel(
     notify_after_commit(session, station.id, state)
     await commit(session)
     return state
+
+
+async def _check_self_cancel(session: AsyncSession, pack: PackSession) -> None:
+    """BR-37: dưới khóa station, theo giờ server — quá 60 giây / đã lưu kết luận / đã chụp ảnh tay → 409."""
+    until = await return_state.self_cancel_until(session, pack)
+    if until is not None and clock.now() <= until:
+        return
+    if pack.inspection_saved_at is not None:
+        cause, message = "INSPECTION_SAVED", "Phiên đã lưu kết luận. Bấm Gọi quản lý để hủy."
+    elif until is None:
+        cause, message = "SNAPSHOT_TAKEN", "Phiên đã có ảnh chụp. Bấm Gọi quản lý để hủy."
+    else:
+        cause, message = "TIME_EXCEEDED", "Phiên đã quá 60 giây. Bấm Gọi quản lý để hủy."
+    raise AppError("CANCEL_REQUIRES_SUPERVISOR", message, 409, {"reason": cause})
 
 
 async def save_inspection(

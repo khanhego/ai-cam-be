@@ -29,6 +29,7 @@ from aicam.core.db import after_commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.settings import get_settings
+from aicam.modules.claims import evidence_rules
 from aicam.modules.claims.models import Claim, ClaimEvidence, ClaimNote
 from aicam.modules.claims.schemas import ClaimCreateIn, ClaimPatchIn, EvidenceIn
 from aicam.modules.media.models import Snapshot
@@ -256,14 +257,27 @@ async def add_evidence(
 
 
 async def auto_evidence(
-    session: AsyncSession, claim: Claim, package_id: uuid.UUID, return_sessions: Sequence[PackSession]
+    session: AsyncSession,
+    claim: Claim,
+    package_id: uuid.UUID,
+    return_sessions: Sequence[PackSession],
+    *,
+    prior: bool = False,
 ) -> int:
-    """FR-08.06: phiên PACK hiệu lực của kiện + phiên mở hoàn + ảnh (bằng chứng tự chọn, `auto = true`)."""
+    """FR-08.06: phiên PACK hiệu lực của kiện + phiên mở hoàn + ảnh (bằng chứng tự chọn, `auto = true`).
+
+    `prior` (BR-39, L11 — khi tạo hồ sơ): thêm mọi phiên mở hoàn **trước** đã hủy / bỏ dở có clip của kiện /
+    hồ sơ hàng hoàn (`evidence_rules.prior_return_sessions`)."""
     sessions: list[PackSession] = []
     pack = await effective_pack_session(session, package_id)
     if pack is not None:
         sessions.append(pack)
+    if prior:
+        sessions.extend(
+            await evidence_rules.prior_return_sessions(session, claim.package_id, claim.return_case_id)
+        )
     sessions.extend(return_sessions)
+    sessions = list({s.id: s for s in sessions}.values())
     return await add_evidence(
         session,
         claim,
@@ -367,7 +381,7 @@ async def create_from_return(
             version=1,
         ),
     )
-    await auto_evidence(session, claim, package.id, [pack])
+    await auto_evidence(session, claim, package.id, [pack], prior=True)
     add_note(session, claim, "SYSTEM", f"Tạo tự động từ phiên mở hoàn ({label}).")
     audit.record(
         session,
@@ -518,6 +532,7 @@ async def create_manual(session: AsyncSession, data: ClaimCreateIn, p: Principal
         claim,
         package.id,
         await completed_return_sessions(session, package.id, case.id if case else None),
+        prior=True,
     )
     if alert is not None:
         add_note(

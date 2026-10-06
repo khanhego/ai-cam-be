@@ -45,6 +45,15 @@ class UserBrief(BaseModel):
     display_name: str
 
 
+class ReturnSummary(BaseModel):
+    """API-20 (Phase 3, L11): tóm tắt phiên RETURN để Supervisor quyết hủy — D13 "Đã có kết luận: Hộp rỗng ·
+    3 ảnh · mở 4 phút"."""
+
+    conclusion: str | None
+    snapshot_count: int
+    opened_at: datetime
+
+
 class ApprovalItem(BaseModel):
     """Item API-20, cũng là `data` của WS-02 `approval.*`."""
 
@@ -64,6 +73,7 @@ class ApprovalItem(BaseModel):
     # Phase 2 (02 API-20): loại phiên của yêu cầu, người kiểm (phiên RETURN).
     session_type: Literal["PACK", "RETURN"] | None = None
     operator_name: str | None = None
+    return_summary: ReturnSummary | None = None  # chỉ `session_type = RETURN`
 
 
 class DecisionIn(BaseModel):

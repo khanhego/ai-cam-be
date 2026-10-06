@@ -8,7 +8,8 @@ KN-000124/
 ├── ho-so.json, README.txt
 ├── 01-dong-goi-<yyyymmdd-hhmm>/   video-ghep-co-chu.mp4, goc-CAM1.mp4, goc-CAM2.mp4,
 │                                  anh-luc-dong-goi.jpg, info.json
-├── 02-mo-hoan-<yyyymmdd-hhmm>/    như trên + anh-01.jpg … + ket-luan.json
+├── 02-mo-hoan-<yyyymmdd-hhmm>/    phiên chính (BR-39): như trên + anh-01.jpg … + ket-luan.json
+├── 03-mo-hoan-phien-truoc-<…>/    phiên mở hoàn trước đã hủy / bỏ dở (BR-39) — như mo-hoan
 └── 03-phien-khac-<…>/             chỉ clip gốc + info.json (không encode)
 ```
 
@@ -38,9 +39,10 @@ from aicam.core.db import commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings
+from aicam.modules.claims import evidence_rules
 from aicam.modules.claims.models import Claim, ClaimEvidence, EvidencePack
 from aicam.modules.claims.schemas import EvidencePackCreated, EvidencePackOut, PackFiles, PackMissing
-from aicam.modules.claims.service import CONCLUSION_LABELS
+from aicam.modules.claims.service import CONCLUSION_LABELS, effective_pack_session
 from aicam.modules.media import ffmpeg, jobs, signing
 from aicam.modules.media.exports import (
     Progress,
@@ -74,7 +76,9 @@ Thư mục:
 - 01-dong-goi-…: phiên đóng gói — video ghép Cam 1 + Cam 2 có chữ (mã vận đơn, mã đơn, giờ, station),
   clip gốc từng camera (goc-CAM1.mp4, goc-CAM2.mp4), ảnh lúc đóng gói, info.json.
 - 02-mo-hoan-…: phiên mở hàng hoàn — như trên + ảnh chụp khi kiểm (anh-01.jpg …) + ket-luan.json
-  (kết luận, từng dòng hàng, người kiểm, lịch sử sửa kết luận).
+  (kết luận, từng dòng hàng, người kiểm, lịch sử sửa kết luận). Phiên mở hoàn chính (video mở hộp sớm
+  nhất) đứng đầu.
+- …-mo-hoan-phien-truoc-…: phiên mở hàng hoàn trước đó đã bị hủy / bỏ dở (vd. mất điện) — như trên.
 - 03-phien-khac-…: phiên khác được thêm làm bằng chứng — chỉ clip gốc + info.json.
 
 Kiểm tính toàn vẹn: clip gốc không bị sửa nếu mã SHA-256 của tệp trùng với mã ghi trong ho-so.json và
@@ -268,8 +272,7 @@ class _Builder:
     def miss(self, session_id: uuid.UUID, role: str, reason: str, **extra: Any) -> None:
         self.missing.append({"session_id": str(session_id), "camera_role": role, "reason": reason, **extra})
 
-    def folder_name(self, index: int, pack: PackSession, main: bool) -> str:
-        kind = "phien-khac" if not main else ("dong-goi" if pack.type == "PACK" else "mo-hoan")
+    def folder_name(self, index: int, pack: PackSession, kind: str) -> str:
         when = (pack.ended_at or pack.started_at).astimezone(self.tz).strftime("%Y%m%d-%H%M")
         return f"{index:02d}-{kind}-{when}"
 
@@ -324,7 +327,9 @@ class _Builder:
 
 async def _session_rows(
     db: AsyncSession, claim: Claim
-) -> tuple[list[tuple[PackSession, bool]], list[Snapshot]]:
+) -> tuple[list[tuple[PackSession, bool, str]], list[Snapshot]]:
+    """(phiên, phiên chính để dựng video, loại thư mục). Thứ tự: đóng gói hiệu lực, phiên mở hoàn chính
+    (BR-39, DEC-448), phiên mở hoàn khác theo giờ (phiên trước → `mo-hoan-phien-truoc`), phiên thêm tay."""
     evidence = (
         await db.scalars(
             select(ClaimEvidence).where(ClaimEvidence.claim_id == claim.id).order_by(ClaimEvidence.added_at)
@@ -336,11 +341,25 @@ async def _session_rows(
     if session_ids:
         sessions = list((await db.scalars(select(PackSession).where(PackSession.id.in_(session_ids)))).all())
     # Phiên chính: tự chọn, phiên RETURN, phiên PACK `COMPLETED` (hiệu lực); còn lại = phiên thêm tay.
-    rows = [
-        (s, s.id in auto or s.type == "RETURN" or (s.type == "PACK" and s.status == "COMPLETED"))
-        for s in sessions
-    ]
-    rows.sort(key=lambda r: (not r[1], r[0].type != "PACK", r[0].started_at, r[0].id))
+    with_clip = await evidence_rules.live_clip_sessions(db, [s.id for s in sessions])
+    effective = await effective_pack_session(db, claim.package_id)
+    primary = evidence_rules.primary_session(sessions, with_clip, effective.id if effective else None)
+    latest_done = await evidence_rules.latest_completed_return_start(
+        db, claim.package_id, claim.return_case_id
+    )
+    rows: list[tuple[PackSession, bool, str]] = []
+    for s in sessions:
+        main = s.id in auto or s.type == "RETURN" or (s.type == "PACK" and s.status == "COMPLETED")
+        if not main:
+            kind = "phien-khac"
+        elif s.type == "PACK":
+            kind = "dong-goi"
+        elif s.id != primary and s.id in with_clip and evidence_rules.is_prior_return(s, latest_done):
+            kind = "mo-hoan-phien-truoc"
+        else:
+            kind = "mo-hoan"
+        rows.append((s, main, kind))
+    rows.sort(key=lambda r: (not r[1], r[0].type != "PACK", r[0].id != primary, r[0].started_at, r[0].id))
     snapshot_ids = [e.snapshot_id for e in evidence if e.snapshot_id]
     snapshots = []
     if snapshot_ids:
@@ -461,10 +480,10 @@ async def _build(db: AsyncSession, pack_id: uuid.UUID, settings: Settings, rende
         by_session: dict[uuid.UUID, list[Snapshot]] = {}
         for snap in snapshots:
             by_session.setdefault(snap.session_id, []).append(snap)
-        renders = max(1, sum(1 for _, main in rows if main))
+        renders = max(1, sum(1 for _, main, _ in rows if main))
         done = 0
-        for index, (session, main) in enumerate(rows, start=1):
-            folder = work / b.folder_name(index, session, main)
+        for index, (session, main, kind) in enumerate(rows, start=1):
+            folder = work / b.folder_name(index, session, kind)
             folder.mkdir()
             copied = await b.copy_clips(folder, session)
             rendered = None

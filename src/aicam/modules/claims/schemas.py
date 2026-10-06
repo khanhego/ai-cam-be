@@ -111,6 +111,18 @@ class EvidenceOut(BaseModel):
     auto: bool
     session: EvidenceSession | None = None
     snapshot: EvidenceSnapshot | None = None
+    # BR-39 (Phase 3, DEC-448 — suy ra lúc đọc): phiên mở hoàn trước đã hủy / bỏ dở; phiên chính (đúng một).
+    prior_return: bool = False
+    primary: bool = False
+
+
+class PriorReturnSession(BaseModel):
+    """API-132 `prior_return_sessions[]` (BR-39): phiên mở hoàn trước có clip của kiện / hồ sơ hàng hoàn."""
+
+    session_id: uuid.UUID
+    status: str
+    started_at: datetime
+    in_evidence: bool
 
 
 class OtherSession(BaseModel):
@@ -149,6 +161,7 @@ class ClaimDetail(BaseModel):
     closed_at: datetime | None
     evidence: list[EvidenceOut]
     other_sessions: list[OtherSession]
+    prior_return_sessions: list[PriorReturnSession] = []
     missing: list[Missing]
     notes: list[NoteOut]
     allowed_transitions: list[ClaimStatus]

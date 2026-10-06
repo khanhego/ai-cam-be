@@ -168,6 +168,8 @@ class SessionOut(BaseModel):
     inspection: InspectionOut | None = None
     snapshots: list[SnapshotOut] | None = None
     pack_reference: PackReference | None = None
+    # BR-37 (Phase 3): hạn station tự hủy phiên RETURN `OPEN`; null = không còn tự hủy (Gọi quản lý).
+    self_cancel_until: datetime | None = None
 
 
 class ApprovalBrief(BaseModel):

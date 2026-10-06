@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core import clock
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings
+from aicam.modules.claims import evidence_rules
+from aicam.modules.claims.evidence_rules import primary_session as primary_session
 from aicam.modules.claims.models import CLAIM_STATUSES, Claim, ClaimEvidence, ClaimNote
 from aicam.modules.claims.schemas import (
     ClaimDetail,
@@ -26,10 +28,16 @@ from aicam.modules.claims.schemas import (
     EvidenceSnapshot,
     NoteOut,
     OtherSession,
+    PriorReturnSession,
     StatusCounts,
     UserBrief,
 )
-from aicam.modules.claims.service import DUE_STATUSES, allowed_sessions, allowed_transitions
+from aicam.modules.claims.service import (
+    DUE_STATUSES,
+    allowed_sessions,
+    allowed_transitions,
+    effective_pack_session,
+)
 from aicam.modules.media import snapshots as media_snapshots
 from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.orders.models import Order, Package
@@ -270,8 +278,29 @@ async def claim_detail(
                     ),
                 )
             )
-    # Phân loại bằng chứng: phiên đóng gói trước, phiên mở hoàn, rồi ảnh.
-    evidence.sort(key=lambda x: (x.kind != "SESSION", x.session.type != "PACK" if x.session else False))
+    # BR-39 (DEC-448): phiên mở hoàn trước, phiên chính — suy ra lúc đọc.
+    in_evidence = [s for s, _ in sessions.values()]
+    with_clip = await evidence_rules.live_clip_sessions(db, sessions)
+    effective = await effective_pack_session(db, claim.package_id)
+    primary = primary_session(in_evidence, with_clip, effective.id if effective else None)
+    latest_done = await evidence_rules.latest_completed_return_start(
+        db, claim.package_id, claim.return_case_id
+    )
+    for item in evidence:
+        if item.session is not None:
+            s, _ = sessions[item.session.id]
+            item.primary = s.id == primary
+            item.prior_return = s.id in with_clip and evidence_rules.is_prior_return(s, latest_done)
+    priors = await evidence_rules.prior_return_sessions(db, claim.package_id, claim.return_case_id)
+    # Phân loại bằng chứng: phiên đóng gói trước, phiên chính, phiên mở hoàn (sớm trước), rồi ảnh.
+    evidence.sort(
+        key=lambda x: (
+            x.kind != "SESSION",
+            x.session.type != "PACK" if x.session else False,
+            not x.primary,
+            x.session.started_at if x.session else x.snapshot.taken_at if x.snapshot else clock.now(),
+        )
+    )
 
     candidates = await allowed_sessions(db, claim)
     other_ids = [sid for sid in candidates if sid not in sessions]
@@ -326,6 +355,12 @@ async def claim_detail(
         closed_at=claim.closed_at,
         evidence=evidence,
         other_sessions=others,
+        prior_return_sessions=[
+            PriorReturnSession(
+                session_id=s.id, status=s.status, started_at=s.started_at, in_evidence=s.id in sessions
+            )
+            for s in priors
+        ],
         missing=_missing(evidence),
         notes=[
             NoteOut(

@@ -369,6 +369,16 @@
             ],
             "title": "Operator Name"
           },
+          "return_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "session_id": {
             "anyOf": [
               {
@@ -1121,6 +1131,14 @@
               }
             ],
             "title": "Platform Claim Ref"
+          },
+          "prior_return_sessions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PriorReturnSession"
+            },
+            "title": "Prior Return Sessions",
+            "type": "array"
           },
           "recovered_amount": {
             "anyOf": [
@@ -2155,6 +2173,16 @@
             ],
             "title": "Kind",
             "type": "string"
+          },
+          "primary": {
+            "default": false,
+            "title": "Primary",
+            "type": "boolean"
+          },
+          "prior_return": {
+            "default": false,
+            "title": "Prior Return",
+            "type": "boolean"
           },
           "session": {
             "anyOf": [
@@ -4657,6 +4685,37 @@
         "title": "PlayUrlOut",
         "type": "object"
       },
+      "PriorReturnSession": {
+        "description": "API-132 `prior_return_sessions[]` (BR-39): phiên mở hoàn trước có clip của kiện / hồ sơ hàng hoàn.",
+        "properties": {
+          "in_evidence": {
+            "title": "In Evidence",
+            "type": "boolean"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "status",
+          "started_at",
+          "in_evidence"
+        ],
+        "title": "PriorReturnSession",
+        "type": "object"
+      },
       "Protection": {
         "description": "02 §6.2 API-31 v0.2 (DEC-245, ADR-009): lý do clip / ảnh không bị retention xóa.",
         "properties": {
@@ -6206,6 +6265,38 @@
         "title": "ReturnSessionIn",
         "type": "object"
       },
+      "ReturnSummary": {
+        "description": "API-20 (Phase 3, L11): tóm tắt phiên RETURN để Supervisor quyết hủy — D13 \"Đã có kết luận: Hộp rỗng ·\n3 ảnh · mở 4 phút\".",
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "opened_at": {
+            "format": "date-time",
+            "title": "Opened At",
+            "type": "string"
+          },
+          "snapshot_count": {
+            "title": "Snapshot Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "conclusion",
+          "snapshot_count",
+          "opened_at"
+        ],
+        "title": "ReturnSummary",
+        "type": "object"
+      },
       "Roi": {
         "properties": {
           "h": {
@@ -6725,6 +6816,18 @@
                 "type": "null"
               }
             ]
+          },
+          "self_cancel_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Self Cancel Until"
           },
           "snapshots": {
             "anyOf": [

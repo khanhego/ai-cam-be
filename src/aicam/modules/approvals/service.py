@@ -33,7 +33,7 @@ from aicam.modules.approvals.schemas import (
     DecisionResult,
     UserBrief,
 )
-from aicam.modules.approvals.views import approval_item, user_brief
+from aicam.modules.approvals.views import approval_item, snapshot_counts, user_brief
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Package
 from aicam.modules.sessions import service as sessions
@@ -48,6 +48,7 @@ log = structlog.get_logger()
 
 _REQUIRED_STATUS = {"MISMATCH": "MISMATCH", "ASSIST": "OPEN"}
 RETURN_ACTIONS = ("CONTINUE", "CANCEL_SESSION")  # yêu cầu từ phiên RETURN (02 API-21)
+RETURN_CANCEL_NOTE_MIN, RETURN_CANCEL_NOTE_MAX = 5, 500
 
 
 def _not_eligible(message: str) -> AppError:
@@ -249,7 +250,9 @@ async def list_requests(
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
-    items = [await approval_item(session, a) for a in rows.all()]
+    found = rows.all()
+    counts = await snapshot_counts(session, [a.session_id for a in found if a.session_id])
+    items = [await approval_item(session, a, counts) for a in found]
     return Page(items=items, page=page, page_size=page_size, total=total)
 
 
@@ -298,6 +301,13 @@ async def _decide_on_session(
     if pack.type == "RETURN" and action not in RETURN_ACTIONS:
         # Phiên hoàn đóng bằng quét + kết luận (02 API-21): chỉ "Cho tiếp tục" / "Hủy phiên".
         raise AppError("INVALID_ACTION", "Phiên mở hoàn chỉ được cho tiếp tục hoặc hủy.", 422)
+    if (
+        pack.type == "RETURN"
+        and action == "CANCEL_SESSION"
+        and not (note and RETURN_CANCEL_NOTE_MIN <= len(note) <= RETURN_CANCEL_NOTE_MAX)
+    ):
+        # BR-37 / FR-04.14 (Phase 3, DEC-447): Supervisor hủy phiên mở hoàn phải ghi lý do 5–500 ký tự.
+        raise _invalid("note", "Nhập ghi chú (5–500 ký tự).")
     tray = await read_tray(get_redis(), station.id, pack.open_code)
     pack.status_before_approval = None
     pack.warn_notified = False  # cảnh báo 15 phút tính lại từ lúc hết chờ (DEC-60)

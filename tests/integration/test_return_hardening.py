@@ -227,7 +227,9 @@ async def test_assist_cancel_return_session(api: AsyncClient, desk: Desk, db: As
     approval_id = req.json()["approval_request"]["id"]
 
     res = await api.post(
-        f"/api/v1/approval-requests/{approval_id}/decision", headers=sup, json={"action": "CANCEL_SESSION"}
+        f"/api/v1/approval-requests/{approval_id}/decision",
+        headers=sup,
+        json={"action": "CANCEL_SESSION", "note": "Không phải kiện hoàn"},  # Phase 3 BR-37: bắt ghi chú
     )
 
     assert res.status_code == 200, res.text
