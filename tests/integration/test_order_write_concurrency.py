@@ -17,13 +17,18 @@ from aicam.core.db import dispose_engine, init_engine, sessionmaker
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, OrderItem, Package
 from aicam.modules.platforms.base import PlatformItem, PlatformOrder
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 
 pytestmark = pytest.mark.integration
 
 TABLES = 'status_history, order_item, package, "order"'
 SN = "2410TSTWC0001"
 DATA = PlatformOrder(
-    SN, "READY_TO_SHIP", ("SPXTSTWC00001",), (PlatformItem("Áo", 1, "SKU1"), PlatformItem("Quần", 2, "SKU2"))
+    SN,
+    "READY_TO_SHIP",
+    ("SPXTSTWC00001",),
+    (PlatformItem("Áo", 1, "SKU1"), PlatformItem("Quần", 2, "SKU2")),
+    status_group=shopee_order_group("READY_TO_SHIP"),
 )
 CSV = orders.CsvOrder(SN, None, DATA.items, DATA.tracking_numbers)
 

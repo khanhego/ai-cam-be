@@ -26,7 +26,7 @@ from aicam.modules.platforms.base import (
     ShippingStatus,
     ShopCredentials,
 )
-from aicam.modules.platforms.shopee import returns_mapping
+from aicam.modules.platforms.shopee import mapping, returns_mapping
 
 MOCK_SHOP_ID = "990001"
 MOCK_SHOP_NAME = "TST Shop (mock)"
@@ -42,6 +42,11 @@ _SHIPPING_HINTS = {
     "DELIVERY_FAILED": "RETURN_EXPECTED",
     "COD_REJECTED": "RETURN_EXPECTED",
 }
+
+
+def _grouped(order: PlatformOrder) -> PlatformOrder:
+    """Mock Shopee trả nhóm như adapter thật (`shopee/mapping.order_group`); test đặt chữ trạng thái."""
+    return replace(order, status_group=mapping.order_group(order.status))
 
 
 def _load(name: str) -> dict[str, Any]:
@@ -186,14 +191,16 @@ class MockAdapter:
 
     async def get_order(self, creds: ShopCredentials | None, order_sn: str) -> PlatformOrder | None:
         await self._wait()
-        return self.orders.get(order_sn)
+        order = self.orders.get(order_sn)
+        return _grouped(order) if order else None
 
     async def find_by_tracking(
         self, creds: ShopCredentials | None, tracking_number: str
     ) -> PlatformOrder | None:
         await self._wait()
         code = tracking_number.upper()
-        return next((o for o in self.orders.values() if code in o.tracking_numbers), None)
+        found = next((o for o in self.orders.values() if code in o.tracking_numbers), None)
+        return _grouped(found) if found else None
 
     async def list_updated_orders(
         self, creds: ShopCredentials | None, since: datetime
@@ -206,7 +213,7 @@ class MockAdapter:
             raise PlatformError("HTTP 503")
         for order in sorted(self.orders.values(), key=lambda o: o.updated_at or _BASE_TIME):
             if (order.updated_at or _BASE_TIME) >= since:
-                yield order
+                yield _grouped(order)
 
     async def get_shipping_statuses(
         self, creds: ShopCredentials | None, refs: Sequence[ShipmentRef]
@@ -227,6 +234,7 @@ class MockAdapter:
                     hint,
                     order.status if order else None,
                     order.updated_at if order else None,
+                    mapping.order_group(order.status) if order else None,
                 )
             )
         return out

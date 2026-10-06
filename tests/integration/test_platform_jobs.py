@@ -28,6 +28,7 @@ from aicam.modules.platforms.base import PlatformItem, PlatformOrder, ShopCreden
 from aicam.modules.platforms.mock.adapter import MOCK_SHOP_ID, MockAdapter
 from aicam.modules.platforms.shopee.adapter import ShopeeAdapter
 from aicam.modules.platforms.shopee.client import ShopeeClient
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 
 from .factories import PASSWORD, make_user
 
@@ -66,6 +67,7 @@ def _order(n: int, *codes: str, status: str = "READY_TO_SHIP") -> PlatformOrder:
         items=(PlatformItem("Áo thun basic", 1, "AT-DEN-L", "Đen / L"),),
         created_at=NOW,
         updated_at=NOW,
+        status_group=shopee_order_group(status),
     )
 
 

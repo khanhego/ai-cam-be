@@ -7,20 +7,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from aicam.core.db import Base, UUIDPk, enum_check, utcnow
+from aicam.modules.platforms.base import ORDER_STATUS_GROUPS
 
 PLATFORMS = ("SHOPEE", "TIKTOK")  # 0006 (ADR-011)
-# Nhóm trạng thái đơn chung mọi sàn (02 §5.2, BR-30) — lõi chỉ đọc nhóm;
-# ánh xạ chữ sàn ở `platforms/<sàn>/mapping`.
-ORDER_STATUS_GROUPS = (
-    "UNPAID",
-    "AWAITING_SHIPMENT",
-    "SHIPPED",
-    "DELIVERED",
-    "CANCEL_REQUESTED",
-    "CANCELLED",
-    "RETURNING",
-    "UNKNOWN",
-)
 AUTH_STATUSES = ("CONNECTED", "EXPIRED", "DISCONNECTED")
 ORDER_SOURCES = ("API", "CSV")
 # 02 §5 (MISMATCH là trạng thái phiên, không phải kiện — DEC-24).

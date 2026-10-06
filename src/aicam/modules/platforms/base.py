@@ -5,8 +5,22 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
-# Trạng thái đơn chung (map từ trạng thái riêng của từng sàn trong adapter).
-CANCELLED_STATUSES = frozenset({"CANCELLED", "IN_CANCEL"})
+# Nhóm trạng thái đơn chung mọi sàn (02 §5.2, ADR-011, BR-30): adapter ánh xạ chữ của sàn → nhóm
+# (`platforms/<sàn>/mapping.py`); lõi chỉ đọc nhóm, không đọc chữ trạng thái của sàn (NFR-28).
+ORDER_STATUS_GROUPS = (
+    "UNPAID",
+    "AWAITING_SHIPMENT",
+    "SHIPPED",
+    "DELIVERED",
+    "CANCEL_REQUESTED",
+    "CANCELLED",
+    "RETURNING",
+    "UNKNOWN",
+)
+# Nhóm chặn mở phiên đóng gói (BR-01 — giữ hành vi Phase 2: Shopee `IN_CANCEL` cũng chặn).
+CANCEL_GROUPS = ("CANCEL_REQUESTED", "CANCELLED")
+# Đơn đã rời kho trên sàn (đã giao ĐVVC / đã giao / đang hoàn về) — kiện `NEW` mở phiên hoàn được (EX-R3).
+SHIPPED_GROUPS = ("SHIPPED", "DELIVERED", "RETURNING")
 
 
 @dataclass(frozen=True)
@@ -21,21 +35,23 @@ class PlatformItem:
 @dataclass(frozen=True)
 class PlatformOrder:
     platform_order_sn: str
-    status: str  # trạng thái sàn, giữ nguyên chữ của sàn (vd READY_TO_SHIP)
+    status: str  # trạng thái sàn, giữ nguyên chữ của sàn (vd READY_TO_SHIP) — chỉ lưu / hiển thị
     tracking_numbers: tuple[str, ...]
     items: tuple[PlatformItem, ...]
     buyer_note: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # Nhóm chung ∈ ORDER_STATUS_GROUPS — adapter đặt (TikTok cần cả yêu cầu hủy, không suy được từ `status`).
+    status_group: str = "UNKNOWN"
 
     @property
     def is_cancelled(self) -> bool:
-        return self.status in CANCELLED_STATUSES
+        return self.status_group in CANCEL_GROUPS
 
 
-# Nhóm trạng thái yêu cầu trả (02a §7, DEC-262).
-RETURN_STATUS_GROUPS = ("OPEN", "CANCELLED", "DONE", "CLOSED")
+# Nhóm trạng thái yêu cầu trả chung (02 §5.2, BR-31): chữ lạ → None (không chờ duyệt, không kết thúc).
+RETURN_STATUS_GROUPS = ("REQUESTED", "ACCEPTED", "CANCELLED", "DONE", "CLOSED")
 
 
 @dataclass(frozen=True)
@@ -52,12 +68,12 @@ class ReturnItem:
 
 @dataclass(frozen=True)
 class PlatformReturn:
-    """Yêu cầu trả / hoàn tiền (02a §7). `status` giữ chữ sàn; `status_group` ∈ RETURN_STATUS_GROUPS."""
+    """Yêu cầu trả / hoàn tiền (02a §7). `status` = chữ sàn; `status_group` ∈ RETURN_STATUS_GROUPS / None."""
 
     return_sn: str
     order_sn: str
     status: str
-    status_group: str
+    status_group: str | None
     needs_parcel: bool
     return_tracking_number: str | None = None
     reason: str | None = None
@@ -85,6 +101,7 @@ class ShippingStatus:
     warehouse_hint: str | None
     order_status: str | None = None
     updated_at: datetime | None = None
+    order_status_group: str | None = None  # nhóm của `order_status` (adapter đặt cùng lúc)
 
 
 @dataclass(frozen=True)

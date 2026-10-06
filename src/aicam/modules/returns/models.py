@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from aicam.core.db import Base, UUIDPk, enum_check, utcnow
+from aicam.modules.platforms.base import RETURN_STATUS_GROUPS
 
 RETURN_KINDS = ("FAILED_DELIVERY", "BUYER_RETURN", "REFUND_ONLY", "UNANNOUNCED", "UNIDENTIFIED")
 RETURN_CASE_STATUSES = (
@@ -24,8 +25,6 @@ RETURN_CASE_STATUSES = (
 # Hồ sơ "mở": mỗi đơn tối đa một (DEC-248, partial unique).
 OPEN_CASE_STATUSES = ("EXPECTED", "INSPECTING", "PARTIALLY_RECEIVED", "MISSING")
 RETURN_SOURCES = ("PLATFORM", "WAREHOUSE")
-# Nhóm trạng thái yêu cầu trả chung mọi sàn (02 §5.2, BR-31) — 0006.
-RETURN_STATUS_GROUPS = ("REQUESTED", "ACCEPTED", "CANCELLED", "DONE", "CLOSED")
 
 _OPEN_SQL = "status IN ('EXPECTED', 'INSPECTING', 'PARTIALLY_RECEIVED', 'MISSING')"
 

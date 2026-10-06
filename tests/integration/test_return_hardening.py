@@ -18,6 +18,7 @@ from aicam.core.settings import Settings
 from aicam.modules.orders import service as orders
 from aicam.modules.platforms.base import PlatformOrder
 from aicam.modules.platforms.mock.adapter import MockAdapter
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 from aicam.modules.returns.models import ReturnCase
 from aicam.modules.sessions import service as sessions
 from aicam.modules.sessions.models import PackSession, SessionEvent
@@ -302,7 +303,14 @@ async def test_order_cancelled_during_session(
     sent_jobs.clear()
 
     await orders.upsert_platform_order(
-        db, PlatformOrder("2410TST00012", "CANCELLED", ("SPXTST0000012",), (ITEM,))
+        db,
+        PlatformOrder(
+            "2410TST00012",
+            "CANCELLED",
+            ("SPXTST0000012",),
+            (ITEM,),
+            status_group=shopee_order_group("CANCELLED"),
+        ),
     )
     await db.flush()
     assert package.warehouse_status == "PACKING"  # đồng bộ không đụng kiện đang đóng

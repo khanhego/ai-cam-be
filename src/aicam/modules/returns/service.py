@@ -27,7 +27,7 @@ from aicam.modules.claims import service as claims
 from aicam.modules.claims.models import Claim
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, OrderItem, Package, StatusHistory
-from aicam.modules.platforms.base import PlatformReturn
+from aicam.modules.platforms.base import SHIPPED_GROUPS, PlatformReturn
 from aicam.modules.returns.models import (
     OPEN_CASE_STATUSES,
     PLACEHOLDER_CODE_SEQ,
@@ -49,7 +49,8 @@ RECEIVED_STATUSES = ("RETURN_RECEIVED_OK", "RETURN_RECEIVED_ISSUE")
 RECEIVED_CASE_STATUSES = ("RECEIVED_OK", "RECEIVED_ISSUE")
 # Kiện mở được phiên hoàn (02 §5.3) — `NEW` chỉ khi đơn sàn đã giao / đang hoàn (EX-R3).
 OPENABLE_STATUSES = ("RETURN_EXPECTED", "RETURN_MISSING", "HANDED_OVER", "DELIVERED")
-SHIPPED_PLATFORM_STATUSES = frozenset({"SHIPPED", "TO_CONFIRM_RECEIVE", "COMPLETED", "TO_RETURN"})
+# Đơn đã rời kho trên sàn (nhóm — BR-30) → kiện `NEW` mở phiên hoàn được (EX-R3).
+SHIPPED_ORDER_GROUPS = SHIPPED_GROUPS
 # Kiện được gắn vào hồ sơ khi có tín hiệu sàn (đã rời kho hoặc đang trong luồng hoàn).
 _LINKABLE_STATUSES = (
     "NEW",
@@ -82,14 +83,15 @@ _ACTIVE_PACKAGE_STATUSES = (
 # của người mua chỉ chạy khi sàn đã chấp nhận trả (có mã vận đơn chiều về, hoặc trạng thái khác các trạng thái
 # chờ duyệt dưới đây). Kiện vẫn vào RETURN_EXPECTED (người mua có thể gửi sớm — bàn hoàn vẫn nhận), nhưng
 # J-14 không chuyển MISSING / không báo HIGH khi người mua còn đang yêu cầu / tranh chấp.
-AWAITING_ACCEPT_STATUSES = ("REQUESTED", "JUDGING", "SELLER_DISPUTE")
+# Nhóm chung (BR-31): Shopee REQUESTED / JUDGING / SELLER_DISPUTE → `REQUESTED`.
+AWAITING_ACCEPT_GROUP = "REQUESTED"
 
 
 def clock_started(case: ReturnCase) -> bool:
     return (
         case.kind != "BUYER_RETURN"
         or bool(case.return_tracking_number)
-        or (case.platform_status or "").upper() not in AWAITING_ACCEPT_STATUSES
+        or case.platform_status_group != AWAITING_ACCEPT_GROUP
         or any(k.startswith("FAILED:") for k in case.signal_keys or [])
     )
 
@@ -102,7 +104,7 @@ def clock_not_started_for_package(
     awaiting = and_(
         ReturnCase.kind == "BUYER_RETURN",
         ReturnCase.return_tracking_number.is_(None),
-        func.upper(func.coalesce(ReturnCase.platform_status, "")).in_(AWAITING_ACCEPT_STATUSES),
+        ReturnCase.platform_status_group == AWAITING_ACCEPT_GROUP,
         not_(func.array_to_string(ReturnCase.signal_keys, ",").like("%FAILED:%")),
     )
     return exists().where(
@@ -327,6 +329,7 @@ async def _apply_platform_fields(session: AsyncSession, case: ReturnCase, ret: P
 async def _set_platform_fields(session: AsyncSession, case: ReturnCase, ret: PlatformReturn) -> None:
     case.platform_return_sn = ret.return_sn
     case.platform_status = ret.status
+    case.platform_status_group = ret.status_group  # BR-31: lõi đọc nhóm (T-278 gom vào helper)
     case.needs_parcel = ret.needs_parcel
     case.return_tracking_number = ret.return_tracking_number or case.return_tracking_number
     case.reason = ret.reason
@@ -664,7 +667,7 @@ def _openable_by_status(package: Package, order: Order | None, has_open_case: bo
     if package.warehouse_status in OPENABLE_STATUSES:
         return True
     return package.warehouse_status == "NEW" and (
-        has_open_case or (order is not None and (order.platform_status or "") in SHIPPED_PLATFORM_STATUSES)
+        has_open_case or (order is not None and order.platform_status_group in SHIPPED_ORDER_GROUPS)
     )
 
 

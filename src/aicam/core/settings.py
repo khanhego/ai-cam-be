@@ -100,6 +100,25 @@ class Settings(BaseSettings):
     # G3 F-10: lượt J-13 đầu (shop chưa có cursor) lùi N ngày — shop kết nối từ Phase 1 cần lùi xa hơn 3 ngày.
     shopee_returns_initial_days: int = 15
 
+    # Phase 3 — TikTok Shop (02a §9, FR-05.20, EX-T1). Giả định theo tài liệu công khai — chưa có
+    # tài khoản đối tác (Q18, Q19). `TIKTOK_ADAPTER=mock` chỉ dev / test (validator cấm khi bật ở production).
+    tiktok_enabled: bool = False
+    tiktok_returns_enabled: bool = False
+    tiktok_adapter: str = "mock"  # mock | tiktok
+    tiktok_app_key: str = ""
+    tiktok_app_secret: str = ""
+    tiktok_service_id: str = ""
+    tiktok_api_base: str = "https://open-api.tiktokglobalshop.com"
+    tiktok_auth_base: str = "https://auth.tiktok-shops.com"
+    tiktok_authorize_url: str = "https://services.tiktokshop.com/open/authorize"
+    tiktok_redirect_url: str = ""  # rỗng = {SITE_ADDRESS}/api/v1/shops/tiktok/callback (RK-26)
+    tiktok_timeout_s: float = 10.0
+    tiktok_max_attempts: int = 5
+    tiktok_backoff_s: float = 0.5
+    tiktok_lookup_lookback_min: int = 60
+    tiktok_initial_sync_days: int = 3
+    tiktok_returns_initial_days: int = 15
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
@@ -128,6 +147,21 @@ class Settings(BaseSettings):
         if self.is_production and self.platform_adapter == "mock":
             # Adapter mock trả đơn giả cho mọi mã quét → kiện "đã xác minh" sai (G3-N13).
             raise ValueError("Production không được dùng PLATFORM_ADAPTER=mock")
+        if self.tiktok_adapter not in ("tiktok", "mock"):
+            raise ValueError("TIKTOK_ADAPTER phải là tiktok hoặc mock")
+        if self.app_env not in ("dev", "test") and self.tiktok_enabled:
+            # 02a §9: bật TikTok ở staging / production cần đủ khóa ứng dụng đối tác + adapter thật.
+            missing = [
+                name
+                for name in ("tiktok_app_key", "tiktok_app_secret", "tiktok_service_id")
+                if not getattr(self, name).strip()
+            ]
+            if missing:
+                raise ValueError(f"TIKTOK_ENABLED cần đặt: {', '.join(m.upper() for m in missing)}")
+            if self.tiktok_adapter == "mock":
+                raise ValueError(
+                    f"Môi trường {self.app_env} không được dùng TIKTOK_ADAPTER=mock khi bật TikTok"
+                )
         return self
 
 

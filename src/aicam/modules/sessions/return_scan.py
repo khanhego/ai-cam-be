@@ -242,7 +242,7 @@ async def check_openable(
         package.warehouse_status == "NEW"
         and (
             has_open_case
-            or (order is not None and (order.platform_status or "") in returns.SHIPPED_PLATFORM_STATUSES)
+            or (order is not None and order.platform_status_group in returns.SHIPPED_ORDER_GROUPS)
         )
     ):
         return None

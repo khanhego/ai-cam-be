@@ -78,7 +78,7 @@ async def test_cancelled_after_pack(db: AsyncSession) -> None:
     await orders.transition(db, package, "PACKING", source="WAREHOUSE")
     await orders.transition(db, package, "PACKED", source="WAREHOUSE")
 
-    await orders.upsert_platform_order(db, replace(data, status="CANCELLED"))
+    await orders.upsert_platform_order(db, replace(data, status="CANCELLED", status_group="CANCELLED"))
 
     assert package.warehouse_status == "CANCELLED_AFTER_PACK"
     history = (await db.scalars(select(StatusHistory).where(StatusHistory.package_id == package.id))).all()

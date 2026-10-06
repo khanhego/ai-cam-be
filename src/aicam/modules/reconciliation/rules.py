@@ -15,8 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import clock
 from aicam.modules.orders.models import Order, Package, StatusHistory
-from aicam.modules.platforms.base import CANCELLED_STATUSES
-from aicam.modules.platforms.shopee.returns_mapping import STATUS_GROUPS
+from aicam.modules.platforms.base import CANCEL_GROUPS
 from aicam.modules.returns.models import ReturnCase, ReturnCasePackage
 
 RULE_SEVERITY = {
@@ -28,10 +27,10 @@ RULE_SEVERITY = {
     "RETURN_DONE_NOT_RECEIVED": "HIGH",
     "UNVERIFIED_STALE": "LOW",
 }
-# BR-10: đơn đã giao đi trên sàn.
-SHIPPED_PLATFORM_STATUSES = ("SHIPPED", "TO_CONFIRM_RECEIVE", "COMPLETED")
-# BR-19: nhóm sàn `DONE` = đã hoàn tiền (DEC-262); `CLOSED` không cảnh báo.
-DONE_PLATFORM_STATUSES = tuple(s for s, group in STATUS_GROUPS.items() if group == "DONE")
+# BR-10: đơn đã giao đi trên sàn (nhóm — BR-30; lõi không đọc chữ trạng thái sàn, NFR-28).
+SHIPPED_ORDER_GROUPS = ("SHIPPED", "DELIVERED")
+# BR-19: nhóm yêu cầu trả `DONE` = đã hoàn tiền (DEC-262); `CLOSED` không cảnh báo.
+DONE_RETURN_GROUP = "DONE"
 UNANNOUNCED_AFTER = timedelta(hours=24)  # BR-13
 UNVERIFIED_AFTER = timedelta(hours=24)  # BR-20
 
@@ -71,7 +70,7 @@ async def shipped_not_packed(session: AsyncSession, p: Params) -> list[Hit]:
             .join(Order, Order.id == Package.order_id)
             .where(
                 Package.warehouse_status.in_(("NEW", "PACKING")),
-                Order.platform_status.in_(SHIPPED_PLATFORM_STATUSES),
+                Order.platform_status_group.in_(SHIPPED_ORDER_GROUPS),
                 created >= p.recon_start_at,
                 Package.is_placeholder.is_(False),
             )
@@ -101,7 +100,7 @@ async def cancelled_after_pack(session: AsyncSession, p: Params) -> list[Hit]:
                     Package.warehouse_status == "CANCELLED_AFTER_PACK",
                     and_(
                         Package.warehouse_status == "PACKED",
-                        Order.platform_status.in_(tuple(CANCELLED_STATUSES)),
+                        Order.platform_status_group.in_(CANCEL_GROUPS),
                     ),
                 )
             )
@@ -208,8 +207,8 @@ async def packed_not_handed_over(session: AsyncSession, p: Params) -> list[Hit]:
                 Package.created_at >= p.recon_start_at,
                 # G3 R8 / BB-11: sàn chưa lấy hàng (đã giao đi → J-06 chuyển; đã hủy → BR-11 lo).
                 or_(
-                    Order.platform_status.is_(None),
-                    Order.platform_status.notin_((*SHIPPED_PLATFORM_STATUSES, *CANCELLED_STATUSES)),
+                    Order.platform_status_group.is_(None),  # kiện chưa gắn đơn (outer join)
+                    Order.platform_status_group.notin_((*SHIPPED_ORDER_GROUPS, *CANCEL_GROUPS)),
                 ),
             )
         )
@@ -240,7 +239,7 @@ async def return_done_not_received(session: AsyncSession, p: Params) -> list[Hit
             .join(ReturnCasePackage, ReturnCasePackage.package_id == Package.id)
             .join(ReturnCase, ReturnCase.id == ReturnCasePackage.return_case_id)
             .where(
-                ReturnCase.platform_status.in_(DONE_PLATFORM_STATUSES),
+                ReturnCase.platform_status_group == DONE_RETURN_GROUP,
                 ReturnCase.status.notin_(("CANCELLED",)),
                 ReturnCase.needs_parcel.is_not(False),  # G3 C1: chỉ hoàn tiền (không cần kiện về) không xét
                 ReturnCase.kind != "REFUND_ONLY",

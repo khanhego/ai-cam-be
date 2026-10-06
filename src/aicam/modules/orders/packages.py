@@ -20,7 +20,7 @@ from aicam.modules.media import protection
 from aicam.modules.media import snapshots as snapshot_media
 from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.orders.models import Order, OrderItem, Package, Shop, StatusHistory
-from aicam.modules.orders.service import MANUAL_TRANSITIONS
+from aicam.modules.orders.service import FILE_ORDER_PLATFORM, MANUAL_TRANSITIONS
 from aicam.modules.reconciliation.models import ReconAlert
 from aicam.modules.reconciliation.service import RULE_BR
 from aicam.modules.returns import views as return_views
@@ -559,7 +559,7 @@ async def detail(
             items = (await db.scalars(select(OrderItem).where(OrderItem.order_id == order.id))).all()
             order_out = OrderDetail(
                 id=order.id,
-                platform=shop.platform if shop else "SHOPEE",
+                platform=shop.platform if shop else FILE_ORDER_PLATFORM,
                 platform_order_sn=order.platform_order_sn,
                 platform_status=order.platform_status,
                 buyer_note=order.buyer_note,

@@ -212,6 +212,7 @@ class ShopeeAdapter:
             created_at=_ts(detail.get("create_time")),
             updated_at=_ts(detail.get("update_time")),
             raw={"detail": detail, "tracking_by_package": by_package},
+            status_group=mapping.order_group(status),
         )
 
     def _remember(self, tracking: str, order_sn: str) -> None:
@@ -300,6 +301,7 @@ class ShopeeAdapter:
                         mapping.warehouse_hint(status, raw),
                         status,
                         _ts(detail.get("update_time")),
+                        mapping.order_group(status),
                     )
                 )
         return out

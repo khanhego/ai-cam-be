@@ -153,7 +153,9 @@ async def _package_brief(session: AsyncSession, package: Package) -> PackageBrie
         order = await orders.get_order(session, package.order_id)
         if order is not None:
             order_brief = OrderBrief(
-                platform="SHOPEE", platform_order_sn=order.platform_order_sn, buyer_note=order.buyer_note
+                platform=await orders.platform_of(session, order),
+                platform_order_sn=order.platform_order_sn,
+                buyer_note=order.buyer_note,
             )
             items = [
                 ItemOut(

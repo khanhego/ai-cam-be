@@ -73,19 +73,20 @@ def _detail(sn: str, status: str = "ACCEPTED", **kw: Any) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("status", "group"),
     [
-        ("REQUESTED", "OPEN"),
-        ("PROCESSING", "OPEN"),
-        ("ACCEPTED", "OPEN"),
-        ("JUDGING", "OPEN"),
-        ("SELLER_DISPUTE", "OPEN"),
+        ("REQUESTED", "REQUESTED"),
+        ("JUDGING", "REQUESTED"),
+        ("SELLER_DISPUTE", "REQUESTED"),
+        ("PROCESSING", "ACCEPTED"),
+        ("ACCEPTED", "ACCEPTED"),
         ("CANCELLED", "CANCELLED"),
         ("REFUND_PAID", "DONE"),
         ("CLOSED", "CLOSED"),
-        ("SOMETHING_NEW", "OPEN"),
+        ("SOMETHING_NEW", None),
     ],
 )
-def test_status_group(status: str, group: str) -> None:
-    """DEC-262: DONE chỉ REFUND_PAID; CLOSED tách riêng; trạng thái lạ → OPEN (không tự hủy hồ sơ)."""
+def test_status_group(status: str, group: str | None) -> None:
+    """02 §5.3 (BR-31, DEC-262): DONE chỉ REFUND_PAID; CLOSED tách riêng; trạng thái lạ → None (không tự hủy
+    hồ sơ, đồng hồ BR-12 chạy như Phase 2)."""
     assert returns_mapping.status_group(status) == group
 
 
@@ -99,7 +100,7 @@ def test_reason_normalized_and_labelled() -> None:
 def test_to_platform_return_fields() -> None:
     ret = returns_mapping.to_platform_return(_detail("RT1", needs_logistics=False))
 
-    assert (ret.return_sn, ret.order_sn, ret.status_group) == ("RT1", "ORDRT1", "OPEN")
+    assert (ret.return_sn, ret.order_sn, ret.status_group) == ("RT1", "ORDRT1", "ACCEPTED")
     assert ret.needs_parcel is False
     assert ret.return_tracking_number == "SPXRT0001"
     assert ret.seller_due_at == NOW + timedelta(days=3)
@@ -194,7 +195,7 @@ async def test_mock_has_four_fixture_kinds() -> None:
 
     assert set(out) == {"2410RTTST041", "2410RTTST044", "2410RTTST045"}
     buyer = out["2410RTTST041"]
-    assert (buyer.order_sn, buyer.status_group, buyer.needs_parcel) == ("2410TST00041", "OPEN", True)
+    assert (buyer.order_sn, buyer.status_group, buyer.needs_parcel) == ("2410TST00041", "ACCEPTED", True)
     assert buyer.return_tracking_number == "SPXRTTST000041"
     assert buyer.reason == "ITEM_DAMAGED"
     assert buyer.seller_due_at == NOW + timedelta(hours=72)
@@ -224,7 +225,7 @@ async def test_mock_return_controls() -> None:
 
     ret = await mock.get_return(None, "2410RTTST045")
     assert ret is not None
-    assert ret.status_group == "OPEN"
+    assert ret.status_group == "ACCEPTED"
     # Chỉ yêu cầu đổi sau mốc `since` (cursor J-13) được trả lại.
     assert [r.return_sn async for r in mock.list_returns(None, NOW + timedelta(minutes=1))] == [
         "2410RTTST045"

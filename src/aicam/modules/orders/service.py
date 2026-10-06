@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
 from aicam.modules.media import jobs
-from aicam.modules.orders.models import Order, OrderItem, Package, StatusHistory
-from aicam.modules.platforms.base import CANCELLED_STATUSES, PlatformItem, PlatformOrder
+from aicam.modules.orders.models import PLATFORMS, Order, OrderItem, Package, Shop, StatusHistory
+from aicam.modules.platforms.base import CANCEL_GROUPS, PlatformItem, PlatformOrder
 
 _RETURN_OPENABLE = ("RETURN_EXPECTED", "RETURN_MISSING", "HANDED_OVER", "DELIVERED", "NEW")
 _RETURN_RECEIVED = ("RETURN_RECEIVED_OK", "RETURN_RECEIVED_ISSUE")
@@ -137,6 +137,17 @@ async def get_order(session: AsyncSession, order_id: uuid.UUID) -> Order | None:
     return await session.get(Order, order_id)
 
 
+# Sàn hiển thị cho đơn chưa gắn shop (đơn nhập file) — giữ hành vi Phase 2 (một sàn); API-10 / API-31 đổi sang
+# `null` + chip "Chưa rõ sàn" ở T-212.
+FILE_ORDER_PLATFORM = PLATFORMS[0]
+
+
+async def platform_of(session: AsyncSession, order: Order) -> str:
+    """Sàn của đơn theo shop (NFR-28: không gán cứng một sàn trong lõi)."""
+    shop = await session.get(Shop, order.shop_id) if order.shop_id else None
+    return shop.platform if shop else FILE_ORDER_PLATFORM
+
+
 async def items_of(session: AsyncSession, order_id: uuid.UUID) -> Sequence[OrderItem]:
     return (
         await session.scalars(select(OrderItem).where(OrderItem.order_id == order_id).order_by(OrderItem.id))
@@ -253,6 +264,7 @@ async def upsert_platform_order(
         order.source = "API"
     order.shop_id = shop_id or order.shop_id
     order.platform_status = data.status
+    order.platform_status_group = data.status_group  # BR-30: lõi chỉ đọc nhóm (T-278 gom vào helper)
     order.buyer_note = data.buyer_note
     order.created_at_platform = data.created_at
     order.raw_payload = data.raw
@@ -391,4 +403,4 @@ async def is_cancelled(session: AsyncSession, package: Package) -> bool:
     if package.order_id is None:
         return False
     order = await session.get(Order, package.order_id)
-    return order is not None and order.platform_status in CANCELLED_STATUSES
+    return order is not None and order.platform_status_group in CANCEL_GROUPS

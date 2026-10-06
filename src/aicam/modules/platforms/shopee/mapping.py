@@ -8,6 +8,25 @@ LOGISTICS_PICKUP_RETRY, LOGISTICS_PICKUP_FAILED, LOGISTICS_DELIVERY_DONE, LOGIST
 LOGISTICS_REQUEST_CANCELED, LOGISTICS_COD_REJECTED, LOGISTICS_INVALID, LOGISTICS_LOST.
 """
 
+# Trạng thái đơn → nhóm chung (02 §5.3, ADR-011). Chữ lạ → UNKNOWN (lõi không đổi trạng thái kho, log).
+ORDER_GROUPS: dict[str, str] = {
+    "UNPAID": "UNPAID",
+    "READY_TO_SHIP": "AWAITING_SHIPMENT",
+    "PROCESSED": "AWAITING_SHIPMENT",
+    "RETRY_SHIP": "AWAITING_SHIPMENT",
+    "SHIPPED": "SHIPPED",
+    "TO_CONFIRM_RECEIVE": "DELIVERED",
+    "COMPLETED": "DELIVERED",
+    "IN_CANCEL": "CANCEL_REQUESTED",
+    "CANCELLED": "CANCELLED",
+    "TO_RETURN": "RETURNING",
+}
+
+
+def order_group(status: str | None) -> str:
+    return ORDER_GROUPS.get((status or "").upper(), "UNKNOWN")
+
+
 # Đơn ở các trạng thái này chưa / không còn mã vận đơn → không gọi get_tracking_number (tiết kiệm quota).
 NO_TRACKING_STATUSES = frozenset({"UNPAID", "CANCELLED", "IN_CANCEL", ""})
 

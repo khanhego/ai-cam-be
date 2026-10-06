@@ -25,7 +25,7 @@ from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package, Shop
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms.base import (
-    CANCELLED_STATUSES,
+    CANCEL_GROUPS,
     PlatformAdapter,
     PlatformAuthError,
     PlatformError,
@@ -201,7 +201,7 @@ _TO_RETURN_FROM = ("NEW", "PACKED", "HANDED_OVER")
 async def _order_return_signal(session: AsyncSession, order: Order, data: PlatformOrder) -> bool:
     """J-04: đơn `TO_RETURN` → kiện `NEW` / `PACKED` / `HANDED_OVER`; đơn hủy → kiện `HANDED_OVER` (hủy sau
     khi ĐVVC lấy hàng, boom COD — DEC-258). Người gọi đã khóa `order:{sn}`."""
-    if data.status == "TO_RETURN":
+    if data.status_group == "RETURNING":
         wanted: tuple[str, ...] = _TO_RETURN_FROM
     elif data.is_cancelled:
         wanted = ("HANDED_OVER",)
@@ -439,7 +439,8 @@ async def _apply_shipping(session: AsyncSession, package_id: Any, order_id: Any,
     package.platform_logistics_status = st.raw_status or package.platform_logistics_status
     if st.order_status:
         order.platform_status = st.order_status
-        if st.order_status in CANCELLED_STATUSES:
+        order.platform_status_group = st.order_status_group or "UNKNOWN"
+        if order.platform_status_group in CANCEL_GROUPS:
             changed = await orders.apply_platform_cancel(session, package)
             if package.warehouse_status == "HANDED_OVER":
                 changed = await _failed_delivery(session, order, [package], st.updated_at) or changed
