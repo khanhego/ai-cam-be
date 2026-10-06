@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from httpx import AsyncClient, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import clock
@@ -174,21 +175,42 @@ async def test_supervisor_cancel_return_needs_note_and_summary(desk: Desk, db: A
         res = await desk.api.post(
             f"/api/v1/approval-requests/{approval_id}/decision",
             headers=sup,
-            json={"action": "CANCEL_SESSION", "note": note},
+            json={"action": "CANCEL_SESSION", "note": note, "reason_code": "WRONG_SCAN"},
         )
         assert res.status_code == 422, res.text
         assert res.json()["error"]["details"]["fields"] == {"note": "Nhập ghi chú (5–500 ký tự)."}
+    # (9) T-281 (02 API-21 v0.3): thiếu / sai `reason_code` → 422 `fields.reason_code` (cả hai lỗi cùng lúc).
+    for code in (None, "SUPERVISOR", "FOO"):
+        res = await desk.api.post(
+            f"/api/v1/approval-requests/{approval_id}/decision",
+            headers=sup,
+            json={"action": "CANCEL_SESSION", "note": "x", "reason_code": code},
+        )
+        assert res.status_code == 422, res.text
+        assert res.json()["error"]["details"]["fields"] == {
+            "reason_code": "Chọn lý do hủy.",
+            "note": "Nhập ghi chú (5–500 ký tự).",
+        }
+    pack = await db.get(PackSession, session["id"], populate_existing=True)
+    assert pack is not None
+    assert pack.status == "WAITING_APPROVAL"  # 422 không đổi phiên
 
     res = await desk.api.post(
         f"/api/v1/approval-requests/{approval_id}/decision",
         headers=sup,
-        json={"action": "CANCEL_SESSION", "note": "  Quét nhầm kiện bên cạnh  "},
+        json={"action": "CANCEL_SESSION", "note": "  Quét nhầm kiện bên cạnh  ", "reason_code": "WRONG_SCAN"},
     )
     assert res.status_code == 200, res.text
     pack = await db.get(PackSession, session["id"], populate_existing=True)
     assert pack is not None
-    assert (pack.status, pack.cancel_reason, pack.note) == (
+    assert (pack.status, pack.cancel_reason, pack.cancel_cause, pack.note) == (
         "CANCELLED",
         "SUPERVISOR",
+        "WRONG_SCAN",
         "Quét nhầm kiện bên cạnh",
     )
+    from aicam.core.audit import AuditLog
+
+    audit = await db.scalar(select(AuditLog).where(AuditLog.action == "APPROVAL_DECISION"))
+    assert audit is not None
+    assert audit.data["reason_code"] == "WRONG_SCAN"

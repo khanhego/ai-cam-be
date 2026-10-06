@@ -79,6 +79,9 @@ class ApprovalItem(BaseModel):
 class DecisionIn(BaseModel):
     action: Action
     note: str | None = Field(default=None, max_length=500)
+    # Phase 3 (02 §6.2 API-21 v0.3 — DEC-514, 521): bắt buộc khi CANCEL_SESSION phiên RETURN (service kiểm,
+    # trả 422 `fields.reason_code` tiếng Việt); phiên PACK bỏ qua.
+    reason_code: str | None = Field(default=None, max_length=32)
 
 
 class DecisionResult(BaseModel):

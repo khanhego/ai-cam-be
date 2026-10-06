@@ -230,6 +230,15 @@ class ClaimDetail(BaseModel):
     allowed_transitions: list[ClaimStatus]
 
 
+class ReviewIn(BaseModel):
+    """API-189 (02 §6.2): `action` / `reason_code` / `note` kiểm ở service (422 `fields` tiếng Việt)."""
+
+    version: int = Field(ge=1)
+    action: str = Field(max_length=32)
+    reason_code: str | None = Field(default=None, max_length=32)
+    note: str | None = Field(default=None, max_length=1000)
+
+
 class ClaimCreateIn(BaseModel):
     """API-131."""
 

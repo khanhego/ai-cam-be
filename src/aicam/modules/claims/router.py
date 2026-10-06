@@ -11,7 +11,7 @@ from aicam.core.db import commit, get_session
 from aicam.core.deps import Principal, require_roles
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings, get_settings
-from aicam.modules.claims import pack, service, views
+from aicam.modules.claims import pack, review, service, views
 from aicam.modules.claims.models import Claim
 from aicam.modules.claims.schemas import (
     ClaimCreateIn,
@@ -26,6 +26,7 @@ from aicam.modules.claims.schemas import (
     EvidencePackOut,
     NoteIn,
     NoteOut,
+    ReviewIn,
     UserBrief,
 )
 from aicam.modules.orders.refs import PlatformCode
@@ -114,6 +115,27 @@ async def set_evidence(
     claim = await _locked(db, claim_id, body.version, p, settings)
     await service.set_evidence(db, claim, body, p)
     await db.flush()
+    out = await views.claim_detail(db, claim_id, p.user_id, settings)
+    await commit(db)
+    return out
+
+
+@router.post("/claims/{claim_id}/return-sessions/{session_id}/review", response_model=ClaimDetail)
+async def review_return_session(
+    claim_id: uuid.UUID, session_id: uuid.UUID, body: ReviewIn, p: Staff, db: DbSession, settings: AppSettings
+) -> ClaimDetail:
+    """API-189: đánh dấu / bỏ đánh dấu quét nhầm, xác nhận "Là phiên hoàn thật" (BR-39, EX-R21, D17)."""
+
+    async def _conflict(cid: uuid.UUID) -> AppError:
+        current = await views.claim_detail(db, cid, p.user_id, settings)
+        return AppError(
+            "VERSION_CONFLICT",
+            "Hồ sơ vừa được người khác cập nhật. Tải lại để xem bản mới.",
+            409,
+            {"current": current.model_dump(mode="json")},
+        )
+
+    await review.review_return_session(db, claim_id, session_id, body, p, version_conflict=_conflict)
     out = await views.claim_detail(db, claim_id, p.user_id, settings)
     await commit(db)
     return out

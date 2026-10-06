@@ -2013,6 +2013,18 @@
               }
             ],
             "title": "Note"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
           }
         },
         "required": [
@@ -6899,6 +6911,51 @@
         "title": "ReturnSummary",
         "type": "object"
       },
+      "ReviewIn": {
+        "description": "API-189 (02 §6.2): `action` / `reason_code` / `note` kiểm ở service (422 `fields` tiếng Việt).",
+        "properties": {
+          "action": {
+            "maxLength": 32,
+            "title": "Action",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "action"
+        ],
+        "title": "ReviewIn",
+        "type": "object"
+      },
       "ReviewSession": {
         "description": "API-132 `review_sessions[]` (v0.3): phiên \"Cần soát\" của kiện / hồ sơ hàng hoàn.",
         "properties": {
@@ -10244,6 +10301,70 @@
           }
         },
         "summary": "Add Note",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
+    "/api/v1/claims/{claim_id}/return-sessions/{session_id}/review": {
+      "post": {
+        "description": "API-189: đánh dấu / bỏ đánh dấu quét nhầm, xác nhận \"Là phiên hoàn thật\" (BR-39, EX-R21, D17).",
+        "operationId": "review_return_session_api_v1_claims__claim_id__return_sessions__session_id__review_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Claim Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Review Return Session",
         "tags": [
           "claims"
         ]

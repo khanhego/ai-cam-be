@@ -577,7 +577,7 @@ CONTRACT: tuple[Api, ...] = (
             "approval_request.decided_by.display_name",
             "approval_request.decided_at",
         ),
-        request_fields=("action", "note"),
+        request_fields=("action", "note", "reason_code"),  # reason_code: Phase 3 v0.3 (T-281)
     ),
     Api(
         "API-30",
@@ -956,6 +956,15 @@ CONTRACT: tuple[Api, ...] = (
         CLAIM_DETAIL,
         CLAIM_DETAIL_ENUMS,
         request_fields=("version", "session_ids", "snapshot_ids", "note"),
+    ),
+    Api(
+        "API-189",  # Phase 3 v0.3 (T-281): soát phiên mở hoàn — 200 = API-132
+        "POST",
+        "/claims/{claim_id}/return-sessions/{session_id}/review",
+        200,
+        CLAIM_DETAIL,
+        CLAIM_DETAIL_ENUMS,
+        request_fields=("version", "action", "reason_code", "note"),
     ),
     Api(
         "API-135",
