@@ -3,6 +3,7 @@
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import ColumnElement, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,10 +28,13 @@ from aicam.modules.claims.schemas import (
     EvidenceOut,
     EvidenceSession,
     EvidenceSnapshot,
+    ExcludedReturnSession,
     NoteOut,
     OtherSession,
     PriorReturnSession,
     RemovedInfo,
+    ReviewSession,
+    SessionMark,
     StatusCounts,
     UserBrief,
 )
@@ -190,6 +194,33 @@ async def list_claims(
     )
 
 
+def _mark(
+    at: datetime | None,
+    by: uuid.UUID | None,
+    note: str | None,
+    users: dict[uuid.UUID, UserBrief],
+    code: str | None = None,
+) -> SessionMark | None:
+    if at is None:
+        return None
+    return SessionMark(at=at, by=users.get(by) if by else None, code=code, note=note)
+
+
+def exclusion_fields(s: PackSession, users: dict[uuid.UUID, UserBrief]) -> dict[str, Any]:
+    """`session.{cancel_reason, cancel_cause, wrong_scan, review_needed, evidence_exclusion,
+    return_confirmed}` (02 §5.1 SESSION — BR-39 v0.3–v0.5)."""
+    return {
+        "cancel_reason": s.cancel_reason,
+        "cancel_cause": s.cancel_cause,
+        "wrong_scan": _mark(s.wrong_scan_at, s.wrong_scan_by, s.wrong_scan_note, users, s.wrong_scan_code),
+        "review_needed": evidence_rules.review_needed(s),
+        "evidence_exclusion": evidence_rules.evidence_exclusion(s),
+        "return_confirmed": _mark(
+            s.review_confirmed_at, s.review_confirmed_by, s.review_confirmed_note, users
+        ),
+    }
+
+
 def _missing(evidence: list[EvidenceOut]) -> list[str]:
     """`NO_PACK_CLIP` (không có phiên đóng gói), `PACK_CLIP_DELETED`, `RETURN_CLIP_PENDING` (02 API-132)."""
     sessions = [e.session for e in evidence if e.session is not None]
@@ -257,6 +288,19 @@ async def claim_detail(
             s.id: s for s in (await db.scalars(select(Snapshot).where(Snapshot.id.in_(snapshot_ids)))).all()
         }
 
+    excluded_sessions = await evidence_rules.excluded_return_sessions(
+        db, claim.package_id, claim.return_case_id
+    )
+    review_list = await evidence_rules.review_sessions(db, claim.package_id, claim.return_case_id)
+    marks_by = await _users(
+        db,
+        {
+            uid
+            for x in [*(s for s, _ in sessions.values()), *excluded_sessions]
+            for uid in (x.wrong_scan_by, x.review_confirmed_by)
+            if uid is not None
+        },
+    )
     evidence: list[EvidenceOut] = []
     removed_evidence: list[EvidenceOut] = []
     removed_rows: dict[uuid.UUID, ClaimEvidence] = {}
@@ -278,6 +322,7 @@ async def claim_detail(
                     ended_at=s.ended_at,
                     flags=list(s.flags),
                     clips=clips[s.id],
+                    **exclusion_fields(s, marks_by),
                 ),
             )
         elif e.snapshot_id and e.snapshot_id in snaps:
@@ -424,6 +469,28 @@ async def claim_detail(
                 session_id=s.id, status=s.status, started_at=s.started_at, in_evidence=s.id in active_sessions
             )
             for s in priors
+        ],
+        excluded_return_sessions=[
+            ExcludedReturnSession(
+                session_id=s.id,
+                status=s.status,
+                cancel_reason=s.cancel_reason,
+                cancel_cause=s.cancel_cause,
+                evidence_exclusion=evidence_rules.evidence_exclusion(s),
+                wrong_scan=_mark(
+                    s.wrong_scan_at, s.wrong_scan_by, s.wrong_scan_note, marks_by, s.wrong_scan_code
+                ),
+                started_at=s.started_at,
+                has_clip=True,
+                in_evidence=s.id in active_sessions,
+            )
+            for s in excluded_sessions
+        ],
+        review_sessions=[
+            ReviewSession(
+                session_id=s.id, status=s.status, started_at=s.started_at, in_evidence=s.id in active_sessions
+            )
+            for s in review_list
         ],
         missing=_missing(evidence),
         notes=[

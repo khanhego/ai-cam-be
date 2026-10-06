@@ -10,6 +10,7 @@ KN-000124/
 │                                  anh-luc-dong-goi.jpg, info.json
 ├── 02-mo-hoan-<yyyymmdd-hhmm>/    phiên chính (BR-39): như trên + anh-01.jpg … + ket-luan.json
 ├── 03-mo-hoan-phien-truoc-<…>/    phiên mở hoàn trước đã hủy / bỏ dở (BR-39) — như mo-hoan
+├── 03-mo-hoan-can-soat-<…>/       phiên quản lý hủy chưa rõ lý do ("Cần soát" — DEC-516) — như mo-hoan
 └── 03-phien-khac-<…>/             chỉ clip gốc + info.json (không encode)
 ```
 
@@ -79,6 +80,7 @@ Thư mục:
   (kết luận, từng dòng hàng, người kiểm, lịch sử sửa kết luận). Phiên mở hoàn chính (video mở hộp sớm
   nhất) đứng đầu.
 - …-mo-hoan-phien-truoc-…: phiên mở hàng hoàn trước đó đã bị hủy / bỏ dở (vd. mất điện) — như trên.
+- …-mo-hoan-can-soat-…: phiên mở hàng hoàn do quản lý hủy, chưa rõ lý do — cần xem lại trước khi dùng.
 - 03-phien-khac-…: phiên khác được thêm làm bằng chứng — chỉ clip gốc + info.json.
 
 Kiểm tính toàn vẹn: clip gốc không bị sửa nếu mã SHA-256 của tệp trùng với mã ghi trong ho-so.json và
@@ -355,10 +357,14 @@ async def _session_rows(
     rows: list[tuple[PackSession, bool, str]] = []
     for s in sessions:
         main = s.id in auto or s.type == "RETURN" or (s.type == "PACK" and s.status == "COMPLETED")
+        if evidence_rules.excluded(s):
+            main = False  # BR-39 v0.4: phiên bị loại thêm tay → chỉ clip gốc, không bao giờ thư mục chính
         if not main:
             kind = "phien-khac"
         elif s.type == "PACK":
             kind = "dong-goi"
+        elif evidence_rules.review_needed(s):
+            kind = "mo-hoan-can-soat"  # "Cần soát" (DEC-516): như mo-hoan, không là phiên chính
         elif s.id != primary and s.id in with_clip and evidence_rules.is_prior_return(s, latest_done):
             kind = "mo-hoan-phien-truoc"
         else:

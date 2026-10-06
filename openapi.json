@@ -1069,6 +1069,14 @@
             "title": "Evidence",
             "type": "array"
           },
+          "excluded_return_sessions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ExcludedReturnSession"
+            },
+            "title": "Excluded Return Sessions",
+            "type": "array"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -1170,6 +1178,14 @@
                 "type": "null"
               }
             ]
+          },
+          "review_sessions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ReviewSession"
+            },
+            "title": "Review Sessions",
+            "type": "array"
           },
           "source": {
             "enum": [
@@ -2392,6 +2408,33 @@
       },
       "EvidenceSession": {
         "properties": {
+          "cancel_cause": {
+            "anyOf": [
+              {
+                "enum": [
+                  "WRONG_SCAN",
+                  "NOT_A_RETURN",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Cause"
+          },
+          "cancel_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Reason"
+          },
           "clips": {
             "items": {
               "$ref": "#/components/schemas/EvidenceClip"
@@ -2410,6 +2453,22 @@
               }
             ],
             "title": "Ended At"
+          },
+          "evidence_exclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "STATION_CANCEL",
+                  "SUPERVISOR_CANCEL",
+                  "MARKED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Exclusion"
           },
           "flags": {
             "items": {
@@ -2434,6 +2493,21 @@
             ],
             "title": "Operator Name"
           },
+          "return_confirmed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionMark"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review_needed": {
+            "default": false,
+            "title": "Review Needed",
+            "type": "boolean"
+          },
           "started_at": {
             "format": "date-time",
             "title": "Started At",
@@ -2454,6 +2528,16 @@
             ],
             "title": "Type",
             "type": "string"
+          },
+          "wrong_scan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionMark"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -2518,6 +2602,92 @@
           "status"
         ],
         "title": "EvidenceSnapshot",
+        "type": "object"
+      },
+      "ExcludedReturnSession": {
+        "description": "API-132 `excluded_return_sessions[]` (BR-39 v0.4): phiên RETURN bị loại khỏi bằng chứng tự chọn.",
+        "properties": {
+          "cancel_cause": {
+            "anyOf": [
+              {
+                "enum": [
+                  "WRONG_SCAN",
+                  "NOT_A_RETURN",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Cause"
+          },
+          "cancel_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancel Reason"
+          },
+          "evidence_exclusion": {
+            "enum": [
+              "STATION_CANCEL",
+              "SUPERVISOR_CANCEL",
+              "MARKED"
+            ],
+            "title": "Evidence Exclusion",
+            "type": "string"
+          },
+          "has_clip": {
+            "title": "Has Clip",
+            "type": "boolean"
+          },
+          "in_evidence": {
+            "title": "In Evidence",
+            "type": "boolean"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "wrong_scan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionMark"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "session_id",
+          "status",
+          "cancel_reason",
+          "cancel_cause",
+          "evidence_exclusion",
+          "wrong_scan",
+          "started_at",
+          "has_clip",
+          "in_evidence"
+        ],
+        "title": "ExcludedReturnSession",
         "type": "object"
       },
       "ExportCreated": {
@@ -6729,6 +6899,37 @@
         "title": "ReturnSummary",
         "type": "object"
       },
+      "ReviewSession": {
+        "description": "API-132 `review_sessions[]` (v0.3): phiên \"Cần soát\" của kiện / hồ sơ hàng hoàn.",
+        "properties": {
+          "in_evidence": {
+            "title": "In Evidence",
+            "type": "boolean"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "status",
+          "started_at",
+          "in_evidence"
+        ],
+        "title": "ReviewSession",
+        "type": "object"
+      },
       "Roi": {
         "properties": {
           "h": {
@@ -7174,6 +7375,59 @@
           "corrected"
         ],
         "title": "SessionInspection",
+        "type": "object"
+      },
+      "SessionMark": {
+        "description": "`session.wrong_scan` / `session.return_confirmed` (02 §5.1 SESSION v0.3 / v0.4 — API-189).",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "code": {
+            "anyOf": [
+              {
+                "enum": [
+                  "WRONG_SCAN",
+                  "NOT_A_RETURN"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "at",
+          "by",
+          "note"
+        ],
+        "title": "SessionMark",
         "type": "object"
       },
       "SessionOut": {

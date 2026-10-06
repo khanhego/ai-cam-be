@@ -6,22 +6,48 @@
 - Phiên chính (`primary`): phiên RETURN có clip (không `DELETED`) bắt đầu sớm nhất trong bằng chứng;
   không có → phiên PACK hiệu lực (nếu có trong bằng chứng).
 
-Luật loại phiên quét nhầm / "Cần soát" (BR-39 v0.3–v0.5: `EXCLUDED_CANCEL_REASONS`, `excluded_return_sql`,
-`review_needed`) thêm ở T-279 / T-281 qua tham số `excluded` của các hàm dưới.
+Luật loại phiên quét nhầm / "Cần soát" (BR-39 v0.3–v0.5 — T-279): vị từ một nguồn ở `sessions.queries`
+(`excluded_return_sql` / `excluded`, `review_needed`). Phiên bị loại: không tự vào bằng chứng
+(`interrupted_return_sessions`, `auto_evidence`), không là "phiên trước", **không bao giờ** là phiên chính
+kể cả khi thêm tay; phiên cần soát: vào bằng chứng nhưng không là phiên chính. `primary_session` tự áp hai
+luật này cho mọi nơi gọi (API-132, J-16, J-24) — người gọi không thể quên.
 """
 
 import uuid
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timedelta
 
-from sqlalchemy import ColumnElement, func, or_, select
+from sqlalchemy import ColumnElement, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.returns.models import ReturnCasePackage
 from aicam.modules.sessions.models import PackSession
+from aicam.modules.sessions.queries import (
+    EXCLUDED_CANCEL_REASONS,
+    excluded,
+    excluded_return_sql,
+    review_needed,
+    review_needed_sql,
+)
 
 PRIOR_STATUSES = ("CANCELLED", "ABANDONED")
+__all__ = ["EXCLUDED_CANCEL_REASONS", "evidence_exclusion", "excluded", "review_needed"]
+
+
+def evidence_exclusion(s: PackSession) -> str | None:
+    """02 §5.1 SESSION `evidence_exclusion`: `MARKED` (đánh dấu quét nhầm — API-189), `SUPERVISOR_CANCEL`
+    (lý do Supervisor chọn ở API-21), `STATION_CANCEL` (station tự hủy ≤ 60 giây); null = không bị loại."""
+    if not excluded(s):
+        return None
+    if s.wrong_scan_at is not None:
+        return "MARKED"
+    return "SUPERVISOR_CANCEL" if s.cancel_cause in EXCLUDED_CANCEL_REASONS else "STATION_CANCEL"
+
+
+def never_primary(sessions: Iterable[PackSession]) -> set[uuid.UUID]:
+    """Phiên không bao giờ là phiên chính: bị loại (kể cả thêm tay) hoặc cần soát (BR-39 v0.4)."""
+    return {s.id for s in sessions if excluded(s) or review_needed(s)}
 
 
 async def scope_condition(
@@ -74,6 +100,7 @@ def is_prior_return(s: PackSession, latest_completed_start: datetime | None) -> 
     return (
         s.type == "RETURN"
         and s.status in PRIOR_STATUSES
+        and not excluded(s)  # BR-39 v0.4: phiên bị loại không phải "phiên trước"
         and (latest_completed_start is None or s.started_at < latest_completed_start)
     )
 
@@ -82,7 +109,9 @@ async def interrupted_return_sessions(
     db: AsyncSession, package_id: uuid.UUID, case_id: uuid.UUID | None
 ) -> list[PackSession]:
     """BR-39: **mọi** phiên mở hoàn `CANCELLED` / `ABANDONED` có clip (≠ `DELETED`) của kiện / hồ sơ hàng
-    hoàn, sớm trước — bằng chứng tự chọn khi tạo hồ sơ (`auto_evidence(prior=True)`, 0006 bước 4b)."""
+    hoàn, sớm trước — bằng chứng tự chọn khi tạo hồ sơ (`auto_evidence(prior=True)`, 0006 bước 4b) — **trừ**
+    phiên bị loại (lý do hiệu lực quét nhầm / không phải hàng hoàn chưa xác nhận, hoặc đã đánh dấu quét nhầm);
+    phiên cần soát vẫn vào."""
     candidates = (
         await db.scalars(
             select(PackSession)
@@ -90,6 +119,7 @@ async def interrupted_return_sessions(
                 await scope_condition(db, package_id, case_id),
                 PackSession.type == "RETURN",
                 PackSession.status.in_(PRIOR_STATUSES),
+                not_(excluded_return_sql()),
             )
             .order_by(PackSession.started_at, PackSession.id)
         )
@@ -111,15 +141,47 @@ async def prior_return_sessions(
     ]
 
 
+async def excluded_return_sessions(
+    db: AsyncSession, package_id: uuid.UUID, case_id: uuid.UUID | None
+) -> list[PackSession]:
+    """API-132 `excluded_return_sessions[]`: phiên RETURN của kiện / hồ sơ hàng hoàn bị BR-39 loại (gồm phiên
+    đã đánh dấu quét nhầm), có ≥ 1 clip không `DELETED`, sớm trước."""
+    rows = (
+        await db.scalars(
+            select(PackSession)
+            .where(await scope_condition(db, package_id, case_id), excluded_return_sql())
+            .order_by(PackSession.started_at, PackSession.id)
+        )
+    ).all()
+    with_clip = await live_clip_sessions(db, [s.id for s in rows])
+    return [s for s in rows if s.id in with_clip]
+
+
+async def review_sessions(
+    db: AsyncSession, package_id: uuid.UUID, case_id: uuid.UUID | None
+) -> list[PackSession]:
+    """API-132 `review_sessions[]` (v0.3): phiên RETURN "Cần soát" của kiện / hồ sơ hàng hoàn."""
+    return list(
+        (
+            await db.scalars(
+                select(PackSession)
+                .where(await scope_condition(db, package_id, case_id), review_needed_sql())
+                .order_by(PackSession.started_at, PackSession.id)
+            )
+        ).all()
+    )
+
+
 def primary_session(
     sessions: Sequence[PackSession],
     with_clip: set[uuid.UUID],
     effective_pack_id: uuid.UUID | None,
     excluded: set[uuid.UUID] | None = None,
 ) -> uuid.UUID | None:
-    """DEC-448: phiên RETURN có clip sớm nhất (theo `started_at`) trong bằng chứng, trừ phiên bị loại;
-    không có → phiên PACK hiệu lực nếu nằm trong bằng chứng."""
-    skip = excluded or set()
+    """DEC-448: phiên RETURN có clip sớm nhất (theo `started_at`) trong bằng chứng, **trừ** phiên bị loại và
+    phiên cần soát (BR-39 v0.4 — luôn áp, kể cả khi người gọi không truyền `excluded`); không có → phiên PACK
+    hiệu lực nếu nằm trong bằng chứng."""
+    skip = (excluded or set()) | never_primary(sessions)
     returns = sorted(
         (s for s in sessions if s.type == "RETURN" and s.id in with_clip and s.id not in skip),
         key=lambda s: (s.started_at, s.id),

@@ -17,7 +17,7 @@ from aicam.modules.claims import pack as claim_pack
 from aicam.modules.claims import service as claims
 from aicam.modules.claims import views as claim_views
 from aicam.modules.claims.models import Claim, ClaimEvidence
-from aicam.modules.claims.schemas import ClaimCreateIn
+from aicam.modules.claims.schemas import ClaimCreateIn, EvidenceIn
 from aicam.modules.media.models import Clip
 from aicam.modules.orders.models import Package
 from aicam.modules.returns.models import ReturnCase
@@ -176,3 +176,161 @@ async def test_evidence_pack_orders_primary_and_prior_folders(db: AsyncSession) 
         (a2.id, True, "mo-hoan-phien-truoc"),
         (b.id, True, "mo-hoan"),
     ]
+
+
+# ---------------------------------------------------------------- BR-39 v0.3 (T-279): phiên quét nhầm bị loại
+
+
+async def _snaps(db: AsyncSession, claim_id: uuid.UUID) -> list[uuid.UUID]:
+    rows = await db.scalars(select(ClaimEvidence.snapshot_id).where(ClaimEvidence.claim_id == claim_id))
+    return [sid for sid in rows.all() if sid]
+
+
+async def _claim_of(db: AsyncSession, done: PackSession, case: ReturnCase) -> Claim:
+    created = await claims.create_from_return(db, done, case)
+    assert created is not None
+    claim = await db.get(Claim, created.claim.id)
+    assert claim is not None
+    return claim
+
+
+@pytest.mark.parametrize("reason", ["WRONG_SCAN", "NOT_A_RETURN"])
+async def test_wrong_scan_session_excluded_never_primary(
+    db: AsyncSession, test_settings: Settings, reason: str
+) -> None:
+    """(2), (4) — G2-1: C hủy `WRONG_SCAN` / `NOT_A_RETURN` sau 25 giây có clip, D `COMPLETED` → KN không
+    có C,
+    D là phiên chính, `excluded_return_sessions = [C]`; zip J-16 không có C."""
+    station, package, case, pack = await _setup(db)
+    c = await _return(db, station, package, case, T0, "CANCELLED", cancel_reason=reason)
+    c.ended_at = c.started_at + timedelta(seconds=25)
+    d = await _return(
+        db, station, package, case, T0 + timedelta(minutes=5), "COMPLETED", conclusion="EMPTY_BOX"
+    )
+
+    claim = await _claim_of(db, d, case)
+
+    assert await _evidence(db, claim.id) == {pack.id, d.id}
+    detail = await claim_views.claim_detail(db, claim.id, uuid.uuid4(), test_settings)
+    assert [e.session.id for e in detail.evidence if e.session and e.primary] == [d.id]
+    assert [
+        (x.session_id, x.evidence_exclusion, x.in_evidence, x.cancel_reason)
+        for x in detail.excluded_return_sessions
+    ] == [(c.id, "STATION_CANCEL", False, reason)]
+    assert detail.prior_return_sessions == []
+    rows, _ = await claim_pack._session_rows(db, claim)
+    assert c.id not in {s.id for s, _, _ in rows}
+    assert [s.id for s, main, kind in rows if kind == "mo-hoan"] == [d.id]
+
+
+async def test_manually_added_wrong_scan_session_never_primary(
+    db: AsyncSession, test_settings: Settings
+) -> None:
+    """(3): CSKH thêm tay C (API-134) → C có trong bằng chứng nhưng phiên chính vẫn D; J-16 C là `phien-khac`
+    (không thư mục chính), chip `evidence_exclusion = STATION_CANCEL`."""
+    station, package, case, pack = await _setup(db)
+    c = await _return(db, station, package, case, T0, "CANCELLED", cancel_reason="WRONG_SCAN")
+    d = await _return(
+        db, station, package, case, T0 + timedelta(minutes=5), "COMPLETED", conclusion="DAMAGED"
+    )
+    claim = await _claim_of(db, d, case)
+    user = await make_user(db, "tst_cskh_t279", "CSKH")
+    p = Principal(user_id=user.id, role="CSKH", station_id=None, ip=None)
+    await claims.set_evidence(
+        db,
+        claim,
+        EvidenceIn(
+            version=claim.version, session_ids=[pack.id, c.id, d.id], snapshot_ids=await _snaps(db, claim.id)
+        ),
+        p,
+    )
+
+    detail = await claim_views.claim_detail(db, claim.id, user.id, test_settings)
+    by_id = {e.session.id: e for e in detail.evidence if e.session}
+    assert c.id in by_id
+    assert (by_id[c.id].primary, by_id[c.id].prior_return, by_id[c.id].auto) == (False, False, False)
+    assert by_id[c.id].session.evidence_exclusion == "STATION_CANCEL"  # type: ignore[union-attr]
+    assert [sid for sid, e in by_id.items() if e.primary] == [d.id]
+    assert [(x.session_id, x.in_evidence) for x in detail.excluded_return_sessions] == [(c.id, True)]
+    rows, _ = await claim_pack._session_rows(db, claim)
+    assert [(s.id, main, kind) for s, main, kind in rows] == [
+        (pack.id, True, "dong-goi"),
+        (d.id, True, "mo-hoan"),
+        (c.id, False, "phien-khac"),
+    ]
+
+
+async def test_only_excluded_return_session_falls_back_to_pack(
+    db: AsyncSession, test_settings: Settings
+) -> None:
+    """Không có phiên RETURN hợp lệ khác: phiên quét nhầm (thêm tay) vẫn không là phiên chính → đóng gói."""
+    station, package, case, pack = await _setup(db)
+    c = await _return(db, station, package, case, T0, "CANCELLED", cancel_reason="NOT_A_RETURN")
+    user = await make_user(db, "tst_cskh_t279b", "CSKH")
+    p = Principal(user_id=user.id, role="CSKH", station_id=None, ip=None)
+    created = await claims.create_manual(
+        db,
+        ClaimCreateIn(package_id=package.id, type="OTHER", counterparty="PLATFORM", return_case_id=case.id),
+        p,
+    )
+    assert await _evidence(db, created.id) == {pack.id}
+    await claims.set_evidence(
+        db,
+        created,
+        EvidenceIn(
+            version=created.version, session_ids=[pack.id, c.id], snapshot_ids=await _snaps(db, created.id)
+        ),
+        p,
+    )
+    detail = await claim_views.claim_detail(db, created.id, user.id, test_settings)
+    assert [e.session.id for e in detail.evidence if e.session and e.primary] == [pack.id]
+
+
+async def test_supervisor_cancel_other_is_regular_evidence(db: AsyncSession, test_settings: Settings) -> None:
+    """(5): Supervisor hủy, `cancel_cause = OTHER` (kiện hoàn thật) → vào bằng chứng, là phiên chính được."""
+    station, package, case, pack = await _setup(db)
+    a = await _return(db, station, package, case, T0, "CANCELLED", cancel_reason="SUPERVISOR")
+    a.cancel_cause = "OTHER"
+    b = await _return(
+        db, station, package, case, T0 + timedelta(minutes=30), "COMPLETED", conclusion="EMPTY_BOX"
+    )
+
+    claim = await _claim_of(db, b, case)
+
+    assert await _evidence(db, claim.id) == {pack.id, a.id, b.id}
+    detail = await claim_views.claim_detail(db, claim.id, uuid.uuid4(), test_settings)
+    assert [e.session.id for e in detail.evidence if e.session and e.primary] == [a.id]
+    assert detail.excluded_return_sessions == []
+
+
+async def test_excluded_session_clip_still_protected_and_not_counted(
+    db: AsyncSession, test_settings: Settings, redis_client: object
+) -> None:
+    """(6) J-02 không xóa clip C khi hồ sơ hàng hoàn còn mở (BR-09 b); (7) API-32 `returns_dropped_7d` và
+    API-30 `return_dropped` không tính C (cùng vị từ `dropped_return_filter` — J-26 N03 dùng lại ở T-227)."""
+    from aicam.modules.media import protection
+    from aicam.modules.orders import packages as package_views
+    from aicam.modules.reports import service as reports
+    from aicam.modules.sessions.queries import dropped_return_filter
+
+    station, package, case, _ = await _setup(db)
+    c = await _return(db, station, package, case, T0, "CANCELLED", cancel_reason="WRONG_SCAN")
+    a = await _return(db, station, package, case, T0 + timedelta(minutes=1), "ABANDONED")
+    now = clock.now()
+
+    protected = set((await db.scalars(protection.case_session_ids(now))).all())
+    assert {c.id, a.id} <= protected
+    dropped = set(
+        (
+            await db.scalars(
+                select(PackSession.id).where(dropped_return_filter(), PackSession.package_id == package.id)
+            )
+        ).all()
+    )
+    assert dropped == {a.id}
+    report = await reports.daily(db, None, test_settings)
+    assert report.counts.returns_dropped_7d == 1
+    page = await package_views.search(
+        db, tz=test_settings.tz_display, page=1, page_size=20, return_dropped=True
+    )
+    assert [i.id for i in page.items] == [package.id]

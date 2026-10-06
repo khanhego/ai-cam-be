@@ -281,7 +281,9 @@ async def auto_evidence(
             await evidence_rules.interrupted_return_sessions(session, claim.package_id, claim.return_case_id)
         )
     sessions.extend(return_sessions)
-    sessions = list({s.id: s for s in sessions}.values())
+    # BR-39 v0.4: phiên bị loại (quét nhầm / không phải hàng hoàn chưa xác nhận, đã đánh dấu) không bao giờ tự
+    # vào bằng chứng, dù người gọi truyền vào (lưới an toàn — chỉ CSKH thêm tay qua API-134).
+    sessions = [s for s in {s.id: s for s in sessions}.values() if not evidence_rules.excluded(s)]
     return await add_evidence(
         session,
         claim,

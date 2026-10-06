@@ -90,6 +90,19 @@ class EvidenceClip(BaseModel):
     deleted_at: datetime | None
 
 
+class SessionMark(BaseModel):
+    """`session.wrong_scan` / `session.return_confirmed` (02 §5.1 SESSION v0.3 / v0.4 — API-189)."""
+
+    at: datetime
+    by: "UserBrief | None"
+    code: Literal["WRONG_SCAN", "NOT_A_RETURN"] | None = None  # chỉ `wrong_scan`
+    note: str | None
+
+
+EvidenceExclusion = Literal["STATION_CANCEL", "SUPERVISOR_CANCEL", "MARKED"]
+CancelCause = Literal["WRONG_SCAN", "NOT_A_RETURN", "OTHER"]
+
+
 class EvidenceSession(BaseModel):
     id: uuid.UUID
     type: Literal["PACK", "RETURN"]
@@ -100,6 +113,13 @@ class EvidenceSession(BaseModel):
     ended_at: datetime | None
     flags: list[str]
     clips: list[EvidenceClip]
+    # BR-39 v0.3–v0.5 (02 §5.1 SESSION): FE chip "Hủy: quét nhầm" / "Cần soát" / "Đã đánh dấu quét nhầm".
+    cancel_reason: str | None = None
+    cancel_cause: CancelCause | None = None
+    wrong_scan: SessionMark | None = None
+    review_needed: bool = False
+    evidence_exclusion: EvidenceExclusion | None = None
+    return_confirmed: SessionMark | None = None
 
 
 class EvidenceSnapshot(BaseModel):
@@ -135,6 +155,29 @@ class RemovedInfo(BaseModel):
 
 class PriorReturnSession(BaseModel):
     """API-132 `prior_return_sessions[]` (BR-39): phiên mở hoàn trước có clip của kiện / hồ sơ hàng hoàn."""
+
+    session_id: uuid.UUID
+    status: str
+    started_at: datetime
+    in_evidence: bool
+
+
+class ExcludedReturnSession(BaseModel):
+    """API-132 `excluded_return_sessions[]` (BR-39 v0.4): phiên RETURN bị loại khỏi bằng chứng tự chọn."""
+
+    session_id: uuid.UUID
+    status: str
+    cancel_reason: str | None
+    cancel_cause: CancelCause | None
+    evidence_exclusion: EvidenceExclusion
+    wrong_scan: SessionMark | None
+    started_at: datetime
+    has_clip: bool
+    in_evidence: bool
+
+
+class ReviewSession(BaseModel):
+    """API-132 `review_sessions[]` (v0.3): phiên "Cần soát" của kiện / hồ sơ hàng hoàn."""
 
     session_id: uuid.UUID
     status: str
@@ -180,6 +223,8 @@ class ClaimDetail(BaseModel):
     other_sessions: list[OtherSession]
     prior_return_sessions: list[PriorReturnSession] = []
     removed_evidence: list[EvidenceOut] = []
+    excluded_return_sessions: list[ExcludedReturnSession] = []
+    review_sessions: list[ReviewSession] = []
     missing: list[Missing]
     notes: list[NoteOut]
     allowed_transitions: list[ClaimStatus]
