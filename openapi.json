@@ -815,6 +815,49 @@
         "title": "CancelIn",
         "type": "object"
       },
+      "CaseRef": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code"
+        ],
+        "title": "CaseRef",
+        "type": "object"
+      },
+      "ClaimBrief": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "status"
+        ],
+        "title": "ClaimBrief",
+        "type": "object"
+      },
       "ClipDetail": {
         "properties": {
           "camera_role": {
@@ -2518,6 +2561,49 @@
         "title": "RefreshIn",
         "type": "object"
       },
+      "RequestedItem": {
+        "properties": {
+          "order_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Item Id"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "variation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variation"
+          }
+        },
+        "required": [
+          "order_item_id",
+          "product_name",
+          "variation",
+          "quantity"
+        ],
+        "title": "RequestedItem",
+        "type": "object"
+      },
       "Resolution": {
         "properties": {
           "action": {
@@ -2614,6 +2700,597 @@
           "display_name"
         ],
         "title": "ResolvedBy",
+        "type": "object"
+      },
+      "ReturnCaseDetail": {
+        "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimBrief"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "expected_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Since"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "FAILED_DELIVERY",
+              "BUYER_RETURN",
+              "REFUND_ONLY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaseRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needs_parcel": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Parcel"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnOrderBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "packages": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnPackageBrief"
+            },
+            "title": "Packages",
+            "type": "array"
+          },
+          "platform_return_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Return Sn"
+          },
+          "platform_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reason_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Label"
+          },
+          "reason_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Text"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "reported_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported At"
+          },
+          "requested_items": {
+            "items": {
+              "$ref": "#/components/schemas/RequestedItem"
+            },
+            "title": "Requested Items",
+            "type": "array"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "seller_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Due At"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnSessionBrief"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "source": {
+            "enum": [
+              "PLATFORM",
+              "WAREHOUSE"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "EXPECTED",
+              "INSPECTING",
+              "PARTIALLY_RECEIVED",
+              "RECEIVED_OK",
+              "RECEIVED_ISSUE",
+              "MISSING",
+              "CANCELLED",
+              "NO_PARCEL"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "waiting_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Days"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "order",
+          "packages",
+          "return_tracking_number",
+          "reason_label",
+          "reported_at",
+          "expected_since",
+          "waiting_days",
+          "received_at",
+          "conclusion",
+          "claims",
+          "merged_into",
+          "platform_return_sn",
+          "platform_status",
+          "needs_parcel",
+          "reason",
+          "reason_text",
+          "seller_due_at",
+          "source",
+          "requested_items",
+          "sessions"
+        ],
+        "title": "ReturnCaseDetail",
+        "type": "object"
+      },
+      "ReturnCaseItem": {
+        "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimBrief"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "expected_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Since"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "FAILED_DELIVERY",
+              "BUYER_RETURN",
+              "REFUND_ONLY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaseRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnOrderBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "packages": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnPackageBrief"
+            },
+            "title": "Packages",
+            "type": "array"
+          },
+          "reason_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Label"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "reported_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported At"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "status": {
+            "enum": [
+              "EXPECTED",
+              "INSPECTING",
+              "PARTIALLY_RECEIVED",
+              "RECEIVED_OK",
+              "RECEIVED_ISSUE",
+              "MISSING",
+              "CANCELLED",
+              "NO_PARCEL"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "waiting_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Days"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "order",
+          "packages",
+          "return_tracking_number",
+          "reason_label",
+          "reported_at",
+          "expected_since",
+          "waiting_days",
+          "received_at",
+          "conclusion",
+          "claims",
+          "merged_into"
+        ],
+        "title": "ReturnCaseItem",
+        "type": "object"
+      },
+      "ReturnCasePage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnCaseItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "tab_counts": {
+            "$ref": "#/components/schemas/TabCounts"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total",
+          "tab_counts"
+        ],
+        "title": "ReturnCasePage",
+        "type": "object"
+      },
+      "ReturnOrderBrief": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "platform_order_sn": {
+            "title": "Platform Order Sn",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "platform_order_sn"
+        ],
+        "title": "ReturnOrderBrief",
+        "type": "object"
+      },
+      "ReturnPackageBrief": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "warehouse_status"
+        ],
+        "title": "ReturnPackageBrief",
+        "type": "object"
+      },
+      "ReturnSessionBrief": {
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "station_name": {
+            "title": "Station Name",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "package_id",
+          "status",
+          "station_name",
+          "operator_name",
+          "started_at",
+          "ended_at",
+          "conclusion"
+        ],
+        "title": "ReturnSessionBrief",
         "type": "object"
       },
       "Roi": {
@@ -3526,6 +4203,37 @@
           "last_error"
         ],
         "title": "SyncHealth",
+        "type": "object"
+      },
+      "TabCounts": {
+        "properties": {
+          "EXPECTED": {
+            "default": 0,
+            "title": "Expected",
+            "type": "integer"
+          },
+          "MISSING": {
+            "default": 0,
+            "title": "Missing",
+            "type": "integer"
+          },
+          "NO_PARCEL": {
+            "default": 0,
+            "title": "No Parcel",
+            "type": "integer"
+          },
+          "RECEIVED": {
+            "default": 0,
+            "title": "Received",
+            "type": "integer"
+          },
+          "UNIDENTIFIED": {
+            "default": 0,
+            "title": "Unidentified",
+            "type": "integer"
+          }
+        },
+        "title": "TabCounts",
         "type": "object"
       },
       "TimelineItem": {
@@ -5496,6 +6204,199 @@
         "summary": "Daily",
         "tags": [
           "reports"
+        ]
+      }
+    },
+    "/api/v1/returns": {
+      "get": {
+        "description": "API-110: danh sách hồ sơ hàng hoàn (D14).",
+        "operationId": "list_returns_api_v1_returns_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tab",
+            "required": false,
+            "schema": {
+              "default": "EXPECTED",
+              "enum": [
+                "EXPECTED",
+                "MISSING",
+                "RECEIVED",
+                "NO_PARCEL",
+                "UNIDENTIFIED",
+                "ALL"
+              ],
+              "title": "Tab",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "FAILED_DELIVERY",
+                    "BUYER_RETURN",
+                    "REFUND_ONLY",
+                    "UNANNOUNCED",
+                    "UNIDENTIFIED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReturnCasePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Returns",
+        "tags": [
+          "returns"
+        ]
+      }
+    },
+    "/api/v1/returns/{case_id}": {
+      "get": {
+        "description": "API-111: chi tiết hồ sơ hàng hoàn.",
+        "operationId": "return_detail_api_v1_returns__case_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReturnCaseDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Return Detail",
+        "tags": [
+          "returns"
         ]
       }
     },
