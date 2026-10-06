@@ -19,6 +19,7 @@ from aicam.core.redis import get_redis
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.approvals.queries import last_resolved_at, pending_for_station, set_tray_match
 from aicam.modules.approvals.views import approval_item
+from aicam.modules.claims import service as claims
 from aicam.modules.media import jobs as media_jobs
 from aicam.modules.media.queries import clips_of_session
 from aicam.modules.orders import service as orders
@@ -765,7 +766,7 @@ async def recent(session: AsyncSession, station: Station, settings: Settings, li
                 id=pack.id,
                 type=pack.type,
                 conclusion=pack.inspection_conclusion,
-                claim_code=None,  # hồ sơ khiếu nại tự tạo — T-110
+                claim_code=await claims.code_for_session(session, pack.id) if pack.type == "RETURN" else None,
                 tracking_number=pack.open_code if pack.type == "RETURN" else tracking,
                 status=pack.status,
                 flags=list(pack.flags),

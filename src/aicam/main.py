@@ -15,6 +15,7 @@ from aicam.core.logging import configure_logging
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.approvals.router import router as approvals_router
+from aicam.modules.claims.router import router as claims_router
 from aicam.modules.imports.router import router as imports_router
 from aicam.modules.media.router import router as media_router
 from aicam.modules.orders.router import router as orders_router
@@ -80,6 +81,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(platforms_router, prefix="/api/v1")
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(returns_router, prefix="/api/v1")
+    app.include_router(claims_router, prefix="/api/v1")
     app.include_router(settings_router, prefix="/api/v1")
     app.include_router(ws_router)
 

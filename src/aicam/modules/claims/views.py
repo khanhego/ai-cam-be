@@ -1,0 +1,345 @@
+"""API-130 danh sách / API-132 chi tiết hồ sơ khiếu nại (02 §6.2; 02a §8: `status_counts` một `GROUP BY`)."""
+
+import uuid
+from collections import defaultdict
+from datetime import datetime, timedelta
+
+from sqlalchemy import ColumnElement, and_, case, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from aicam.core import clock
+from aicam.core.errors import AppError
+from aicam.core.settings import Settings
+from aicam.modules.claims.models import CLAIM_STATUSES, Claim, ClaimEvidence, ClaimNote
+from aicam.modules.claims.schemas import (
+    ClaimDetail,
+    ClaimListItem,
+    ClaimOrder,
+    ClaimOrderBrief,
+    ClaimPackage,
+    ClaimPackageBrief,
+    ClaimPage,
+    ClaimReturnCase,
+    EvidenceClip,
+    EvidenceOut,
+    EvidenceSession,
+    EvidenceSnapshot,
+    NoteOut,
+    OtherSession,
+    StatusCounts,
+    UserBrief,
+)
+from aicam.modules.claims.service import DUE_STATUSES, allowed_sessions, allowed_transitions
+from aicam.modules.media import snapshots as media_snapshots
+from aicam.modules.media.models import Clip, Snapshot
+from aicam.modules.orders.models import Order, Package
+from aicam.modules.returns.models import ReturnCase
+from aicam.modules.sessions.models import PackSession
+from aicam.modules.settings import service as settings_service
+from aicam.modules.stations.models import Station
+from aicam.modules.users.models import User
+
+
+def due_flags(claim: Claim, now: datetime, soon_hours: int) -> tuple[bool, bool]:
+    """(sắp hết hạn, quá hạn) — chỉ hồ sơ còn phải gửi / chờ (FR-08.04)."""
+    if claim.status not in DUE_STATUSES or claim.deadline_at is None:
+        return False, False
+    if claim.deadline_at < now:
+        return False, True
+    return claim.deadline_at <= now + timedelta(hours=soon_hours), False
+
+
+async def _users(db: AsyncSession, ids: set[uuid.UUID]) -> dict[uuid.UUID, UserBrief]:
+    if not ids:
+        return {}
+    rows = (await db.scalars(select(User).where(User.id.in_(sorted(ids))))).all()
+    return {u.id: UserBrief(id=u.id, display_name=u.display_name) for u in rows}
+
+
+async def list_claims(
+    db: AsyncSession,
+    *,
+    viewer: uuid.UUID,
+    status: str | None,
+    claim_type: str | None,
+    counterparty: str | None,
+    owner: str | None,
+    due: str | None,
+    q: str | None,
+    page: int,
+    page_size: int,
+) -> ClaimPage:
+    """API-130 (FR-08.03, 08.04): lọc; `status_counts` cùng bộ lọc (trừ `status`), một truy vấn."""
+    cfg = await settings_service.get(db)
+    now = clock.now()
+    conds: list[ColumnElement[bool]] = []
+    if claim_type:
+        conds.append(Claim.type == claim_type)
+    if counterparty:
+        conds.append(Claim.counterparty == counterparty)
+    if owner:
+        if owner == "me":
+            conds.append(Claim.owner_user_id == viewer)
+        else:
+            try:
+                conds.append(Claim.owner_user_id == uuid.UUID(owner))
+            except ValueError as exc:
+                raise AppError(
+                    "VALIDATION_ERROR",
+                    "Dữ liệu không hợp lệ.",
+                    422,
+                    {"fields": {"owner": "owner = me hoặc id người dùng"}},
+                ) from exc
+    if due in ("soon", "overdue"):
+        conds.append(Claim.status.in_(DUE_STATUSES))
+        if due == "soon":
+            conds.append(
+                and_(
+                    Claim.deadline_at >= now,
+                    Claim.deadline_at <= now + timedelta(hours=cfg.claim_due_soon_hours),
+                )
+            )
+        else:
+            conds.append(Claim.deadline_at < now)
+    if q and q.strip():
+        code = q.strip().upper()
+        conds.append(
+            or_(
+                func.upper(Claim.code) == code,
+                Claim.package_id.in_(select(Package.id).where(func.upper(Package.tracking_number) == code)),
+                Claim.order_id.in_(select(Order.id).where(func.upper(Order.platform_order_sn) == code)),
+            )
+        )
+    counts_row = (
+        await db.execute(
+            select(*(func.count(case((Claim.status == s, 1))).label(s) for s in CLAIM_STATUSES)).where(*conds)
+        )
+    ).one()
+    where = [*conds, *([Claim.status == status] if status else [])]
+    total = await db.scalar(select(func.count()).select_from(Claim).where(*where)) or 0
+    order_by = (
+        (Claim.deadline_at.asc().nulls_last(), Claim.id)
+        if due
+        else (Claim.created_at.desc(), Claim.id.desc())
+    )
+    rows = (
+        await db.execute(
+            select(Claim, Package.tracking_number, Order.platform_order_sn)
+            .join(Package, Package.id == Claim.package_id)
+            .outerjoin(Order, Order.id == Claim.order_id)
+            .where(*where)
+            .order_by(*order_by)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).all()
+    owners = await _users(db, {c.owner_user_id for c, _, _ in rows if c.owner_user_id})
+    items = []
+    for c, tracking, order_sn in rows:
+        soon, overdue = due_flags(c, now, cfg.claim_due_soon_hours)
+        items.append(
+            ClaimListItem(
+                id=c.id,
+                code=c.code,
+                type=c.type,
+                counterparty=c.counterparty,
+                status=c.status,
+                source=c.source,
+                package=ClaimPackageBrief(id=c.package_id, tracking_number=tracking),
+                order=ClaimOrderBrief(platform_order_sn=order_sn) if order_sn else None,
+                owner=owners.get(c.owner_user_id) if c.owner_user_id else None,
+                deadline_at=c.deadline_at,
+                due_soon=soon,
+                overdue=overdue,
+                created_at=c.created_at,
+            )
+        )
+    return ClaimPage(
+        items=items,
+        page=page,
+        page_size=page_size,
+        total=total,
+        status_counts=StatusCounts(**counts_row._asdict()),
+    )
+
+
+def _missing(evidence: list[EvidenceOut]) -> list[str]:
+    """`NO_PACK_CLIP` (không có phiên đóng gói), `PACK_CLIP_DELETED`, `RETURN_CLIP_PENDING` (02 API-132)."""
+    sessions = [e.session for e in evidence if e.session is not None]
+    packs = [s for s in sessions if s.type == "PACK"]
+    out: list[str] = []
+    if not packs:
+        out.append("NO_PACK_CLIP")
+    elif any(c.status == "DELETED" for s in packs for c in s.clips):
+        out.append("PACK_CLIP_DELETED")
+    if any(
+        not s.clips or any(c.status == "PENDING" for c in s.clips) for s in sessions if s.type == "RETURN"
+    ):
+        out.append("RETURN_CLIP_PENDING")
+    return out
+
+
+async def claim_detail(
+    db: AsyncSession, claim_id: uuid.UUID, viewer: uuid.UUID, settings: Settings
+) -> ClaimDetail:
+    """API-132 (FR-08.02, 08.06): hồ sơ, bằng chứng (phiên, clip, ảnh ký URL), phiên khác, thiếu, ghi chú."""
+    claim = await db.get(Claim, claim_id, populate_existing=True)
+    if claim is None:
+        raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ khiếu nại.", 404)
+    package = await db.get(Package, claim.package_id)
+    if package is None:  # FK RESTRICT
+        raise AppError("NOT_FOUND", "Không tìm thấy kiện hàng.", 404)
+    order = await db.get(Order, claim.order_id) if claim.order_id else None
+    return_case = await db.get(ReturnCase, claim.return_case_id) if claim.return_case_id else None
+
+    evidence_rows = (
+        await db.scalars(
+            select(ClaimEvidence)
+            .where(ClaimEvidence.claim_id == claim.id)
+            .order_by(ClaimEvidence.added_at, ClaimEvidence.id)
+        )
+    ).all()
+    session_ids = [e.session_id for e in evidence_rows if e.session_id]
+    snapshot_ids = [e.snapshot_id for e in evidence_rows if e.snapshot_id]
+    sessions: dict[uuid.UUID, tuple[PackSession, str]] = {}
+    clips: dict[uuid.UUID, list[EvidenceClip]] = defaultdict(list)
+    if session_ids:
+        for s, name in (
+            await db.execute(
+                select(PackSession, Station.name)
+                .join(Station, Station.id == PackSession.station_id)
+                .where(PackSession.id.in_(session_ids))
+            )
+        ).all():
+            sessions[s.id] = (s, name)
+        for c in (
+            await db.scalars(select(Clip).where(Clip.session_id.in_(session_ids)).order_by(Clip.camera_role))
+        ).all():
+            clips[c.session_id].append(
+                EvidenceClip(
+                    id=c.id,
+                    camera_role=c.camera_role,
+                    status=c.status,
+                    sha256=c.sha256,
+                    deleted_at=c.deleted_at,
+                )
+            )
+    snaps: dict[uuid.UUID, Snapshot] = {}
+    if snapshot_ids:
+        snaps = {
+            s.id: s for s in (await db.scalars(select(Snapshot).where(Snapshot.id.in_(snapshot_ids)))).all()
+        }
+
+    evidence: list[EvidenceOut] = []
+    for e in evidence_rows:
+        if e.session_id and e.session_id in sessions:
+            s, name = sessions[e.session_id]
+            evidence.append(
+                EvidenceOut(
+                    id=e.id,
+                    kind="SESSION",
+                    auto=e.auto,
+                    session=EvidenceSession(
+                        id=s.id,
+                        type=s.type,
+                        status=s.status,
+                        station_name=name,
+                        operator_name=s.operator_name,
+                        started_at=s.started_at,
+                        ended_at=s.ended_at,
+                        flags=list(s.flags),
+                        clips=clips[s.id],
+                    ),
+                )
+            )
+        elif e.snapshot_id and e.snapshot_id in snaps:
+            snap = snaps[e.snapshot_id]
+            evidence.append(
+                EvidenceOut(
+                    id=e.id,
+                    kind="SNAPSHOT",
+                    auto=e.auto,
+                    snapshot=EvidenceSnapshot(
+                        id=snap.id,
+                        kind=snap.kind,
+                        taken_at=snap.taken_at,
+                        status=snap.status,
+                        url=media_snapshots.url_for(settings, snap.id, viewer)
+                        if snap.status == "READY"
+                        else None,
+                    ),
+                )
+            )
+    # Phân loại bằng chứng: phiên đóng gói trước, phiên mở hoàn, rồi ảnh.
+    evidence.sort(key=lambda x: (x.kind != "SESSION", x.session.type != "PACK" if x.session else False))
+
+    candidates = await allowed_sessions(db, claim)
+    other_ids = [sid for sid in candidates if sid not in sessions]
+    others: list[OtherSession] = []
+    if other_ids:
+        others = [
+            OtherSession(id=s.id, type=s.type, status=s.status, started_at=s.started_at)
+            for s in (
+                await db.scalars(
+                    select(PackSession)
+                    .where(PackSession.id.in_(other_ids))
+                    .order_by(PackSession.started_at.desc())
+                )
+            ).all()
+        ]
+    notes = (
+        await db.scalars(
+            select(ClaimNote).where(ClaimNote.claim_id == claim.id).order_by(ClaimNote.at, ClaimNote.id)
+        )
+    ).all()
+    users = await _users(
+        db,
+        {n.author_user_id for n in notes if n.author_user_id} | ({claim.owner_user_id} - {None}),  # type: ignore[operator]
+    )
+    return ClaimDetail(
+        id=claim.id,
+        code=claim.code,
+        type=claim.type,
+        counterparty=claim.counterparty,
+        status=claim.status,
+        source=claim.source,
+        version=claim.version,
+        package=ClaimPackage(
+            id=package.id, tracking_number=package.tracking_number, warehouse_status=package.warehouse_status
+        ),
+        order=ClaimOrder(id=order.id, platform_order_sn=order.platform_order_sn) if order else None,
+        return_case=ClaimReturnCase(
+            id=return_case.id,
+            code=return_case.code,
+            kind=return_case.kind,
+            return_tracking_number=return_case.return_tracking_number,
+        )
+        if return_case
+        else None,
+        owner=users.get(claim.owner_user_id) if claim.owner_user_id else None,
+        deadline_at=claim.deadline_at,
+        deadline_source=claim.deadline_source,
+        platform_claim_ref=claim.platform_claim_ref,
+        recovered_amount=claim.recovered_amount,
+        close_reason=claim.close_reason,
+        created_at=claim.created_at,
+        closed_at=claim.closed_at,
+        evidence=evidence,
+        other_sessions=others,
+        missing=_missing(evidence),
+        notes=[
+            NoteOut(
+                id=n.id,
+                kind=n.kind,
+                text=n.text,
+                author=users.get(n.author_user_id) if n.author_user_id else None,
+                at=n.at,
+            )
+            for n in notes
+        ],
+        allowed_transitions=allowed_transitions(claim.status),
+    )
+
+
+def note_out(note: ClaimNote, author: UserBrief | None) -> NoteOut:
+    return NoteOut(id=note.id, kind=note.kind, text=note.text, author=author, at=note.at)

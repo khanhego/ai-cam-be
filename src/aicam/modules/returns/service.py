@@ -22,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
 from aicam.core.db import after_commit
+from aicam.modules.claims import service as claims
+from aicam.modules.claims.models import Claim
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, OrderItem, Package, StatusHistory
 from aicam.modules.platforms.base import PlatformReturn
@@ -770,13 +772,21 @@ async def merge_unidentified_by_code(session: AsyncSession, order: Order) -> lis
 
 
 async def merge_unidentified(
-    session: AsyncSession, case: ReturnCase, order: Order, code: str, *, actor_label: str = "Hệ thống"
+    session: AsyncSession,
+    case: ReturnCase,
+    order: Order,
+    code: str,
+    *,
+    actor_label: str = "Hệ thống",
+    actor_user_id: uuid.UUID | None = None,
+    merged_claims: list[claims.MergedClaim] | None = None,
 ) -> bool:
     """Gộp hồ sơ chưa xác định (đã khóa, mọi phiên đã kết thúc) vào đơn: phiên sang kiện thật, kiện tạm xóa.
 
     Đơn có hồ sơ mở → gộp vào đó (`merged_into_id`, hồ sơ cũ `CANCELLED`); không → hồ sơ gắn đơn,
     `kind = UNANNOUNCED`. Kiện thật `→ RETURN_INSPECTING → RETURN_RECEIVED_*` theo kết luận (2 bước).
-    Hồ sơ khiếu nại của phiên chuyển kiện ở T-110 / T-119 (DEC-306).
+    Hồ sơ khiếu nại của kiện tạm chuyển sang kiện thật (trùng BR-27 → gộp — DEC-311); `merged_claims` nhận
+    các cặp đã gộp (API-112).
     """
     target = next(
         (p for p in await packages_of_order(session, order.id) if p.tracking_number.upper() == code.upper()),
@@ -838,6 +848,15 @@ async def merge_unidentified(
                 session, open_case, target.id, conclusion, source="WAREHOUSE", actor_label=actor_label
             )
     await session.flush()
+    moved = await claims.move_claims_to_package(
+        session, [p.id for p in placeholders], target, return_case_id=destination.id, actor=actor_user_id
+    )
+    if destination is not case:
+        await session.execute(
+            update(Claim).where(Claim.return_case_id == case.id).values(return_case_id=destination.id)
+        )
+    if merged_claims is not None:
+        merged_claims.extend(moved)
     for placeholder in placeholders:
         still_used = await session.scalar(
             select(PackSession.id).where(PackSession.package_id == placeholder.id)

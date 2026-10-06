@@ -13,6 +13,7 @@ import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại g
 from aicam.core.db import dispose_engine, init_engine, sessionmaker
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import get_settings
+from aicam.modules.claims import service as claims
 from aicam.modules.imports import service as imports
 from aicam.modules.media import exports, jobs, snapshots
 from aicam.modules.media import service as media
@@ -65,6 +66,12 @@ def capture_pack_snapshot(self: Any, session_id: str) -> str:
             log.error("pack_snapshot_failed", session_id=session_id, error=str(exc)[:300])
             return "failed"
         raise self.retry(exc=exc) from exc
+
+
+@app.task(name="claims.check_deadlines", soft_time_limit=120)  # type: ignore[untyped-decorator]
+def check_claim_deadlines() -> int:
+    """J-15 (60 phút, 02a §7): hồ sơ khiếu nại sắp hết hạn → ghi chú + WS (FR-08.04)."""
+    return _run(claims.check_deadlines)
 
 
 @app.task(name="sessions.flag_order_cancelled", soft_time_limit=60)  # type: ignore[untyped-decorator]

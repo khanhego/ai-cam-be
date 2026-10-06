@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import clock
 from aicam.core.settings import Settings
+from aicam.modules.claims import service as claims
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package
 from aicam.modules.platforms import service as platforms
@@ -472,7 +473,7 @@ async def close_return_session(
 
     Người gọi giữ: station → hồ sơ (FOR UPDATE). Khóa kiện của hồ sơ (id tăng), kiện của phiên
     `→ RETURN_RECEIVED_*`; hồ sơ một phiên chuyển kiện khác theo BR-24 / DEC-271; hồ sơ chờ gộp (R3-2) gộp
-    ngay; `recompute`; J-01 sau commit. Hồ sơ khiếu nại tự tạo (BR-08) nối ở T-110 (`claim_code` null tới đó).
+    ngay; `recompute`; hồ sơ khiếu nại tự tạo khi kết luận ≠ Nguyên vẹn (BR-08); J-01 sau commit.
     """
     from aicam.modules.media import jobs as media_jobs
     from aicam.modules.sessions.events import record_event, set_flag
@@ -503,6 +504,8 @@ async def close_return_session(
     destination = await session.get(ReturnCase, case.merged_into_id) if case.merged_into_id else case
     target = destination or case
     await returns.recompute(session, target)
+    # BR-08: kết luận ≠ Nguyên vẹn → hồ sơ khiếu nại tự tạo (sau gộp: hồ sơ trên kiện thật — DEC-311).
+    claim = await claims.create_from_return(session, pack, target)
     record_event(
         session, pack, "AUTO_CLOSED" if auto else "COMPLETED", close_code=code, conclusion=conclusion
     )
@@ -518,7 +521,7 @@ async def close_return_session(
         tracking_number=pack.open_code,
         flags=list(pack.flags),
         conclusion=conclusion,
-        claim_code=None,
+        claim_code=claim.claim.code if claim else None,
         package_status=refreshed.warehouse_status if refreshed else package.warehouse_status,
         return_case_status=target.status,
     )

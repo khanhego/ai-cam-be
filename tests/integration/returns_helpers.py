@@ -151,3 +151,47 @@ async def make_desk(
         "/api/v1/auth/login", json={"username": user.username, "password": PASSWORD, "client": "STATION"}
     )
     return Desk(api, {"Authorization": f"Bearer {res.json()['access_token']}"}, station)
+
+
+async def pack_session_with_clips(
+    db: AsyncSession,
+    station: Station,
+    package: Package,
+    ended: datetime,
+    *,
+    status: str = "COMPLETED",
+    snapshot: bool = True,
+    clip_status: str = "READY",
+) -> PackSession:
+    """Phiên PACK đã đóng của kiện + clip Cam 1 / Cam 2 (+ ảnh lúc đóng gói) — bằng chứng FR-08.06."""
+    from datetime import timedelta
+
+    from aicam.modules.media.models import Clip, Snapshot
+
+    pack = PackSession(
+        id=uuid.uuid4(), type="PACK", package_id=package.id, station_id=station.id, status=status,
+        started_at=ended - timedelta(minutes=2), ended_at=ended, open_code=package.tracking_number,
+        close_code=package.tracking_number, package_status_before="NEW", flags=[],
+    )  # fmt: skip
+    db.add(pack)
+    await db.flush()
+    for role in ("CAM1", "CAM2"):
+        db.add(
+            Clip(
+                session_id=pack.id,
+                camera_role=role,
+                status=clip_status,
+                start_at=pack.started_at,
+                end_at=ended + timedelta(seconds=5),
+                path=f"clips/{pack.id}-{role}.mp4",
+                sha256="ab" * 32,
+                flags=[],
+                deleted_at=ended if clip_status == "DELETED" else None,
+            )
+        )
+    if snapshot:
+        db.add(Snapshot(session_id=pack.id, kind="PACK_CLOSE", camera_role="CAM1",
+                        taken_at=ended - timedelta(seconds=1), path=f"snapshots/{pack.id}_pack.jpg",
+                        sha256="cd" * 32, size_bytes=10, status="READY"))  # fmt: skip
+    await db.flush()
+    return pack

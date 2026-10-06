@@ -36,6 +36,7 @@ app.conf.update(
         "j05-verify-unverified": {"task": "platforms.verify_unverified", "schedule": 600.0},
         "j06-sync-shipping-status": {"task": "platforms.sync_shipping_status", "schedule": 900.0},
         "j12-refresh-tokens": {"task": "platforms.refresh_tokens", "schedule": 1800.0},
+        "j15-claim-deadlines": {"task": "claims.check_deadlines", "schedule": 3600.0},
         # 02:00 giờ VN (UTC+7, không đổi giờ mùa hè) = 19:00 UTC.
         "j02-enforce-retention": {"task": "media.enforce_retention", "schedule": crontab(hour=19, minute=0)},
     },

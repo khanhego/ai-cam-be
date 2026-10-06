@@ -196,7 +196,7 @@ async def test_close_with_other_code_of_case(desk: Desk, db: AsyncSession, sent_
 
 
 async def test_close_issue(desk: Desk, db: AsyncSession) -> None:
-    """TC-04.21 (phần T-108): "Hộp rỗng" → kiện `RETURN_RECEIVED_ISSUE` (hồ sơ khiếu nại ở T-110)."""
+    """TC-04.21: "Hộp rỗng" → kiện `RETURN_RECEIVED_ISSUE` + hồ sơ khiếu nại tự tạo (T-110)."""
     order, _ = await make_order(db, 41)
     await buyer_return_case(db, order, 41)
     session = await _open(desk, "SPXRTTST000041")
@@ -214,7 +214,8 @@ async def test_close_issue(desk: Desk, db: AsyncSession) -> None:
         "EMPTY_BOX",
         "SPXRTTST000041",
     )
-    assert item["claim_code"] is None
+    assert item["claim_code"] == body["closed_session"]["claim_code"]
+    assert body["closed_session"]["claim_code"].startswith("KN-")
 
 
 async def test_close_replay_keeps_closed_session(desk: Desk, db: AsyncSession) -> None:
