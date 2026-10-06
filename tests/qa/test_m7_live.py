@@ -173,13 +173,17 @@ def test_tc_04_06_open_by_order_code(inspecting: dict[str, Any]) -> None:
 def test_tc_04_40_snapshot_from_fake_cam(
     client: httpx.Client, desk: dict[str, Any], inspecting: dict[str, Any]
 ) -> None:
-    """TC-04.40, NFR-32 (đo trên fake-cam1): ảnh 201 ≤ 3 giây, JPEG thật, file 0444."""
+    """TC-04.40, NFR-32 (đo trên fake-cam1): nhấn F2 3 lần — mỗi ảnh 201 < 2 giây (T-121: khung mới nhất
+    vision giữ trong Redis, không mở RTSP mỗi lần), JPEG thật, file 0444."""
     session_id = inspecting["session"]["id"]
-    started = time.monotonic()
-    res = client.post(f"/station/sessions/{session_id}/snapshots", headers=desk["headers"])
-    elapsed = time.monotonic() - started
-    assert res.status_code == 201, res.text
-    assert elapsed < 3.0, elapsed
+    timings = []
+    for _ in range(3):
+        started = time.monotonic()
+        res = client.post(f"/station/sessions/{session_id}/snapshots", headers=desk["headers"])
+        timings.append(round(time.monotonic() - started, 3))
+        assert res.status_code == 201, res.text
+    print(f"TC-04.40 API-103 (giây): {timings}")
+    assert max(timings) < 2.0, timings
     shot = res.json()["snapshot"]
     assert len(shot["sha256"]) == 64
     image = client.get(shot["url"].removeprefix("/api/v1"))

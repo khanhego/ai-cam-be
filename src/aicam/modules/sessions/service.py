@@ -397,6 +397,10 @@ async def complete_session(
             old.status = "SUPERSEDED"
     record_event(session, pack, "COMPLETED", close_code=close_code)
     media_jobs.enqueue_build_clips(session, pack.id, pack.ended_at)  # J-01 sau commit
+    # T-121: ảnh lúc đóng gói lấy ngay từ khung Cam 1 vision giữ; không có → J-17 trích từ clip (DEC-227).
+    from aicam.modules.media import snapshots
+
+    await snapshots.capture_pack_close_from_cache(session, pack, get_settings())
     return ClosedSessionOut(
         id=pack.id,
         type="PACK",

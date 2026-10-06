@@ -184,3 +184,63 @@ def test_reader_samples_at_interval() -> None:
     reader.stop()
     reader.join(5)
     assert 3 <= len(got) <= 7
+
+
+# ---------------------------------------------------------------- T-121: khung mới nhất cho ảnh chụp
+
+
+def test_cam1_reader_only_frames_no_decode() -> None:
+    """Cam 1 (không `code_pattern`): không giải mã / không Observation khi đọc được; JPEG ~mỗi
+    `frame_interval_s` kèm giờ chụp; JPEG giải nén lại được (đủ làm bằng chứng)."""
+    import cv2
+
+    got: list[Observation] = []
+    frames: list[tuple[uuid.UUID, bytes, object]] = []
+
+    class _Endless(_FakeCapture):
+        def grab(self) -> bool:
+            time.sleep(0.01)
+            return True
+
+        def retrieve(self) -> tuple[bool, np.ndarray | None]:
+            return True, np.full((360, 640, 3), 90, dtype=np.uint8)
+
+    camera_id = uuid.uuid4()
+    reader = CameraReader(
+        camera_id, "u", None, None, got.append, opener=lambda _: _Endless([]),
+        on_frame=lambda cid, jpeg, at: frames.append((cid, jpeg, at)), frame_interval_s=0.1,
+    )  # fmt: skip
+    reader.start()
+    time.sleep(0.55)
+    reader.stop()
+    reader.join(5)
+    assert got == []
+    assert 3 <= len(frames) <= 7
+    cid, jpeg, _ = frames[-1]
+    assert cid == camera_id
+    image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image.shape == (360, 640, 3)
+
+
+def test_cam2_reader_decodes_and_sends_frames() -> None:
+    """Cam 2: vẫn giải mã mỗi `sample_interval_s` và thêm JPEG mỗi `frame_interval_s` (thưa hơn)."""
+    got: list[Observation] = []
+    frames: list[bytes] = []
+
+    class _Endless(_FakeCapture):
+        def grab(self) -> bool:
+            time.sleep(0.01)
+            return True
+
+        def retrieve(self) -> tuple[bool, np.ndarray | None]:
+            return True, _tray()
+
+    reader = CameraReader(
+        uuid.uuid4(), "u", None, PATTERN, got.append, opener=lambda _: _Endless([]), sample_interval_s=0.05,
+        on_frame=lambda _cid, jpeg, _at: frames.append(jpeg), frame_interval_s=0.2,
+    )  # fmt: skip
+    reader.start()
+    time.sleep(0.65)
+    reader.stop()
+    reader.join(5)
+    assert len(got) > len(frames) >= 2

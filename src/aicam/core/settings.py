@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     snapshot_timeout_s: float = 3.0
     snapshot_max_per_session: int = 20
     snapshot_jpeg_quality: int = 85
+    # T-121 (DEC-320): khung mới nhất do vision giữ trong Redis — tuổi tối đa khi dùng, nhịp ghi, bật / tắt.
+    snapshot_frame_max_age_s: float = 2.0
+    vision_frame_interval_s: float = 1.0
+    vision_frames_enabled: bool = True
     export_font_file: Path = Path("/usr/share/fonts/truetype/bevietnampro/BeVietnamPro-SemiBold.ttf")
     # Phase 2 (02a §9): gói bằng chứng hồ sơ khiếu nại (J-16, API-136..138), dọn ở J-10.
     evidence_pack_ttl_hours: int = 24

@@ -22,8 +22,9 @@ from aicam.core import audit, clock
 from aicam.core.db import commit
 from aicam.core.errors import AppError
 from aicam.core.ids import uuid7
+from aicam.core.redis import get_redis
 from aicam.core.settings import Settings
-from aicam.modules.media import ffmpeg, signing
+from aicam.modules.media import ffmpeg, frames, signing
 from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.stations.models import Camera
@@ -140,15 +141,20 @@ async def take(
         )
     began = time.monotonic()
     taken_at = clock.now()
-    try:
-        data = await (grab or _grab)(
-            f"{settings.mediamtx_rtsp_url}/{camera.mediamtx_path}", settings.snapshot_timeout_s
-        )
-    except CameraUnreachable as exc:
-        log.warning("snapshot_failed", session_id=str(session_id), reason=exc.reason)
-        raise AppError(
-            "CAMERA_UNREACHABLE", "Không chụp được ảnh từ Cam 1. Thử lại.", 422, {"reason": exc.reason}
-        ) from exc
+    cached = await _cached_frame(camera.id, settings)  # T-121: khung mới nhất vision giữ (≤ 2 giây)
+    if cached is not None:
+        data, taken_at, source = cached.jpeg, cached.taken_at, "cache"
+    else:
+        source = "rtsp"
+        try:
+            data = await (grab or _grab)(
+                f"{settings.mediamtx_rtsp_url}/{camera.mediamtx_path}", settings.snapshot_timeout_s
+            )
+        except CameraUnreachable as exc:
+            log.warning("snapshot_failed", session_id=str(session_id), reason=exc.reason)
+            raise AppError(
+                "CAMERA_UNREACHABLE", "Không chụp được ảnh từ Cam 1. Thử lại.", 422, {"reason": exc.reason}
+            ) from exc
 
     await lock(session, station_id)
     await _require_open_return(session, station_id, session_id)  # phiên đóng trong lúc chụp → 409, không ghi
@@ -164,13 +170,61 @@ async def take(
     )  # fmt: skip
     session.add(snapshot)
     await session.flush()
-    log.info("snapshot_taken", session_id=str(session_id), snapshot_id=str(snapshot.id),
-             seconds=round(time.monotonic() - began, 2))  # fmt: skip
+    # metric `aicam_snapshot_seconds{source}` (02a §10) — log có cấu trúc
+    log.info("snapshot_taken", session_id=str(session_id), snapshot_id=str(snapshot.id), source=source,
+             seconds=round(time.monotonic() - began, 3))  # fmt: skip
     return snapshot
 
 
 async def _grab(url: str, timeout_s: float) -> bytes:
     return await grab_frame(url, timeout_s=timeout_s)
+
+
+async def _cached_frame(
+    camera_id: uuid.UUID, settings: Settings, at: datetime | None = None
+) -> frames.CachedFrame | None:
+    """Khung Cam 1 mới nhất trong Redis (T-121). Không có / cũ / Redis lỗi → None + log (metric
+    `aicam_snapshot_frame_cache_miss_total`) để người gọi dùng đường cũ."""
+    try:
+        found = await frames.latest(
+            get_redis(), camera_id, max_age_s=settings.snapshot_frame_max_age_s, at=at
+        )
+    except Exception as exc:  # Redis chập chờn / chưa khởi tạo: không chặn chụp ảnh
+        log.warning("snapshot_frame_cache_error", camera_id=str(camera_id), error=type(exc).__name__)
+        return None
+    if found is None:
+        log.info("snapshot_frame_cache_miss", camera_id=str(camera_id))
+    return found
+
+
+async def capture_pack_close_from_cache(session: AsyncSession, pack: PackSession, settings: Settings) -> bool:
+    """Ảnh lúc đóng gói ngay khi đóng phiên PACK (T-121, DEC-320): khung Cam 1 vision giữ, chụp trong 2 giây
+    trước `ended_at` → file 0444 + SHA-256 + `snapshot` `PACK_CLOSE` trong cùng transaction đóng phiên. Không
+    có khung mới → J-17 trích từ clip gốc như cũ (DEC-227). Lỗi bất kỳ → bỏ qua (không chặn đóng phiên)."""
+    if pack.ended_at is None:
+        return False
+    camera = await session.scalar(
+        select(Camera).where(Camera.station_id == pack.station_id, Camera.role == "CAM1")
+    )
+    if camera is None:
+        return False
+    cached = await _cached_frame(camera.id, settings, at=pack.ended_at)
+    if cached is None:
+        return False
+    try:
+        rel = rel_path(pack.id, pack.ended_at, "pack")
+        sha = await asyncio.to_thread(_write_readonly, _absolute(settings, rel), cached.jpeg)
+    except OSError:
+        log.exception("pack_snapshot_cache_write_failed", session_id=str(pack.id))
+        return False
+    session.add(
+        Snapshot(
+            session_id=pack.id, kind="PACK_CLOSE", camera_role="CAM1", taken_at=cached.taken_at, path=rel,
+            sha256=sha, size_bytes=len(cached.jpeg), status="READY",
+        )
+    )  # fmt: skip
+    log.info("pack_snapshot_captured", session_id=str(pack.id), source="cache")
+    return True
 
 
 # ---------------------------------------------------------------- API-106

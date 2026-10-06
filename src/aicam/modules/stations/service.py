@@ -345,11 +345,13 @@ async def watched_paths(session: AsyncSession) -> list[str]:
 
 
 async def vision_cameras(session: AsyncSession) -> Sequence[Camera]:
-    """Cam 2 của station đang bật — tiến trình vision đọc mã trên khay (T-12)."""
+    """Camera của station đang bật — tiến trình vision đọc mã khay trên Cam 2 (T-12) và giữ khung mới nhất của
+    mọi camera (Cam 1 + Cam 2) cho ảnh chụp (T-121)."""
     rows = await session.scalars(
         select(Camera)
         .join(Station, Station.id == Camera.station_id)
-        .where(Station.is_active.is_(True), Camera.role == "CAM2")
+        .where(Station.is_active.is_(True), Camera.role.in_(("CAM1", "CAM2")))
+        .order_by(Camera.station_id, Camera.role)
     )
     return rows.all()
 
