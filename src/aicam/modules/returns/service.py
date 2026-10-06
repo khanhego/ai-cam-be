@@ -58,6 +58,7 @@ _LINKABLE_STATUSES = (
 )
 # Kiện chuyển `→ RETURN_EXPECTED` khi sàn báo có kiện về (02 §5.3, DEC-254).
 _TO_EXPECTED_FROM = ("NEW", "HANDED_OVER", "DELIVERED")
+_AWAY_STATUSES = ("HANDED_OVER", "DELIVERED", "RETURN_EXPECTED", "RETURN_MISSING")
 RECENT_RECEIVED_WINDOW = timedelta(days=30)  # DEC-267 (b)
 PARTIAL_RETURN_LABEL = "Khách trả một phần"
 
@@ -458,6 +459,12 @@ async def _create(session: AsyncSession, order: Order, signal: Signal, actor_lab
     session.add(case)
     await session.flush()
     moved = await _link_and_move(session, case, order, signal, actor_label)
+    if signal.kind == SIGNAL_WAREHOUSE_SCAN:
+        # Về trước khi sàn báo, đơn > 1 kiện: kiện khác đã rời kho cũng thuộc lần hoàn này (hồ sơ "nhận
+        # một phần" tới khi đủ — TC-04.50); không đổi trạng thái kiện (DEC-308).
+        for package in await packages_of_order(session, order.id):
+            if package.warehouse_status in _AWAY_STATUSES:
+                await link_package(session, case, package.id)
     await session.flush()
     log.info("return_case_created", return_case_id=str(case.id), kind=kind, source=case.source)
     return AttachResult(case, created=True, changed=True, moved_packages=moved)

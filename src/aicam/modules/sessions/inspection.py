@@ -148,41 +148,40 @@ def validate(
     current: Sequence[InspectionLine],
     lines: Sequence[LineInput],
 ) -> None:
-    """BR-22 (02 API-102, 02a §5): `FULL` kiểm đủ dòng + nhất quán "Nguyên vẹn"; `REFERENCE` chỉ kết luận.
+    """BR-22 (02 API-102, 02a §5): `FULL` kiểm đủ dòng + nhất quán "Nguyên vẹn"; `REFERENCE` chỉ kết luận
+    (+ ghi chú khi Khác), dòng gửi kèm chỉ kiểm khoảng giá trị.
 
     Lỗi định dạng → `422 VALIDATION_ERROR` (`details.fields`); "Nguyên vẹn" mâu thuẫn dòng →
     `422 CONCLUSION_INCONSISTENT`.
     """
+    full = lines_mode != "REFERENCE"
     fields: dict[str, str] = {}
     if note is not None and len(note) > NOTE_MAX:
         fields["note"] = f"Ghi chú tối đa {NOTE_MAX} ký tự"
     if conclusion == "OTHER" and not (note and note.strip()):
         fields["note"] = "Nhập ghi chú khi chọn Khác"
-    if lines_mode == "REFERENCE":
-        if fields:
-            raise _invalid(fields)
-        return
     by_item = {line.order_item_id: line for line in current if line.order_item_id is not None}
     seen: set[uuid.UUID] = set()
     for index, line in enumerate(lines):
+        if not 0 <= line.quantity_received <= QUANTITY_MAX:
+            fields[f"lines.{index}.quantity_received"] = f"Số nhận 0–{QUANTITY_MAX}"
+        if line.note is not None and len(line.note) > NOTE_MAX:
+            fields[f"lines.{index}.note"] = f"Ghi chú tối đa {NOTE_MAX} ký tự"
+        if not full:
+            continue
         if line.order_item_id is None or line.order_item_id not in by_item:
             fields[f"lines.{index}.order_item_id"] = "Dòng không thuộc phiên"
             continue
         if line.order_item_id in seen:
             fields[f"lines.{index}.order_item_id"] = "Dòng bị lặp"
         seen.add(line.order_item_id)
-        if not 0 <= line.quantity_received <= QUANTITY_MAX:
-            fields[f"lines.{index}.quantity_received"] = f"Số nhận 0–{QUANTITY_MAX}"
-        if line.note is not None and len(line.note) > NOTE_MAX:
-            fields[f"lines.{index}.note"] = f"Ghi chú tối đa {NOTE_MAX} ký tự"
         if line.condition == "OTHER" and not (line.note and line.note.strip()):
             fields[f"lines.{index}.note"] = "Nhập ghi chú khi chọn Khác"
-    missing = set(by_item) - seen
-    if missing:
+    if full and set(by_item) - seen:
         fields["lines"] = "Thiếu dòng của phiên"
     if fields:
         raise _invalid(fields)
-    if conclusion == "OK":
+    if full and conclusion == "OK":
         for line in lines:
             original = by_item[line.order_item_id]  # type: ignore[index]
             if line.condition != "OK" or line.quantity_received != original.quantity_requested:
@@ -193,9 +192,7 @@ def validate(
                 )
 
 
-async def replace_lines(
-    session: AsyncSession, current: Sequence[InspectionLine], lines: Sequence[LineInput]
-) -> None:
+def replace_lines(current: Sequence[InspectionLine], lines: Sequence[LineInput]) -> None:
     """Ghi đè số nhận / tình trạng / ghi chú theo `order_item_id` (API-102 ghi đè toàn bộ)."""
     by_item = {line.order_item_id: line for line in lines if line.order_item_id is not None}
     for row in current:

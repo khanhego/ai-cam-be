@@ -201,13 +201,28 @@ class AlertOut(BaseModel):
     data: dict[str, Any] = {}
 
 
+class ClosedSessionOut(BaseModel):
+    """`closed_session` của API-11 `SESSION_COMPLETED` (02 §6.2, FR-03.14) / WS `SESSION_AUTO_CLOSED`."""
+
+    id: uuid.UUID
+    type: Literal["PACK", "RETURN"]
+    tracking_number: str
+    flags: list[str]
+    conclusion: Conclusion | None
+    claim_code: str | None
+    package_status: str
+    return_case_status: str | None = None
+
+
 class ScanOut(BaseModel):
     outcome: Outcome
     alert: AlertOut | None
     state: StationStateOut
+    closed_session: ClosedSessionOut | None = None
 
 
-CancelReason = Literal["OUT_OF_STOCK", "WRONG_SCAN", "OTHER"]
+# Phiên PACK: OUT_OF_STOCK / WRONG_SCAN / OTHER; phiên RETURN: WRONG_SCAN / NOT_A_RETURN / OTHER (02 API-12).
+CancelReason = Literal["OUT_OF_STOCK", "WRONG_SCAN", "OTHER", "NOT_A_RETURN"]
 
 
 class CancelIn(BaseModel):
@@ -227,11 +242,14 @@ class RecentClip(BaseModel):
 
 class RecentSession(BaseModel):
     id: uuid.UUID
+    type: Literal["PACK", "RETURN"] = "PACK"
     tracking_number: str
     status: str
     flags: list[str]
     started_at: datetime
     ended_at: datetime | None
+    conclusion: Conclusion | None = None
+    claim_code: str | None = None
     clips: list[RecentClip]
 
 
@@ -262,3 +280,22 @@ class ReturnLookupOut(BaseModel):
 
     items: list[ReturnLookupItem]
     platform_checked: bool
+
+
+class InspectionLineIn(BaseModel):
+    order_item_id: uuid.UUID | None
+    quantity_received: int
+    condition: Conclusion | None = None
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class InspectionIn(BaseModel):
+    """API-102 — ghi đè toàn bộ (kiểm độ dài / BR-22 ở service để trả `details.fields`)."""
+
+    conclusion: Conclusion | None = None
+    note: str | None = Field(default=None, max_length=2000)
+    lines: list[InspectionLineIn] = Field(default_factory=list, max_length=200)
+
+
+class InspectionSavedOut(BaseModel):
+    inspection: InspectionOut

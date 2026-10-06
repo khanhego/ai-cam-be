@@ -128,6 +128,18 @@ def _prefixed_enums(prefix: str, enums: dict[str, frozenset[str]]) -> dict[str, 
 
 
 PAGE = ("page", "page_size", "total")
+# `closed_session` của API-11 (02 §6.2) — cũng là WS-01 `alert SESSION_AUTO_CLOSED`.
+CLOSED_SESSION = (
+    "id",
+    "type",
+    "tracking_number",
+    "flags",
+    "conclusion",
+    "claim_code",
+    "package_status",
+    "return_case_status",
+)
+
 # Item hồ sơ hàng hoàn (02 §6.2 API-110) — dùng lại trong API-111.
 RETURN_CASE_ITEM = (
     "id",
@@ -287,7 +299,14 @@ CONTRACT: tuple[Api, ...] = (
         "POST",
         "/station/scan",
         200,
-        ("outcome", "alert.code", "alert.message", "alert.data", *_prefixed("state", STATE_FIELDS)),
+        (
+            "outcome",
+            "alert.code",
+            "alert.message",
+            "alert.data",
+            *_prefixed("state", STATE_FIELDS),
+            *_prefixed("closed_session", CLOSED_SESSION),
+        ),
         {
             "outcome": _e("SESSION_OPENED", "SESSION_COMPLETED", "MISMATCH", "ALERT", "IGNORED"),
             "alert.code": _e(
@@ -306,6 +325,7 @@ CONTRACT: tuple[Api, ...] = (
                 "RETURN_CODE_DIFFERENT",
             ),
             **_prefixed_enums("state", STATE_ENUMS),
+            "closed_session.type": _e("PACK", "RETURN"),
         },
         request_fields=("code", "client_scan_id"),
     ),
@@ -353,6 +373,9 @@ CONTRACT: tuple[Api, ...] = (
                 "flags",
                 "started_at",
                 "ended_at",
+                "type",
+                "conclusion",
+                "claim_code",
                 "clips[].id",
                 "clips[].camera_role",
                 "clips[].status",
@@ -469,6 +492,29 @@ CONTRACT: tuple[Api, ...] = (
     ),
     Api(
         "API-101", "PUT", "/station/operator", 200, _prefixed("state", STATE_FIELDS), request_fields=("name",)
+    ),
+    Api(
+        "API-102",
+        "PUT",
+        "/station/sessions/{session_id}/inspection",
+        200,
+        (
+            "inspection.conclusion",
+            "inspection.note",
+            "inspection.saved_at",
+            "inspection.lines_mode",
+            "inspection.lines[].order_item_id",
+            "inspection.lines[].product_name",
+            "inspection.lines[].variation",
+            "inspection.lines[].image_url",
+            "inspection.lines[].quantity_sent",
+            "inspection.lines[].quantity_requested",
+            "inspection.lines[].quantity_received",
+            "inspection.lines[].condition",
+            "inspection.lines[].note",
+        ),
+        {"inspection.conclusion": _e("OK", "DAMAGED", "MISSING_ITEM", "WRONG_ITEM", "EMPTY_BOX", "OTHER")},
+        request_fields=("conclusion", "note", "lines"),
     ),
     Api(
         "API-104",

@@ -15,31 +15,11 @@ from aicam.modules.platforms.mock.adapter import MockAdapter
 from aicam.modules.returns.models import ReturnCase
 from aicam.modules.sessions.models import InspectionLine, PackSession
 from aicam.modules.sessions.router import get_platform_adapter
-from aicam.modules.stations.models import Station
 
-from .factories import PASSWORD, make_station_account
-from .returns_helpers import buyer_return_case, make_order, return_session
+from .factories import make_station_account
+from .returns_helpers import Desk, buyer_return_case, make_desk, make_order, return_session
 
 pytestmark = pytest.mark.integration
-
-
-class Desk:
-    """Một bàn nhận hoàn đã đăng nhập (PRE-8: chế độ nhận hoàn, người kiểm "Lan QA")."""
-
-    def __init__(self, api: AsyncClient, headers: dict[str, str], station: Station) -> None:
-        self.api, self.headers, self.station = api, headers, station
-
-    async def scan(self, code: str, client_scan_id: str | None = None) -> Response:
-        return await self.api.post(
-            "/api/v1/station/scan",
-            headers=self.headers,
-            json={"code": code, "client_scan_id": client_scan_id or str(uuid.uuid4())},
-        )
-
-    async def state(self) -> dict[str, Any]:
-        res = await self.api.get("/api/v1/station/state", headers=self.headers)
-        assert res.status_code == 200
-        return res.json()  # type: ignore[no-any-return]
 
 
 @pytest.fixture
@@ -47,18 +27,6 @@ def adapter(api: AsyncClient) -> MockAdapter:
     mock = MockAdapter()
     api._transport.app.dependency_overrides[get_platform_adapter] = lambda: mock  # type: ignore[attr-defined]
     return mock
-
-
-async def make_desk(
-    api: AsyncClient, db: AsyncSession, n: int = 1, *, operator: str | None = "Lan QA", kind: str = "BOTH"
-) -> Desk:
-    user, station = await make_station_account(db, f"tst_station0{n}", f"TST Station 0{n}")
-    station.kind, station.work_mode, station.operator_name = kind, "RETURN", operator
-    await db.flush()
-    res = await api.post(
-        "/api/v1/auth/login", json={"username": user.username, "password": PASSWORD, "client": "STATION"}
-    )
-    return Desk(api, {"Authorization": f"Bearer {res.json()['access_token']}"}, station)
 
 
 @pytest.fixture

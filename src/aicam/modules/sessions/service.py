@@ -33,6 +33,9 @@ from aicam.modules.sessions.schemas import (
     AlertOut,
     ApprovalBrief,
     CameraState,
+    ClosedSessionOut,
+    InspectionIn,
+    InspectionSavedOut,
     ItemOut,
     MismatchOut,
     OrderBrief,
@@ -54,6 +57,11 @@ from aicam.modules.stations.models import Station
 log = structlog.get_logger()
 
 _STATE_BY_STATUS = {"OPEN": "PACKING", "MISMATCH": "MISMATCH", "WAITING_APPROVAL": "WAITING_APPROVAL"}
+# API-12 (02 §6.2): lý do hủy theo loại phiên.
+_CANCEL_REASONS = {
+    "PACK": ("OUT_OF_STOCK", "WRONG_SCAN", "OTHER"),
+    "RETURN": ("WRONG_SCAN", "NOT_A_RETURN", "OTHER"),
+}
 
 
 # ---------------------------------------------------------------- truy vấn
@@ -367,6 +375,7 @@ async def complete_session(
     pack.ended_at = clock.now()
     pack.close_code = close_code
     pack.mismatch = None
+    pack.camera_clock = await return_scan.camera_clock(session, pack.station_id)  # DEC-261 (PACK + RETURN)
     package = await _lock_package(session, pack.package_id)
     await orders.transition(session, package, "PACKED", source="WAREHOUSE", actor_label=actor_label)
     if pack.supersedes_session_id:
@@ -430,7 +439,12 @@ async def _replay(
 ) -> ScanOut:
     state = await build_state(session, station, settings)
     await commit(session)
-    return ScanOut(outcome=previous.response["outcome"], alert=previous.response.get("alert"), state=state)
+    return ScanOut(
+        outcome=previous.response["outcome"],
+        alert=previous.response.get("alert"),
+        state=state,
+        closed_session=previous.response.get("closed_session"),
+    )
 
 
 async def scan(
@@ -472,12 +486,13 @@ async def scan(
     # Đổi chế độ giữa lúc quét → xử lý theo chế độ đọc lại dưới khóa (R-24).
     station = await _reload_station(session, station.id)
     pack = await active_session(session, station.id, refresh=True)
+    closed: ClosedSessionOut | None = None
     if await pending_for_station(session, station.id) is not None or (
         pack is not None and pack.status == "WAITING_APPROVAL"
     ):
         outcome, alert = "IGNORED", None  # xét trước định dạng mã (review #20)
     elif station.work_mode == "RETURN":
-        outcome, alert = await return_scan.handle(session, station, pack, code, prepared, settings)
+        outcome, alert, closed = await return_scan.handle(session, station, pack, code, prepared, settings)
     elif not valid:
         outcome, alert = (
             "ALERT",
@@ -492,7 +507,11 @@ async def scan(
         ScanDedup(
             client_scan_id=client_scan_id,
             station_id=station.id,
-            response={"outcome": outcome, "alert": alert.model_dump() if alert else None},
+            response={
+                "outcome": outcome,
+                "alert": alert.model_dump() if alert else None,
+                "closed_session": closed.model_dump(mode="json") if closed else None,
+            },
         )
     )
     await session.flush()
@@ -503,7 +522,7 @@ async def scan(
         "scan", station_id=str(station.id), code=code, outcome=outcome, alert=alert.code if alert else None,
         work_mode=station.work_mode,
     )  # fmt: skip
-    return ScanOut(outcome=outcome, alert=alert, state=state)
+    return ScanOut(outcome=outcome, alert=alert, state=state, closed_session=closed)
 
 
 # ---------------------------------------------------------------- Cam 2 (T-12)
@@ -584,12 +603,17 @@ async def end_without_packing(
     actor_label: str,
 ) -> None:
     """Hủy / bỏ dở: kiện về trạng thái lúc mở phiên (NEW, hoặc PACKED nếu là phiên đóng gói lại — BR-03)."""
+    if pack.type == "RETURN":
+        await return_scan.end_return_session(
+            session, pack, status=status, reason=reason, note=note, actor_label=actor_label
+        )
+        return
     pack.status = status
     pack.ended_at = clock.now()
     pack.cancel_reason = reason
     pack.note = note
     pack.mismatch = None
-    package = await _require_package(session, pack.package_id)
+    package = await _lock_package(session, pack.package_id)
     await orders.transition(
         session, package, pack.package_status_before or "NEW", source="WAREHOUSE", actor_label=actor_label
     )
@@ -611,9 +635,16 @@ async def cancel(
             "VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": {"note": "Nhập lý do khi chọn Khác"}}
         )
     await lock_station(session, station.id)
-    pack = await session.get(PackSession, session_id)
+    pack = await session.scalar(
+        select(PackSession).where(PackSession.id == session_id).execution_options(populate_existing=True)
+    )
     if pack is None or pack.station_id != station.id or pack.status not in ("OPEN", "MISMATCH"):
         raise AppError("SESSION_NOT_OPEN", "Phiên không còn mở.", 409)
+    if reason not in _CANCEL_REASONS[pack.type]:
+        raise AppError(
+            "VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422,
+            {"fields": {"reason": "Lý do không áp dụng cho loại phiên này"}},
+        )  # fmt: skip
     await end_without_packing(
         session, pack, status="CANCELLED", reason=reason, note=note and note.strip(), actor_label=station.name
     )
@@ -622,6 +653,48 @@ async def cancel(
     notify_after_commit(session, station.id, state)
     await commit(session)
     return state
+
+
+async def save_inspection(
+    session: AsyncSession,
+    station: Station,
+    session_id: uuid.UUID,
+    body: InspectionIn,
+    settings: Settings,
+) -> InspectionSavedOut:
+    """API-102 (FR-04.03, 04.09, BR-22): lưu nháp kết luận + dòng (ghi đè). Khóa station → phiên."""
+    from aicam.modules.sessions import inspection
+
+    await lock_station(session, station.id)
+    pack = await session.scalar(
+        select(PackSession)
+        .where(PackSession.id == session_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if pack is None or pack.station_id != station.id or pack.status != "OPEN":
+        raise AppError("SESSION_NOT_OPEN", "Phiên không còn mở.", 409)
+    if pack.type != "RETURN":
+        raise AppError("NOT_RETURN_SESSION", "Phiên không phải phiên mở hoàn.", 409)
+    current = await inspection.lines_of(session, pack.id)
+    lines = [
+        inspection.LineInput(i.order_item_id, i.quantity_received, i.condition, i.note) for i in body.lines
+    ]
+    note = body.note.strip() if body.note else None
+    inspection.validate(
+        lines_mode=pack.inspection_lines_mode or "FULL", conclusion=body.conclusion, note=note,
+        current=current, lines=lines,
+    )  # fmt: skip
+    inspection.replace_lines(current, lines)
+    pack.inspection_conclusion = body.conclusion
+    pack.inspection_note = note or None
+    pack.inspection_saved_at = clock.now()
+    await session.flush()
+    out = inspection.inspection_out(pack, current)
+    state = await build_state(session, station, settings)
+    _publish_state_after_commit(session, station.id, state)
+    await commit(session)
+    return InspectionSavedOut(inspection=out)
 
 
 async def recent(session: AsyncSession, station: Station, settings: Settings, limit: int = 5) -> RecentOut:
@@ -642,7 +715,10 @@ async def recent(session: AsyncSession, station: Station, settings: Settings, li
         items.append(
             RecentSession(
                 id=pack.id,
-                tracking_number=tracking,
+                type=pack.type,
+                conclusion=pack.inspection_conclusion,
+                claim_code=None,  # hồ sơ khiếu nại tự tạo — T-110
+                tracking_number=pack.open_code if pack.type == "RETURN" else tracking,
                 status=pack.status,
                 flags=list(pack.flags),
                 started_at=pack.started_at,

@@ -14,6 +14,8 @@ from aicam.modules.platforms.router import get_platform_adapter
 from aicam.modules.sessions import return_lookup, service, station_config
 from aicam.modules.sessions.schemas import (
     CancelIn,
+    InspectionIn,
+    InspectionSavedOut,
     OperatorIn,
     RecentOut,
     ReturnLookupOut,
@@ -104,3 +106,12 @@ async def return_lookup_api(
     """API-104: tìm kiện hoàn thủ công (FR-04.07)."""
     station = await service.require_station(db, p.station_id, p.user_id)
     return await return_lookup.lookup(db, station, q, adapter, settings)
+
+
+@router.put("/sessions/{session_id}/inspection", response_model=InspectionSavedOut)
+async def save_inspection(
+    session_id: uuid.UUID, body: InspectionIn, p: StationOnly, db: DbSession, settings: AppSettings
+) -> InspectionSavedOut:
+    """API-102: lưu kết luận + dòng kiểm phiên hoàn (FR-04.03, 04.09; BR-22)."""
+    station = await service.require_station(db, p.station_id, p.user_id)
+    return await service.save_inspection(db, station, session_id, body, settings)

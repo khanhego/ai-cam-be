@@ -27,8 +27,8 @@ from aicam.modules.platforms.base import PlatformAdapter, PlatformError, Platfor
 from aicam.modules.returns import service as returns
 from aicam.modules.returns.models import OPEN_CASE_STATUSES, ReturnCase
 from aicam.modules.sessions.models import ACTIVE_STATUSES, PackSession
-from aicam.modules.sessions.schemas import AlertOut
-from aicam.modules.stations.models import Station
+from aicam.modules.sessions.schemas import AlertOut, ClosedSessionOut
+from aicam.modules.stations.models import Camera, Station
 
 log = structlog.get_logger()
 
@@ -381,23 +381,28 @@ async def _open_from_resolution(
 
 async def _in_session(
     session: AsyncSession, station: Station, pack: PackSession, code: str, settings: Settings
-) -> tuple[str, AlertOut | None]:
+) -> tuple[str, AlertOut | None, ClosedSessionOut | None]:
     """Đang kiểm: mã thuộc hồ sơ (BR-23) + đã có kết luận (BR-07) → đóng; khác → cảnh báo, giữ phiên."""
     case = await returns.lock_case(session, pack.return_case_id) if pack.return_case_id else None
     if case is None:  # dữ liệu lỗi: phiên RETURN mất hồ sơ — không đóng bừa
         log.error("return_session_without_case", session_id=str(pack.id))
-        return "IGNORED", None
+        return "IGNORED", None, None
     codes = await returns.accepted_codes(session, case, pack.open_code)
     if code not in codes:
-        return "ALERT", _alert(
-            "RETURN_CODE_DIFFERENT",
-            f"Mã {code} không thuộc kiện đang kiểm. Quét lại mã trên kiện này để hoàn tất.",
-            code=code,
-            expected_codes=codes,
+        return (
+            "ALERT",
+            _alert(
+                "RETURN_CODE_DIFFERENT",
+                f"Mã {code} không thuộc kiện đang kiểm. Quét lại mã trên kiện này để hoàn tất.",
+                code=code,
+                expected_codes=codes,
+            ),
+            None,
         )
     if pack.inspection_conclusion is None:
-        return "ALERT", _alert("INSPECTION_REQUIRED", "Chọn kết luận trước khi quét đóng.")
-    return "IGNORED", None  # đóng phiên: T-108
+        return "ALERT", _alert("INSPECTION_REQUIRED", "Chọn kết luận trước khi quét đóng."), None
+    closed = await close_return_session(session, pack, case, code=code, actor_label=station.name)
+    return "SESSION_COMPLETED", None, closed
 
 
 async def handle(
@@ -407,12 +412,19 @@ async def handle(
     code: str,
     prepared: Prepared | None,
     settings: Settings,
-) -> tuple[str, AlertOut | None]:
+) -> tuple[str, AlertOut | None, ClosedSessionOut | None]:
     """Trong khóa station, station đã đọc lại (`work_mode = RETURN`), không có yêu cầu duyệt chờ."""
     if pack is not None:
         if pack.type != "RETURN" or pack.status != "OPEN":
-            return "IGNORED", None
+            return "IGNORED", None, None
         return await _in_session(session, station, pack, code, settings)
+    outcome, alert = await _open(session, station, code, prepared, settings)
+    return outcome, alert, None
+
+
+async def _open(
+    session: AsyncSession, station: Station, code: str, prepared: Prepared | None, settings: Settings
+) -> tuple[str, AlertOut | None]:
     if not is_valid_code(code, settings):
         return "ALERT", _alert(
             "INVALID_CODE", "Mã vừa quét không phải mã vận đơn / mã đơn. Quét lại mã trên kiện."
@@ -423,3 +435,126 @@ async def handle(
     if resolution is None:  # chế độ vừa đổi giữa lúc quét: tra trong khóa, không tra sàn
         resolution = await returns.resolve_code(session, code)
     return await _open_from_resolution(session, station, code, resolution, settings)
+
+
+# ---------------------------------------------------------------- đóng / hủy / bỏ dở (T-108)
+
+
+async def camera_clock(session: AsyncSession, station_id: uuid.UUID) -> list[dict[str, object]]:
+    """Độ lệch giờ camera lúc đóng phiên cho `info.json` (DEC-261); `checked_at` null (J-09 không lưu mốc)."""
+    cameras = (
+        await session.scalars(select(Camera).where(Camera.station_id == station_id).order_by(Camera.role))
+    ).all()
+    return [
+        {"camera_role": c.role, "clock_offset_ms": c.clock_offset_ms, "checked_at": None} for c in cameras
+    ]
+
+
+async def close_return_session(
+    session: AsyncSession,
+    pack: PackSession,
+    case: ReturnCase,
+    *,
+    code: str | None,
+    actor_label: str,
+    auto: bool = False,
+) -> ClosedSessionOut:
+    """Đóng phiên RETURN đã có kết luận (API-11 quét mã cùng hồ sơ; J-07 tự hoàn tất `code = None`).
+
+    Người gọi giữ: station → hồ sơ (FOR UPDATE). Khóa kiện của hồ sơ (id tăng), kiện của phiên
+    `→ RETURN_RECEIVED_*`; hồ sơ một phiên chuyển kiện khác theo BR-24 / DEC-271; hồ sơ chờ gộp (R3-2) gộp
+    ngay; `recompute`; J-01 sau commit. Hồ sơ khiếu nại tự tạo (BR-08) nối ở T-110 (`claim_code` null tới đó).
+    """
+    from aicam.modules.media import jobs as media_jobs
+    from aicam.modules.sessions.events import record_event, set_flag
+
+    conclusion = pack.inspection_conclusion or "OTHER"
+    package_ids = [p.id for p in await returns.packages_of_case(session, case.id)]
+    locked = {p.id: p for p in await returns.lock_packages(session, {*package_ids, pack.package_id})}
+    package = locked[pack.package_id]
+    pack.camera_clock = await camera_clock(session, pack.station_id)
+    pack.status = "COMPLETED"
+    pack.ended_at = clock.now()
+    pack.close_code = code
+    if auto:
+        set_flag(pack, "AUTO_CLOSED")
+    await orders.transition(
+        session, package, returns.received_status(conclusion), source="WAREHOUSE", actor_label=actor_label
+    )
+    if case.single_session:
+        await returns.apply_close_to_packages(
+            session, case, package.id, conclusion, source="WAREHOUSE", actor_label=actor_label
+        )
+    await session.flush()
+    if case.pending_merge_order_id is not None and case.order_id is None:
+        order = await session.get(Order, case.pending_merge_order_id)
+        if order is not None:
+            await returns.merge_unidentified(session, case, order, pack.open_code, actor_label=actor_label)
+            await session.refresh(pack, ["package_id", "return_case_id"])  # UPDATE hàng loạt khi gộp
+    destination = await session.get(ReturnCase, case.merged_into_id) if case.merged_into_id else case
+    target = destination or case
+    await returns.recompute(session, target)
+    record_event(
+        session, pack, "AUTO_CLOSED" if auto else "COMPLETED", close_code=code, conclusion=conclusion
+    )
+    media_jobs.enqueue_build_clips(session, pack.id, pack.ended_at)
+    returns.notify_updated(session, target)
+    await session.flush()
+    refreshed = await session.get(Package, pack.package_id)
+    log.info("return_session_closed", session_id=str(pack.id), conclusion=conclusion, auto=auto,
+             return_case_id=str(target.id))  # fmt: skip
+    return ClosedSessionOut(
+        id=pack.id,
+        type="RETURN",
+        tracking_number=pack.open_code,
+        flags=list(pack.flags),
+        conclusion=conclusion,
+        claim_code=None,
+        package_status=refreshed.warehouse_status if refreshed else package.warehouse_status,
+        return_case_status=target.status,
+    )
+
+
+async def end_return_session(
+    session: AsyncSession,
+    pack: PackSession,
+    *,
+    status: str,
+    reason: str | None,
+    note: str | None,
+    actor_label: str,
+) -> None:
+    """Hủy (API-12 / API-21 CANCEL_SESSION) / bỏ dở (J-07) phiên RETURN: kiện về trạng thái lúc mở phiên;
+    hồ sơ do chính phiên này tạo (về trước khi sàn báo / chưa xác định), chưa có phiên nào khác → `CANCELLED`;
+    còn lại tính lại (BR-24). Clip vẫn cắt. Người gọi giữ khóa station."""
+    from aicam.modules.media import jobs as media_jobs
+    from aicam.modules.sessions.events import record_event
+
+    case = await returns.lock_case(session, pack.return_case_id) if pack.return_case_id else None
+    locked = await returns.lock_packages(session, [pack.package_id])
+    pack.status = status
+    pack.ended_at = clock.now()
+    pack.cancel_reason = reason
+    pack.note = note
+    if locked:
+        await orders.transition(
+            session,
+            locked[0],
+            pack.package_status_before or "NEW",
+            source="WAREHOUSE",
+            actor_label=actor_label,
+        )
+    await session.flush()
+    if case is not None:
+        others = [
+            s for s in await returns.return_sessions_of_case(session, case.id)
+            if s.id != pack.id and s.status not in ("CANCELLED", "ABANDONED")
+        ]  # fmt: skip
+        created_here = case.source == "WAREHOUSE" and case.kind in ("UNANNOUNCED", "UNIDENTIFIED")
+        if created_here and not others and case.platform_return_sn is None:
+            case.status = "CANCELLED"
+        else:
+            await returns.recompute(session, case)
+        returns.notify_updated(session, case)
+    record_event(session, pack, status, reason=reason, note=note)
+    media_jobs.enqueue_build_clips(session, pack.id, pack.ended_at)

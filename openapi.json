@@ -811,7 +811,8 @@
             "enum": [
               "OUT_OF_STOCK",
               "WRONG_SCAN",
-              "OTHER"
+              "OTHER",
+              "NOT_A_RETURN"
             ],
             "title": "Reason",
             "type": "string"
@@ -951,6 +952,91 @@
           "flags"
         ],
         "title": "ClipDetail",
+        "type": "object"
+      },
+      "ClosedSessionOut": {
+        "description": "`closed_session` của API-11 `SESSION_COMPLETED` (02 §6.2, FR-03.14) / WS `SESSION_AUTO_CLOSED`.",
+        "properties": {
+          "claim_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Code"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "package_status": {
+            "title": "Package Status",
+            "type": "string"
+          },
+          "return_case_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Case Status"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "tracking_number",
+          "flags",
+          "conclusion",
+          "claim_code",
+          "package_status"
+        ],
+        "title": "ClosedSessionOut",
         "type": "object"
       },
       "DailyOut": {
@@ -1535,6 +1621,109 @@
         "title": "ImportPreviewOut",
         "type": "object"
       },
+      "InspectionIn": {
+        "description": "API-102 — ghi đè toàn bộ (kiểm độ dài / BR-22 ở service để trả `details.fields`).",
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineIn"
+            },
+            "maxItems": 200,
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "title": "InspectionIn",
+        "type": "object"
+      },
+      "InspectionLineIn": {
+        "properties": {
+          "condition": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "order_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Item Id"
+          },
+          "quantity_received": {
+            "title": "Quantity Received",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_item_id",
+          "quantity_received"
+        ],
+        "title": "InspectionLineIn",
+        "type": "object"
+      },
       "InspectionLineOut": {
         "properties": {
           "condition": {
@@ -1693,6 +1882,18 @@
           "lines"
         ],
         "title": "InspectionOut",
+        "type": "object"
+      },
+      "InspectionSavedOut": {
+        "properties": {
+          "inspection": {
+            "$ref": "#/components/schemas/InspectionOut"
+          }
+        },
+        "required": [
+          "inspection"
+        ],
+        "title": "InspectionSavedOut",
         "type": "object"
       },
       "ItemDetail": {
@@ -2646,12 +2847,42 @@
       },
       "RecentSession": {
         "properties": {
+          "claim_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Code"
+          },
           "clips": {
             "items": {
               "$ref": "#/components/schemas/RecentClip"
             },
             "title": "Clips",
             "type": "array"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
           },
           "ended_at": {
             "anyOf": [
@@ -2688,6 +2919,15 @@
           },
           "tracking_number": {
             "title": "Tracking Number",
+            "type": "string"
+          },
+          "type": {
+            "default": "PACK",
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
             "type": "string"
           }
         },
@@ -3928,6 +4168,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/AlertOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "closed_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClosedSessionOut"
               },
               {
                 "type": "null"
@@ -7628,6 +7878,60 @@
           }
         },
         "summary": "Cancel Session",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/sessions/{session_id}/inspection": {
+      "put": {
+        "description": "API-102: lưu kết luận + dòng kiểm phiên hoàn (FR-04.03, 04.09; BR-22).",
+        "operationId": "save_inspection_api_v1_station_sessions__session_id__inspection_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InspectionSavedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Inspection",
         "tags": [
           "station"
         ]
