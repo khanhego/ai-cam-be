@@ -8,8 +8,8 @@ COMPOSE="docker compose -f docker/compose.dev.yml"
 # Camera cũ bị xóa khỏi DB nhưng video thô của chúng vẫn còn: dọn trước khi seed (seed tạo camera id mới mỗi lần),
 # để stack dev không đầy ổ. Image MediaMTX không có shell nên dùng container tạm gắn cùng volume.
 docker run --rm -v aicam-dev_video:/v alpine sh -c 'rm -rf /v/raw/* /v/clips/* /v/exports/* /v/snapshots/*' >/dev/null 2>&1 || true
-# Xóa sạch schema rồi migrate từ đầu. Không dùng `alembic downgrade base`: downgrade 0003 từ chối khi DB đã có
-# dữ liệu Phase 2 (guard DEC-301, archive `phase2_archive` ở T-120) — reset QA thì cố ý bỏ hết dữ liệu.
+# Xóa sạch schema rồi migrate từ đầu. Không dùng `alembic downgrade base`: downgrade 0003 giữ dữ liệu Phase 2 trong
+# `phase2_archive` (T-120) để nâng cấp lại khôi phục — reset QA thì cố ý bỏ hết dữ liệu.
 $COMPOSE exec -T postgres psql -U aicam -d aicam -qc 'DROP SCHEMA IF EXISTS phase2_archive CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;' >/dev/null
 $COMPOSE exec -T api sh -c 'alembic upgrade head && aicam seed-demo' | tail -3
 # Bỏ đếm đăng nhập sai theo IP và khay Cam 2 còn sót trong Redis.

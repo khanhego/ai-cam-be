@@ -5,6 +5,7 @@ Upgrade (một transaction — DEC-250):
 1. Nâng cấp lại sau downgrade (R3-5, DEC-270): khôi phục hồ sơ `LEGACY_HOLD` + bằng chứng + ghi chú từ
    `phase2_archive.legacy_claims*`; clip trong `phase2_archive.downgrade_held_clips` mà cờ giữ chưa bị đổi từ lúc
    downgrade → `held = false` (trả `held_by` / `held_at` cũ). Không tạo `LEGACY_HOLD` mới cho các clip đó.
+   Clip đã giữ sẵn trước downgrade (`downgrade_preheld_clips`, cờ chưa đổi) → giữ nguyên `held` (DEC-332).
 2. Clip `held` còn lại (`held_before`) → nhóm theo kiện → mỗi kiện một hồ sơ `LEGACY_HOLD` (`OTHER`, Sàn, `NEW`,
    hạn = lúc nâng cấp + 30 ngày `DEFAULT`, người tạo = người giữ đầu tiên) + bằng chứng `SESSION` từng phiên +
    ghi chú hệ thống "Chuyển từ cờ giữ của … lúc …" + audit `CLIP_PROTECTION_MIGRATED`. INSERT theo lô 500.
@@ -16,8 +17,8 @@ Upgrade (một transaction — DEC-250):
 Downgrade (DEC-252, DEC-270): `CREATE SCHEMA IF NOT EXISTS phase2_archive`; đặt `held = true` cho **mọi** clip đang
 được bảo vệ theo ADR-009 (hồ sơ khiếu nại chưa đóng / đóng chưa quá hạn giữ, hồ sơ hàng hoàn chưa kết thúc, +7 ngày
 sau khi nhận, "Chỉ hoàn tiền" 30 ngày) để J-02 của code cũ không xóa; ghi danh sách vào
-`phase2_archive.downgrade_held_clips`; chép hồ sơ `LEGACY_HOLD` + bằng chứng + ghi chú sang `phase2_archive` rồi
-xóa khỏi bảng chính. Hồ sơ khác giữ nguyên.
+`phase2_archive.downgrade_held_clips`; chép hồ sơ `LEGACY_HOLD` + bằng chứng + ghi chú + gói bằng chứng + liên kết
+cảnh báo đối soát (T-120) sang `phase2_archive` rồi xóa khỏi bảng chính. Hồ sơ khác giữ nguyên (downgrade 0003 chép).
 
 Revision ID: 0004
 Revises: 0003
@@ -53,6 +54,7 @@ CLAIM_COLUMNS = (
 )
 EVIDENCE_COLUMNS = "id, claim_id, kind, session_id, snapshot_id, auto, added_by, added_at"
 NOTE_COLUMNS = "id, claim_id, kind, text, author_user_id, at"
+PACK_COLUMNS = "id, claim_id, status, progress, path, sha256, size_bytes, missing, error, created_by, created_at, expires_at"
 
 # Phiên được bảo vệ theo ADR-009 (cùng điều kiện `media.protection.protected_sessions_sql`, viết lại bằng SQL:
 # migration không import code nghiệp vụ). `:floor` = RETENTION_CLIP_MIN_DAYS.
@@ -133,6 +135,22 @@ def _restore_from_archive(bind: sa.Connection) -> tuple[int, int]:
                     "WHERE NOT EXISTS (SELECT 1 FROM claim_note n WHERE n.id = a.id)"
                 )
             )
+        if _exists(bind, "legacy_evidence_packs"):  # gói bằng chứng (FK CASCADE) — T-120, DEC-331
+            bind.execute(
+                sa.text(
+                    f"INSERT INTO evidence_pack ({PACK_COLUMNS}) SELECT {PACK_COLUMNS} "
+                    f"FROM {ARCHIVE}.legacy_evidence_packs a "
+                    "WHERE NOT EXISTS (SELECT 1 FROM evidence_pack e WHERE e.id = a.id)"
+                )
+            )
+        if _exists(bind, "legacy_alert_claims"):  # cảnh báo đối soát trỏ hồ sơ (FK SET NULL)
+            bind.execute(
+                sa.text(
+                    f"UPDATE recon_alert r SET claim_id = a.claim_id FROM {ARCHIVE}.legacy_alert_claims a "
+                    "WHERE r.id = a.alert_id AND r.claim_id IS NULL "
+                    "AND EXISTS (SELECT 1 FROM claim c WHERE c.id = a.claim_id)"
+                )
+            )
         # Mã `KN-` khôi phục giữ nguyên → sequence không được cấp lại mã đã dùng.
         bind.execute(
             sa.text(
@@ -166,15 +184,28 @@ def _restore_from_archive(bind: sa.Connection) -> tuple[int, int]:
     return restored, released
 
 
+def _kept_holds(bind: sa.Connection) -> str:
+    """Nâng cấp lại: clip đã `held` **trước** downgrade (Admin giữ ở Phase 2 — API-42) mà cờ / người / giờ giữ chưa
+    đổi khi chạy code cũ → giữ nguyên `held = true`, không tạo `LEGACY_HOLD` (DEC-332). Trả điều kiện SQL loại trừ."""
+    if not _exists(bind, "downgrade_preheld_clips"):
+        return "true"
+    return (
+        f"NOT EXISTS (SELECT 1 FROM {ARCHIVE}.downgrade_preheld_clips k WHERE k.clip_id = c.id "
+        "AND c.held_by IS NOT DISTINCT FROM k.held_by AND c.held_at IS NOT DISTINCT FROM k.held_at)"
+    )
+
+
 def _migrate_held(bind: sa.Connection) -> list[uuid.UUID]:
     """Clip `held` → hồ sơ `LEGACY_HOLD` (một hồ sơ / kiện). Trả `held_before`."""
+    keep = _kept_holds(bind)
     rows = bind.execute(
         sa.text(
             "SELECT c.id, c.session_id, c.camera_role, c.held_by, c.held_at, s.package_id, p.order_id, "
             "u.display_name "
             "FROM clip c JOIN session s ON s.id = c.session_id JOIN package p ON p.id = s.package_id "
             'LEFT JOIN "user" u ON u.id = c.held_by '
-            "WHERE c.held AND c.status <> 'DELETED' ORDER BY s.package_id, c.held_at NULLS LAST, c.id"
+            f"WHERE c.held AND c.status <> 'DELETED' AND {keep} "
+            "ORDER BY s.package_id, c.held_at NULLS LAST, c.id"
         )
     ).all()
     by_package: dict[uuid.UUID, list[Any]] = defaultdict(list)
@@ -252,7 +283,7 @@ def _migrate_held(bind: sa.Connection) -> list[uuid.UUID]:
         "CAST(:data AS jsonb) || jsonb_build_object('code', c.code) FROM claim c WHERE c.id = :claim_id",
         audits,
     )
-    bind.execute(sa.text("UPDATE clip SET held = false WHERE held"))
+    bind.execute(sa.text(f"UPDATE clip c SET held = false WHERE c.held AND {keep}"))
     log.info("0004: %s clip giữ → %s hồ sơ LEGACY_HOLD (%s phiên)", len(rows), len(claims), len(evidence))
     return [row.id for row in rows]
 
@@ -304,6 +335,15 @@ def downgrade() -> None:
         "clip_id uuid PRIMARY KEY, prev_held_by uuid, prev_held_at timestamptz, "
         "new_held_by uuid, new_held_at timestamptz)"
     )
+    # 0. Clip đã giữ sẵn (API-42 ở Phase 2): nhớ để nâng cấp lại giữ nguyên, không đổi thành LEGACY_HOLD (DEC-332).
+    op.execute(
+        f"CREATE TABLE IF NOT EXISTS {ARCHIVE}.downgrade_preheld_clips ("
+        "clip_id uuid PRIMARY KEY, held_by uuid, held_at timestamptz)"
+    )
+    op.execute(
+        f"INSERT INTO {ARCHIVE}.downgrade_preheld_clips SELECT id, held_by, held_at FROM clip "
+        "WHERE held AND status <> 'DELETED' ON CONFLICT (clip_id) DO NOTHING"
+    )
     # 1. Mọi clip đang được bảo vệ theo ADR-009 → `held = true` (code cũ chỉ biết cờ giữ).
     held = bind.execute(
         sa.text(
@@ -341,6 +381,24 @@ def downgrade() -> None:
                 f"AND NOT EXISTS (SELECT 1 FROM {ARCHIVE}.{table} a WHERE a.id = s.id)"
             )
         )
+    # Gói bằng chứng (CASCADE) + liên kết cảnh báo đối soát (SET NULL) của hồ sơ LEGACY_HOLD — không mất khi xóa.
+    op.execute(f"CREATE TABLE IF NOT EXISTS {ARCHIVE}.legacy_evidence_packs (LIKE evidence_pack)")
+    bind.execute(
+        sa.text(
+            f"INSERT INTO {ARCHIVE}.legacy_evidence_packs ({PACK_COLUMNS}) SELECT {PACK_COLUMNS} FROM evidence_pack s "
+            "WHERE claim_id IN (SELECT id FROM claim WHERE source = 'LEGACY_HOLD') "
+            f"AND NOT EXISTS (SELECT 1 FROM {ARCHIVE}.legacy_evidence_packs a WHERE a.id = s.id)"
+        )
+    )
+    op.execute(
+        f"CREATE TABLE IF NOT EXISTS {ARCHIVE}.legacy_alert_claims (alert_id uuid PRIMARY KEY, claim_id uuid NOT NULL)"
+    )
+    bind.execute(
+        sa.text(
+            f"INSERT INTO {ARCHIVE}.legacy_alert_claims (alert_id, claim_id) SELECT r.id, r.claim_id FROM recon_alert r "
+            "JOIN claim c ON c.id = r.claim_id WHERE c.source = 'LEGACY_HOLD' ON CONFLICT (alert_id) DO NOTHING"
+        )
+    )
     archived = bind.execute(sa.text("DELETE FROM claim WHERE source = 'LEGACY_HOLD'")).rowcount
     log.info(
         "0004 downgrade: đặt held cho %s clip được bảo vệ; chuyển %s hồ sơ LEGACY_HOLD vào %s",

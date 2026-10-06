@@ -26,8 +26,9 @@ TEST_DATABASE_URL = os.environ.get(
 
 
 async def _reset_schema(url: str) -> None:
-    """Xóa sạch schema để migrate từ đầu. Không dùng `downgrade base`: dữ liệu Phase 2 do test đồng thời
-    commit sẽ bị guard downgrade 0003 chặn (DEC-301); đường downgrade kiểm ở `test_migration_0003.py`."""
+    """Xóa sạch schema để migrate từ đầu. Không dùng `downgrade base`: downgrade 0003 chép dữ liệu Phase 2
+    do test đồng thời commit sang `phase2_archive` (T-120) thay vì bỏ; đường downgrade kiểm ở
+    `test_migration_rollback.py`."""
     engine = create_async_engine(url, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as conn:

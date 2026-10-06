@@ -189,8 +189,9 @@ def test_downgrade_then_upgrade_without_phase2_data(mig_db: None) -> None:
     command.check(cfg)
 
 
-def test_downgrade_refused_when_phase2_data_exists(mig_db: None) -> None:
-    """DEC-301: downgrade cấu trúc không được làm mất dữ liệu Phase 2 (archive ở T-120)."""
+def test_downgrade_archives_phase2_data(mig_db: None) -> None:
+    """T-120 (thay guard DEC-301): downgrade không xóa dữ liệu Phase 2 — chép sang `phase2_archive`, up lại
+    khôi phục (đầy đủ ở `test_migration_rollback.py`)."""
     cfg = alembic_config()
     command.upgrade(cfg, "0003")
     run(
@@ -198,11 +199,12 @@ def test_downgrade_refused_when_phase2_data_exists(mig_db: None) -> None:
         "VALUES ('01920000-0000-7000-8000-0000000000c2', 'UNANNOUNCED', 'EXPECTED', 'WAREHOUSE')"
     )
 
-    with pytest.raises(RuntimeError, match="return_case=1"):
-        command.downgrade(cfg, "0002")
+    command.downgrade(cfg, "0002")
 
-    assert run("SELECT version_num FROM alembic_version") == [("0003",)]
-    assert run("SELECT count(*) FROM return_case") == [(1,)]
+    assert run("SELECT version_num FROM alembic_version") == [("0002",)]
+    assert run("SELECT code FROM phase2_archive.return_case") == [("HH-000001",)]
+    command.upgrade(cfg, "head")
+    assert run("SELECT code FROM return_case") == [("HH-000001",)]
 
 
 def test_alembic_check_detects_drift(mig_db: None) -> None:

@@ -42,6 +42,8 @@ x-app: &app
     SHOPEE_BASE_URL: ${SHOPEE_BASE_URL:-https://partner.shopeemobile.com}
     EXPORT_PRESET: ${EXPORT_PRESET:-veryfast}
     EXPORT_SIDE_SCALE: ${EXPORT_SIDE_SCALE:-1280:720}
+    RETENTION_CLIP_MIN_DAYS: ${RETENTION_CLIP_MIN_DAYS:-60}
+    RECON_ENABLED: ${RECON_ENABLED:-true}
 
 services:
   postgres:

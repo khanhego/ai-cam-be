@@ -1,3 +1,4 @@
+# ruff: noqa: S608 — SQL ghép từ hằng của migration (tên bảng / cột), không có input ngoài
 """returns_recon_claims — schema Phase 2 (02a §3, T-101)
 
 Chỉ thêm (tương thích ngược — code Phase 1 vẫn chạy): 3 sequence, 9 bảng mới, cột mới nullable / có default,
@@ -5,15 +6,25 @@ CHECK mở rộng bằng `ADD CONSTRAINT … NOT VALID` + `VALIDATE CONSTRAINT` 
 Backfill `package.created_at` / `status_changed_at` theo lô 5.000 dòng (DEC-225); `setting.recon_start_at = now()`
 (DEC-228); `retention_clip_days` < `RETENTION_CLIP_MIN_DAYS` → nâng lên sàn + audit (DEC-257).
 
-Downgrade (T-101, DEC-301): chỉ khi DB **chưa có dữ liệu Phase 2** (guard) — gỡ cấu trúc, CHECK về tập cũ.
-Có dữ liệu Phase 2 → dừng; downgrade chuyển dữ liệu sang `phase2_archive` (DEC-252, DEC-270) làm ở T-120.
+Downgrade (T-120, DEC-252, DEC-270, DEC-331): **không xóa dữ liệu Phase 2** — chép sang schema `phase2_archive`
+(9 bảng mới; phiên RETURN + `session_event` / `clip` / `approval_request` / `export` của chúng; kiện tạm; dòng
+`status_history` có trạng thái `RETURN_*`; cột Phase 2 của `package` / `session` / `station` / `setting` / `shop`;
+giá trị sequence) rồi mới gỡ cấu trúc, kiện `RETURN_*` về trạng thái cuối không phải hoàn trong `status_history`
+(không có → `DELIVERED`), CHECK về tập cũ. File video / ảnh giữ nguyên trên đĩa. Chặn khi còn phiên RETURN đang
+mở (đóng / hủy trước — docs/ops.md). Chạy sau downgrade 0004 (cờ giữ cho clip được bảo vệ, `LEGACY_HOLD`).
+
+Upgrade lại (bước 5 §3): có `phase2_archive.meta` → khôi phục toàn bộ vào bảng mới / cột mới, kiện về trạng thái
+hoàn nếu code cũ chưa đổi trạng thái, `setval` sequence; **không** drop schema (0004 còn đọc
+`downgrade_held_clips` / `legacy_claims*` rồi drop ở cuối — R3-5).
 
 Revision ID: 0003
 Revises: 0002
 """
 
+import json
+import logging
 import os
-from typing import Sequence, Union
+from typing import Any, Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
@@ -23,6 +34,8 @@ revision: str = "0003"
 down_revision: Union[str, Sequence[str], None] = "0002"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
+
+log = logging.getLogger("alembic.runtime.migration")
 
 SEQUENCES = ("return_case_code_seq", "claim_code_seq", "placeholder_code_seq")
 BACKFILL_BATCH = 5000
@@ -62,22 +75,73 @@ OLD_CHECKS: tuple[tuple[str, str, str], ...] = (
     ("session", "ck_session_cancel_reason_enum", f"cancel_reason IN ({_OLD_CANCEL})"),
 )
 
-# Bảng / dòng mang dữ liệu Phase 2: có thì downgrade cấu trúc không được chạy (mất bằng chứng).
-PHASE2_DATA_GUARDS: tuple[tuple[str, str], ...] = (
-    ("return_case", "SELECT count(*) FROM return_case"),
-    ("claim", "SELECT count(*) FROM claim"),
-    ("recon_alert", "SELECT count(*) FROM recon_alert"),
-    ("snapshot", "SELECT count(*) FROM snapshot"),
-    ("inspection_line", "SELECT count(*) FROM inspection_line"),
-    ("evidence_pack", "SELECT count(*) FROM evidence_pack"),
+ARCHIVE = "phase2_archive"
+# Mã do sequence cấp: (sequence, bảng, cột, tiền tố) — khôi phục `setval` không lùi.
+CODE_SEQUENCES: tuple[tuple[str, str, str, str], ...] = (
+    ("return_case_code_seq", "return_case", "code", "HH-"),
+    ("claim_code_seq", "claim", "code", "KN-"),
+    ("placeholder_code_seq", "package", "tracking_number", "TAM-"),
+)
+# 9 bảng mới: chép nguyên bảng (thứ tự = thứ tự khôi phục theo khóa ngoại).
+NEW_TABLES = (
+    "return_case",
+    "return_case_package",
+    "inspection_line",
+    "snapshot",
+    "claim",
+    "claim_evidence",
+    "claim_note",
+    "evidence_pack",
+    "recon_alert",
+)
+_RETURN_SESSIONS = "SELECT id FROM session WHERE type = 'RETURN'"
+# Dòng Phase 2 trong bảng Phase 1: (bảng archive, bảng nguồn, điều kiện). Thứ tự = thứ tự khôi phục.
+ROW_ARCHIVES: tuple[tuple[str, str, str], ...] = (
+    ("placeholder_package", "package", "is_placeholder"),
     (
-        "session RETURN",
-        "SELECT count(*) FROM session WHERE type = 'RETURN' OR cancel_reason = 'NOT_A_RETURN'",
+        "return_status_history",
+        "status_history",
+        "left(to_status, 7) = 'RETURN_' OR left(coalesce(from_status, ''), 7) = 'RETURN_' "
+        "OR package_id IN (SELECT id FROM package WHERE is_placeholder)",
+    ),
+    ("return_session", "session", "type = 'RETURN'"),
+    ("return_session_event", "session_event", f"session_id IN ({_RETURN_SESSIONS})"),
+    ("return_clip", "clip", f"session_id IN ({_RETURN_SESSIONS})"),
+    ("return_approval_request", "approval_request", f"session_id IN ({_RETURN_SESSIONS})"),
+    ("return_export", "export", f"session_id IN ({_RETURN_SESSIONS})"),
+)
+# Cột Phase 2 của bảng Phase 1 (khóa `id`) — mất khi drop cột nếu không chép.
+_SESSION_COLS = (
+    "return_case_id, operator_name, inspection_conclusion, inspection_note, inspection_saved_at, "
+    "inspection_lines_mode, inspection_corrections, camera_clock"
+)
+_SETTING_COLS = (
+    "return_warn_minutes, return_abandon_minutes, return_missing_days, handover_warn_hours, "
+    "claim_deadline_days, claim_due_soon_hours, recon_start_at"
+)
+COLUMN_ARCHIVES: tuple[tuple[str, str, str], ...] = (
+    (
+        "package_cols",
+        "package",
+        "SELECT id, created_at, status_changed_at, is_placeholder, warehouse_status, "
+        "CAST(NULL AS text) AS downgraded_to FROM package",
     ),
     (
-        "package RETURN_* / kiện tạm",
-        "SELECT count(*) FROM package WHERE warehouse_status LIKE 'RETURN%' OR is_placeholder",
+        "session_cols",
+        "session",
+        f"SELECT id, {_SESSION_COLS} FROM session WHERE type <> 'RETURN' AND "
+        "num_nonnulls(return_case_id, operator_name, inspection_conclusion, inspection_note, "
+        "inspection_saved_at, inspection_lines_mode, inspection_corrections, camera_clock) > 0",
     ),
+    ("station_cols", "station", "SELECT id, kind, work_mode, operator_name FROM station"),
+    ("setting_cols", "setting", f"SELECT id, {_SETTING_COLS} FROM setting"),
+    ("shop_cols", "shop", "SELECT id, last_return_cursor FROM shop WHERE last_return_cursor IS NOT NULL"),
+)
+ARCHIVE_TABLES_0003 = (
+    *NEW_TABLES,
+    *(name for name, _, _ in ROW_ARCHIVES),
+    *(name for name, _, _ in COLUMN_ARCHIVES),
+    "meta",
 )
 
 
@@ -647,21 +711,226 @@ def upgrade() -> None:
     _backfill_packages()
     op.execute("UPDATE setting SET recon_start_at = now() WHERE id = 1")
     _raise_retention_to_minimum()
+    _restore_phase2(op.get_bind())
 
 
-def _guard_no_phase2_data() -> None:
-    bind = op.get_bind()
-    found = {label: n for label, sql in PHASE2_DATA_GUARDS if (n := bind.execute(sa.text(sql)).scalar())}
-    if found:
+# ---------------------------------------------------------------- phase2_archive (T-120)
+
+
+def _scalar(bind: sa.Connection, sql: str) -> Any:
+    return bind.execute(sa.text(sql)).scalar()
+
+
+def _columns(bind: sa.Connection, schema: str, table: str) -> list[str]:
+    return list(
+        bind.execute(
+            sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = :s AND table_name = :t ORDER BY ordinal_position"
+            ),
+            {"s": schema, "t": table},
+        ).scalars()
+    )
+
+
+def _copy_back(bind: sa.Connection, archived: str, target: str, on_conflict: str = "") -> int:
+    """`phase2_archive.<archived>` → `public.<target>` theo các cột chung (đúng tên, không phụ thuộc thứ tự)."""
+    available = set(_columns(bind, ARCHIVE, archived))
+    cols = ", ".join(f'"{c}"' for c in _columns(bind, "public", target) if c in available)
+    result = bind.execute(
+        sa.text(f'INSERT INTO "{target}" ({cols}) SELECT {cols} FROM {ARCHIVE}.{archived} {on_conflict}')
+    )
+    return int(result.rowcount or 0)
+
+
+def _guard_no_active_return_session(bind: sa.Connection) -> None:
+    """Phiên RETURN đang mở không chuyển được sang code cũ (không có màn / job cho nó) → dừng, không đổi gì."""
+    n = _scalar(
+        bind,
+        "SELECT count(*) FROM session WHERE type = 'RETURN' AND status IN ('OPEN', 'MISMATCH', 'WAITING_APPROVAL')",
+    )
+    if n:
         raise RuntimeError(
-            "Không downgrade 0003: DB đã có dữ liệu Phase 2 "
-            f"({', '.join(f'{k}={v}' for k, v in found.items())}). Downgrade giữ dữ liệu sang phase2_archive "
-            "(DEC-252) chưa có — xem docs/ops.md (T-120)."
+            f"Không downgrade 0003: còn {n} phiên nhận hàng hoàn đang mở — hoàn tất / hủy ở station (hoặc chờ J-07 "
+            "tự đóng) rồi chạy lại; không có gì bị thay đổi. Xem docs/ops.md mục Rollback Phase 2."
         )
 
 
+def _archive_phase2(bind: sa.Connection) -> dict[str, int]:
+    """Chép mọi dữ liệu Phase 2 sang `phase2_archive` (chưa xóa gì — xóa sau khi chép đủ, cùng transaction)."""
+    op.execute(f"CREATE SCHEMA IF NOT EXISTS {ARCHIVE}")
+    for name in ARCHIVE_TABLES_0003:  # lần downgrade trước đã được 0003 khôi phục hết vào bảng chính
+        op.execute(f"DROP TABLE IF EXISTS {ARCHIVE}.{name}")
+    for table in NEW_TABLES:
+        op.execute(f"CREATE TABLE {ARCHIVE}.{table} AS SELECT * FROM public.{table}")
+    for name, source, where in ROW_ARCHIVES:
+        op.execute(f"CREATE TABLE {ARCHIVE}.{name} AS SELECT * FROM public.{source} WHERE {where}")
+    for name, _, select in COLUMN_ARCHIVES:
+        op.execute(f"CREATE TABLE {ARCHIVE}.{name} AS {select}")
+    # Kiện hoàn → trạng thái cuối không phải hoàn trong lịch sử (không có → DELIVERED) cho code cũ.
+    bind.execute(
+        sa.text(
+            f"UPDATE {ARCHIVE}.package_cols a SET downgraded_to = coalesce(("
+            "  SELECT h.to_status FROM status_history h WHERE h.package_id = a.id AND left(h.to_status, 7) <> 'RETURN_'"
+            "  ORDER BY h.at DESC, h.id DESC LIMIT 1), 'DELIVERED') "
+            "WHERE left(a.warehouse_status, 7) = 'RETURN_'"
+        )
+    )
+    sequences = {
+        name: int(
+            _scalar(bind, f"SELECT CASE WHEN is_called THEN last_value ELSE last_value - 1 END FROM {name}")
+        )
+        for name, _, _, _ in CODE_SEQUENCES
+    }
+    counts = {
+        name: int(_scalar(bind, f"SELECT count(*) FROM {ARCHIVE}.{name}"))
+        for name in ARCHIVE_TABLES_0003
+        if name != "meta"
+    }
+    op.execute(f"CREATE TABLE {ARCHIVE}.meta (key text PRIMARY KEY, value jsonb NOT NULL)")
+    bind.execute(
+        sa.text(
+            f"INSERT INTO {ARCHIVE}.meta (key, value) VALUES ('sequences', CAST(:seq AS jsonb)), "
+            "('counts', CAST(:counts AS jsonb)), ('downgraded_at', to_jsonb(now()))"
+        ),
+        {"seq": json.dumps(sequences), "counts": json.dumps(counts)},
+    )
+    log.info("0003 downgrade: chép sang %s %s", ARCHIVE, json.dumps(counts, ensure_ascii=False))
+    unfinished = _scalar(
+        bind, f"SELECT count(*) FROM {ARCHIVE}.return_clip WHERE status IN ('PENDING', 'FAILED')"
+    )
+    if unfinished:
+        # Code cũ chỉ giữ video thô cho clip lỗi của phiên PACK (G3-F7): cắt lại (API-46) trước khi lùi nếu cần.
+        log.warning(
+            "0003 downgrade: %s clip phiên hoàn chưa cắt được (PENDING / FAILED) — video thô của chúng theo "
+            "retention thô của code cũ",
+            unfinished,
+        )
+    return counts
+
+
+def _remove_archived_rows(bind: sa.Connection) -> None:
+    """Sau khi gỡ cấu trúc: xóa dòng Phase 2 khỏi bảng Phase 1 (đã chép), kiện hoàn về trạng thái cũ."""
+    sessions = f"SELECT id FROM {ARCHIVE}.return_session"
+    for table in ("clip", "session_event", "approval_request", "export"):
+        op.execute(f"DELETE FROM {table} WHERE session_id IN ({sessions})")
+    op.execute(f"DELETE FROM session WHERE id IN ({sessions})")
+    op.execute(f"DELETE FROM status_history WHERE id IN (SELECT id FROM {ARCHIVE}.return_status_history)")
+    op.execute(
+        f"UPDATE package p SET warehouse_status = a.downgraded_to FROM {ARCHIVE}.package_cols a "
+        "WHERE a.id = p.id AND a.downgraded_to IS NOT NULL"
+    )
+    op.execute(
+        f"DELETE FROM package p WHERE p.id IN (SELECT id FROM {ARCHIVE}.placeholder_package) "
+        "AND NOT EXISTS (SELECT 1 FROM session s WHERE s.package_id = p.id)"
+    )
+
+
+def _restore_phase2(bind: sa.Connection) -> None:
+    """Nâng cấp lại sau downgrade: `phase2_archive` → bảng mới / cột mới (DEC-252, DEC-270, DEC-331)."""
+    if _scalar(bind, f"SELECT to_regclass('{ARCHIVE}.meta')") is None:
+        return
+    restored: dict[str, int] = {}
+    restored["placeholder_package"] = _copy_back(
+        bind, "placeholder_package", "package", "ON CONFLICT DO NOTHING"
+    )
+    # Kiện: code cũ chưa đổi trạng thái từ lúc downgrade → trả trạng thái hoàn + mốc; đã đổi → giữ trạng thái mới.
+    changed = bind.execute(
+        sa.text(
+            f"SELECT count(*) FROM package p JOIN {ARCHIVE}.package_cols a ON a.id = p.id "
+            "WHERE a.downgraded_to IS NOT NULL AND NOT a.is_placeholder AND p.warehouse_status <> a.downgraded_to"
+        )
+    ).scalar()
+    bind.execute(
+        sa.text(
+            f"UPDATE package p SET created_at = a.created_at, is_placeholder = a.is_placeholder, "
+            "warehouse_status = CASE WHEN p.warehouse_status = coalesce(a.downgraded_to, a.warehouse_status) "
+            "  THEN a.warehouse_status ELSE p.warehouse_status END, "
+            "status_changed_at = CASE WHEN p.warehouse_status = coalesce(a.downgraded_to, a.warehouse_status) "
+            "  THEN a.status_changed_at ELSE p.status_changed_at END "
+            f"FROM {ARCHIVE}.package_cols a WHERE p.id = a.id"
+        )
+    )
+    if changed:
+        log.warning(
+            "0003: %s kiện hoàn đã đổi trạng thái khi chạy code cũ — giữ trạng thái mới (J-14 đối soát)",
+            changed,
+        )
+    restored["return_status_history"] = _copy_back(
+        bind, "return_status_history", "status_history", "ON CONFLICT DO NOTHING"
+    )
+    order = (
+        ("return_case", "return_case"),
+        ("return_case_package", "return_case_package"),
+        ("return_session", "session"),
+        ("return_session_event", "session_event"),
+        ("return_clip", "clip"),
+        ("return_approval_request", "approval_request"),
+        ("return_export", "export"),
+        ("inspection_line", "inspection_line"),
+        ("snapshot", "snapshot"),
+        ("claim", "claim"),
+        ("claim_evidence", "claim_evidence"),
+        ("claim_note", "claim_note"),
+        ("evidence_pack", "evidence_pack"),
+        ("recon_alert", "recon_alert"),
+    )
+    for archived, target in order:
+        restored[archived] = _copy_back(bind, archived, target)
+    bind.execute(
+        sa.text(
+            f"UPDATE session s SET ({_SESSION_COLS}) = (SELECT {_SESSION_COLS} FROM {ARCHIVE}.session_cols a "
+            f"WHERE a.id = s.id) WHERE s.id IN (SELECT id FROM {ARCHIVE}.session_cols)"
+        )
+    )
+    bind.execute(
+        sa.text(
+            f"UPDATE station s SET kind = a.kind, work_mode = a.work_mode, operator_name = a.operator_name "
+            f"FROM {ARCHIVE}.station_cols a WHERE a.id = s.id"
+        )
+    )
+    bind.execute(
+        sa.text(
+            f"UPDATE setting s SET ({_SETTING_COLS}) = (SELECT {_SETTING_COLS} FROM {ARCHIVE}.setting_cols a "
+            f"WHERE a.id = s.id) WHERE s.id IN (SELECT id FROM {ARCHIVE}.setting_cols)"
+        )
+    )
+    bind.execute(
+        sa.text(
+            f"UPDATE shop s SET last_return_cursor = a.last_return_cursor FROM {ARCHIVE}.shop_cols a WHERE a.id = s.id"
+        )
+    )
+    _restore_sequences(bind)
+    expected = bind.execute(sa.text(f"SELECT value FROM {ARCHIVE}.meta WHERE key = 'counts'")).scalar() or {}
+    short = {k: (expected.get(k), v) for k, v in restored.items() if expected.get(k) not in (None, v)}
+    log.info("0003: khôi phục từ %s %s", ARCHIVE, json.dumps(restored, ensure_ascii=False))
+    if short:
+        log.warning("0003: số dòng khôi phục khác lúc chép (chép, khôi phục) %s", short)
+
+
+def _restore_sequences(bind: sa.Connection) -> None:
+    """`setval` = max(giá trị lúc downgrade, mã lớn nhất đang có, kể cả `LEGACY_HOLD` còn trong archive) — mã mới
+    không trùng mã đã cấp (R2-6)."""
+    saved = bind.execute(sa.text(f"SELECT value FROM {ARCHIVE}.meta WHERE key = 'sequences'")).scalar() or {}
+    legacy = _scalar(bind, f"SELECT to_regclass('{ARCHIVE}.legacy_claims')") is not None
+    for seq, table, column, prefix in CODE_SEQUENCES:
+        sources = [f'SELECT {column} AS code FROM "{table}"']
+        if table == "claim" and legacy:
+            sources.append(f"SELECT code FROM {ARCHIVE}.legacy_claims")
+        top = _scalar(
+            bind,
+            f"SELECT max(substring(code FROM {len(prefix) + 1})::bigint) FROM ({' UNION ALL '.join(sources)}) x "
+            f"WHERE code ~ '^{prefix}[0-9]+$'",
+        )
+        value = max(int(saved.get(seq) or 0), int(top or 0))
+        if value > 0:
+            bind.execute(sa.text("SELECT setval(CAST(:seq AS regclass), :v)"), {"seq": seq, "v": value})
+
+
 def downgrade() -> None:
-    _guard_no_phase2_data()
+    bind = op.get_bind()
+    _guard_no_active_return_session(bind)
+    _archive_phase2(bind)
     for table, name, _ in NEW_CHECKS:
         op.execute(f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS {name}')
     op.drop_column("station", "operator_name")
@@ -748,6 +1017,7 @@ def downgrade() -> None:
     op.drop_index("ix_return_case_return_tracking_upper", table_name="return_case")
     op.drop_index(op.f("ix_return_case_order_id"), table_name="return_case")
     op.drop_table("return_case")
+    _remove_archived_rows(bind)
     for table, name, expr in OLD_CHECKS:
         op.execute(f'ALTER TABLE "{table}" ADD CONSTRAINT {name} CHECK ({expr})')
     for name in SEQUENCES:

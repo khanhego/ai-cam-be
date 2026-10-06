@@ -138,9 +138,54 @@ dc ps && dc logs migrate                            # 4. migrate Exited (0), api
 
 Khi có image trên registry: đặt `AICAM_IMAGE=ghcr.io/<org>/ai-cam-be:<tag>` rồi `dc pull && dc up -d`.
 
-Rollback (02 §10): về tag image / commit trước + `dc up -d`; migration mới có `downgrade`: `dc run --rm migrate alembic downgrade -1` (chạy **trước** khi về image cũ). Nặng hơn: khôi phục DB từ bản sao lưu ở bước 1.
+Rollback (02 §10): về tag image / commit trước + `dc up -d`; migration mới có `downgrade`: `dc run --rm migrate alembic downgrade <revision>` bằng **image mới** (chạy **trước** khi về image cũ). Nặng hơn: khôi phục DB từ bản sao lưu ở bước 1. Lùi từ Phase 2 về Phase 1: theo mục 7.1, không dùng `downgrade -1`.
 
 Làm nên lúc ngoài giờ đóng gói: api khởi động lại vài giây, station tự nối lại (phiên đang mở nằm trong DB).
+
+### 7.1 Phase 2 (hàng hoàn, đối soát, khiếu nại): nâng cấp và lùi về Phase 1
+
+Phase 2 thêm 2 migration: **0003** (bảng / cột mới, chỉ thêm) và **0004** (clip đang "Giữ" → hồ sơ khiếu nại
+"Chuyển từ cờ giữ" — `LEGACY_HOLD`). Từ Phase 2, clip được giữ theo **hồ sơ** (ADR-009) thay cho cờ giữ từng clip.
+
+**Nâng cấp** (như mục 7, thêm):
+
+1. Sao lưu DB (`pg-backup.sh once`) **và** chụp snapshot volume video (NAS / RAID) — bằng chứng không nằm trong `pg_dump`.
+2. Sàn giữ clip: `RETENTION_CLIP_MIN_DAYS` (mặc định 60, đặt trong `docker/.env`). 0003 nâng `retention_clip_days` dưới sàn lên sàn + audit `RETENTION_RAISED_TO_MINIMUM`.
+3. `dc up -d --build` → kiểm `dc logs migrate`: dòng `0004: N clip giữ → M hồ sơ LEGACY_HOLD` và `held_before=… protected_after=…` (tập sau ≥ tập trước — giữ theo phiên, cả Cam 1 + Cam 2). `migrate` lỗi → không có gì thay đổi (một transaction), `api` không lên: giữ nguyên image cũ, gửi log cho BE.
+4. Admin xem **Hồ sơ khiếu nại** lọc nguồn "Chuyển từ cờ giữ" (hạn = lúc nâng cấp + 30 ngày) — đóng hồ sơ không còn cần.
+
+**Lùi về Phase 1** — chỉ khi không sửa tiến được (ưu tiên forward-fix). Thứ tự bắt buộc: **downgrade bằng image mới
+trước, đổi image sau**. Downgrade không xóa dữ liệu Phase 2: chép sang schema `phase2_archive` (hồ sơ hàng hoàn,
+phiên nhận hàng hoàn + clip / sự kiện / bản xuất / yêu cầu duyệt của nó, kiện tạm `TAM-`, ảnh, hồ sơ khiếu nại +
+bằng chứng + ghi chú + gói bằng chứng, cảnh báo đối soát, lịch sử trạng thái hoàn, cột Phase 2 của station / cài đặt
+/ phiên / kiện, số thứ tự mã HH- / KN- / TAM-). Kiện đang ở trạng thái hoàn hiện lại trạng thái cuối trước đó (không
+có → "Đã giao"). Clip đang được bảo vệ theo hồ sơ được đặt cờ **Giữ** để J-02 của image cũ không xóa. File video,
+ảnh, gói zip **giữ nguyên trên đĩa**.
+
+```sh
+dc exec backup /bin/sh /pg-backup.sh once                  # 1. sao lưu (bắt buộc) + snapshot volume video
+# 2. Hoàn tất / hủy mọi phiên nhận hàng hoàn đang mở ở station (downgrade từ chối nếu còn — không đổi gì).
+#    Phiên hoàn có clip "Không cắt được": bấm Thử lại (API-46) trước — image cũ không giữ video thô cho chúng.
+dc stop api vision worker worker-sync worker-export beat   # 3. dừng dịch vụ (không để job ghi giữa chừng)
+dc run --rm migrate alembic downgrade 0002                 # 4. bằng IMAGE MỚI (0004 rồi 0003, một transaction)
+dc run --rm migrate alembic current                        #    phải in 0002
+# 5. Log bước 4: "0004 downgrade: đặt held cho N clip…", "0003 downgrade: chép sang phase2_archive {…số dòng…}"
+AICAM_IMAGE=<tag Phase 1> dc up -d                         # 6. rồi mới đổi image BE (và build FE Phase 1)
+```
+
+- **Không** xóa schema `phase2_archive`, **không** dọn `clips/`, `snapshots/`, `exports/pack-*` bằng tay, **không** bỏ
+  "Giữ" hàng loạt khi đang chạy Phase 1 (bỏ giữ → J-02 cũ xóa được clip bằng chứng).
+- Image cũ **không chạy được** trên DB đã nâng cấp: `migrate` của nó báo `Can't locate revision identified by '0004'`
+  (thoát ≠ 0) nên `api` / worker không khởi động — đúng ý (chặn J-02 cũ). Gặp lỗi này: làm lại bước 3–4 bằng image
+  mới. Không bỏ qua bằng `docker start` / `dc start api`.
+- Lỗi ở bước 4 → cả lệnh lùi lại, DB giữ nguyên Phase 2 (chạy lại sau khi xử lý nguyên nhân trong log).
+
+**Nâng cấp lại lên Phase 2** sau khi đã lùi: như phần Nâng cấp. 0003 khôi phục mọi thứ từ `phase2_archive` (kiện mà
+image cũ đã đổi trạng thái thì giữ trạng thái mới — log `kiện hoàn đã đổi trạng thái`, đối soát J-14 sẽ báo lệch nếu
+có); 0004 trả cờ giữ do downgrade đặt (clip Admin đã giữ trước khi lùi vẫn giữ), khôi phục hồ sơ "Chuyển từ cờ giữ"
+cũ, chỉ tạo hồ sơ mới cho clip được giữ thêm trong lúc chạy Phase 1, rồi drop `phase2_archive`. Mã HH- / KN- / TAM-
+mới không trùng mã cũ. Kiểm log migrate: `0003: khôi phục từ phase2_archive {…}` (số dòng = lúc chép) và
+`0004: khôi phục …`.
 
 ## 8. Xem log, giám sát
 
