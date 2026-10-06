@@ -148,6 +148,46 @@ async def apply_platform_cancel(session: AsyncSession, package: Package) -> bool
     return await transition(session, package, target, source="PLATFORM", actor_label="Sàn")
 
 
+def _item_key(sku: str | None, name: str, variation: str | None) -> tuple[str, str, str]:
+    return ((sku or "").strip().upper(), name.strip().lower(), (variation or "").strip().lower())
+
+
+async def sync_items(
+    session: AsyncSession, order_id: uuid.UUID, items: Sequence[PlatformItem], *, with_image: bool
+) -> None:
+    """Ghi dòng đơn giữ nguyên `order_item.id` khi dòng không đổi (sku + tên + phân loại).
+
+    Phase 2: dòng kiểm phiên hoàn (`inspection_line`) và yêu cầu trả (`requested_items`) trỏ `order_item_id`
+    — xóa / tạo lại mọi dòng ở mỗi lần đồng bộ sẽ làm mất liên kết giữa phiên đang mở (DEC-307).
+    """
+    existing = list(
+        (
+            await session.scalars(
+                select(OrderItem).where(OrderItem.order_id == order_id).order_by(OrderItem.id)
+            )
+        ).all()
+    )
+    unused = list(existing)
+    for item in items:
+        key = _item_key(item.sku, item.product_name, item.variation)
+        row = next((r for r in unused if _item_key(r.sku, r.product_name, r.variation) == key), None)
+        if row is None:
+            session.add(
+                OrderItem(
+                    order_id=order_id, sku=item.sku, product_name=item.product_name, variation=item.variation,
+                    quantity=item.quantity, image_url=item.image_url if with_image else None,
+                )
+            )  # fmt: skip
+            continue
+        unused.remove(row)
+        row.quantity = item.quantity
+        row.sku, row.product_name, row.variation = item.sku, item.product_name, item.variation
+        if with_image:
+            row.image_url = item.image_url
+    if unused:
+        await session.execute(delete(OrderItem).where(OrderItem.id.in_([r.id for r in unused])))
+
+
 @dataclass
 class UpsertResult:
     order: Order
@@ -201,18 +241,7 @@ async def upsert_platform_order(
     order.raw_payload = data.raw
     await session.flush()
 
-    await session.execute(delete(OrderItem).where(OrderItem.order_id == order.id))
-    for item in data.items:
-        session.add(
-            OrderItem(
-                order_id=order.id,
-                sku=item.sku,
-                product_name=item.product_name,
-                variation=item.variation,
-                quantity=item.quantity,
-                image_url=item.image_url,
-            )
-        )
+    await sync_items(session, order.id, data.items, with_image=True)
 
     packages: list[Package] = []
     for code in data.tracking_numbers:
@@ -298,17 +327,7 @@ async def apply_csv_order(
     order.buyer_note = data.buyer_note
     order.csv_import_id = import_id
     await session.flush()
-    await session.execute(delete(OrderItem).where(OrderItem.order_id == order.id))
-    for item in data.items:
-        session.add(
-            OrderItem(
-                order_id=order.id,
-                sku=item.sku,
-                product_name=item.product_name,
-                variation=item.variation,
-                quantity=item.quantity,
-            )
-        )
+    await sync_items(session, order.id, data.items, with_image=False)
     for code in data.tracking_numbers:
         package = await find_package(session, code, for_update=True)
         if package is not None and package.order_id is not None and package.order_id != order.id:

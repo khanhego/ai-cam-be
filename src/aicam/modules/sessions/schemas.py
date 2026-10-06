@@ -6,7 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-StationStateName = Literal["READY", "PACKING", "MISMATCH", "WAITING_APPROVAL"]
+StationStateName = Literal["READY", "PACKING", "MISMATCH", "WAITING_APPROVAL", "INSPECTING"]
+Conclusion = Literal["OK", "DAMAGED", "MISSING_ITEM", "WRONG_ITEM", "EMPTY_BOX", "OTHER"]
 Outcome = Literal["SESSION_OPENED", "SESSION_COMPLETED", "MISMATCH", "ALERT", "IGNORED"]
 
 
@@ -53,6 +54,7 @@ class OrderBrief(BaseModel):
 
 
 class ItemOut(BaseModel):
+    order_item_id: uuid.UUID | None = None
     product_name: str
     variation: str | None
     quantity: int
@@ -72,15 +74,85 @@ class MismatchOut(BaseModel):
     actual: str
 
 
+class ReturnCaseState(BaseModel):
+    """`session.return_case` của API-10 (phiên RETURN)."""
+
+    id: uuid.UUID
+    code: str
+    kind: Literal["FAILED_DELIVERY", "BUYER_RETURN", "REFUND_ONLY", "UNANNOUNCED", "UNIDENTIFIED"]
+    status: str
+    platform_return_sn: str | None
+    return_tracking_number: str | None
+    reason: str | None
+    reason_text: str | None
+    reason_label: str | None
+    package_count: int
+    received_count: int
+
+
+class InspectionLineOut(BaseModel):
+    order_item_id: uuid.UUID | None
+    product_name: str
+    variation: str | None
+    image_url: str | None
+    quantity_sent: int
+    quantity_requested: int
+    quantity_received: int
+    condition: Conclusion | None
+    note: str | None
+
+
+class InspectionOut(BaseModel):
+    conclusion: Conclusion | None
+    note: str
+    saved_at: datetime | None
+    lines_mode: Literal["FULL", "REFERENCE"]
+    lines: list[InspectionLineOut]
+
+
+class SnapshotOut(BaseModel):
+    id: uuid.UUID
+    kind: Literal["MANUAL", "PACK_CLOSE"]
+    taken_at: datetime
+    url: str
+
+
+class SnapshotRef(BaseModel):
+    id: uuid.UUID
+    url: str
+
+
+class PackReferenceClip(BaseModel):
+    id: uuid.UUID
+    camera_role: Literal["CAM1", "CAM2"]
+    status: str
+
+
+class PackReference(BaseModel):
+    """Phiên PACK hiệu lực của kiện (02 API-10 `pack_reference`); null → cờ `NO_PACK_CLIP`."""
+
+    session_id: uuid.UUID
+    ended_at: datetime | None
+    station_name: str
+    clips: list[PackReferenceClip]
+    snapshot: SnapshotRef | None
+
+
 class SessionOut(BaseModel):
     id: uuid.UUID
+    type: Literal["PACK", "RETURN"] = "PACK"
     status: str
     started_at: datetime
     flags: list[str]
+    operator_name: str | None = None
     package: PackageBrief
     mismatch: MismatchOut | None
     warn_at: datetime
     abandon_at: datetime
+    return_case: ReturnCaseState | None = None
+    inspection: InspectionOut | None = None
+    snapshots: list[SnapshotOut] | None = None
+    pack_reference: PackReference | None = None
 
 
 class ApprovalBrief(BaseModel):
@@ -98,6 +170,8 @@ class StationStateOut(BaseModel):
     session: SessionOut | None
     approval_request: ApprovalBrief | None
     today_count: int
+    today_return_count: int = 0
+    today_return_issue_count: int = 0
     server_time: datetime
 
 
@@ -113,6 +187,15 @@ class AlertOut(BaseModel):
         "ALREADY_HANDED_OVER",
         "INVALID_CODE",
         "PACKED_ELSEWHERE_IN_PROGRESS",
+        # Phase 2 — bàn hoàn (02 §6.2 API-11).
+        "OPERATOR_REQUIRED",
+        "RETURN_NOT_FOUND",
+        "RETURN_ALREADY_RECEIVED",
+        "RETURN_MULTIPLE_PACKAGES",
+        "NOT_SHIPPED",
+        "RETURN_IN_PROGRESS_ELSEWHERE",
+        "INSPECTION_REQUIRED",
+        "RETURN_CODE_DIFFERENT",
     ]
     message: str
     data: dict[str, Any] = {}
@@ -154,3 +237,28 @@ class RecentSession(BaseModel):
 
 class RecentOut(BaseModel):
     items: list[RecentSession]
+
+
+class ReturnLookupCase(BaseModel):
+    id: uuid.UUID
+    code: str
+    kind: str
+    status: str
+    return_tracking_number: str | None
+
+
+class ReturnLookupItem(BaseModel):
+    package_id: uuid.UUID
+    tracking_number: str
+    platform_order_sn: str | None
+    warehouse_status: str
+    return_case: ReturnLookupCase | None
+    can_open: bool
+    blocked_reason: str | None
+
+
+class ReturnLookupOut(BaseModel):
+    """API-104 (02 §6.2)."""
+
+    items: list[ReturnLookupItem]
+    platform_checked: bool

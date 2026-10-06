@@ -121,7 +121,15 @@
               "ALREADY_PACKED",
               "ALREADY_HANDED_OVER",
               "INVALID_CODE",
-              "PACKED_ELSEWHERE_IN_PROGRESS"
+              "PACKED_ELSEWHERE_IN_PROGRESS",
+              "OPERATOR_REQUIRED",
+              "RETURN_NOT_FOUND",
+              "RETURN_ALREADY_RECEIVED",
+              "RETURN_MULTIPLE_PACKAGES",
+              "NOT_SHIPPED",
+              "RETURN_IN_PROGRESS_ELSEWHERE",
+              "INSPECTION_REQUIRED",
+              "RETURN_CODE_DIFFERENT"
             ],
             "title": "Code",
             "type": "string"
@@ -1527,6 +1535,166 @@
         "title": "ImportPreviewOut",
         "type": "object"
       },
+      "InspectionLineOut": {
+        "properties": {
+          "condition": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "order_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Item Id"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "quantity_received": {
+            "title": "Quantity Received",
+            "type": "integer"
+          },
+          "quantity_requested": {
+            "title": "Quantity Requested",
+            "type": "integer"
+          },
+          "quantity_sent": {
+            "title": "Quantity Sent",
+            "type": "integer"
+          },
+          "variation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variation"
+          }
+        },
+        "required": [
+          "order_item_id",
+          "product_name",
+          "variation",
+          "image_url",
+          "quantity_sent",
+          "quantity_requested",
+          "quantity_received",
+          "condition",
+          "note"
+        ],
+        "title": "InspectionLineOut",
+        "type": "object"
+      },
+      "InspectionOut": {
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "lines_mode": {
+            "enum": [
+              "FULL",
+              "REFERENCE"
+            ],
+            "title": "Lines Mode",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "saved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved At"
+          }
+        },
+        "required": [
+          "conclusion",
+          "note",
+          "saved_at",
+          "lines_mode",
+          "lines"
+        ],
+        "title": "InspectionOut",
+        "type": "object"
+      },
       "ItemDetail": {
         "properties": {
           "image_url": {
@@ -1581,6 +1749,18 @@
               }
             ],
             "title": "Image Url"
+          },
+          "order_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Item Id"
           },
           "product_name": {
             "title": "Product Name",
@@ -1954,6 +2134,86 @@
           "items"
         ],
         "title": "OrderDetail",
+        "type": "object"
+      },
+      "PackReference": {
+        "description": "Phiên PACK hiệu lực của kiện (02 API-10 `pack_reference`); null → cờ `NO_PACK_CLIP`.",
+        "properties": {
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/PackReferenceClip"
+            },
+            "title": "Clips",
+            "type": "array"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "station_name": {
+            "title": "Station Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "ended_at",
+          "station_name",
+          "clips",
+          "snapshot"
+        ],
+        "title": "PackReference",
+        "type": "object"
+      },
+      "PackReferenceClip": {
+        "properties": {
+          "camera_role": {
+            "enum": [
+              "CAM1",
+              "CAM2"
+            ],
+            "title": "Camera Role",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "camera_role",
+          "status"
+        ],
+        "title": "PackReferenceClip",
         "type": "object"
       },
       "PackageBrief": {
@@ -3177,6 +3437,240 @@
         "title": "ReturnCasePage",
         "type": "object"
       },
+      "ReturnCaseState": {
+        "description": "`session.return_case` của API-10 (phiên RETURN).",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "FAILED_DELIVERY",
+              "BUYER_RETURN",
+              "REFUND_ONLY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "package_count": {
+            "title": "Package Count",
+            "type": "integer"
+          },
+          "platform_return_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Return Sn"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reason_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Label"
+          },
+          "reason_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Text"
+          },
+          "received_count": {
+            "title": "Received Count",
+            "type": "integer"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "platform_return_sn",
+          "return_tracking_number",
+          "reason",
+          "reason_text",
+          "reason_label",
+          "package_count",
+          "received_count"
+        ],
+        "title": "ReturnCaseState",
+        "type": "object"
+      },
+      "ReturnLookupCase": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "return_tracking_number"
+        ],
+        "title": "ReturnLookupCase",
+        "type": "object"
+      },
+      "ReturnLookupItem": {
+        "properties": {
+          "blocked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Reason"
+          },
+          "can_open": {
+            "title": "Can Open",
+            "type": "boolean"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "platform_order_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Order Sn"
+          },
+          "return_case": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnLookupCase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "tracking_number",
+          "platform_order_sn",
+          "warehouse_status",
+          "return_case",
+          "can_open",
+          "blocked_reason"
+        ],
+        "title": "ReturnLookupItem",
+        "type": "object"
+      },
+      "ReturnLookupOut": {
+        "description": "API-104 (02 §6.2).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnLookupItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "platform_checked": {
+            "title": "Platform Checked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "platform_checked"
+        ],
+        "title": "ReturnLookupOut",
+        "type": "object"
+      },
       "ReturnOrderBrief": {
         "properties": {
           "id": {
@@ -3577,6 +4071,16 @@
             "title": "Id",
             "type": "string"
           },
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InspectionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mismatch": {
             "anyOf": [
               {
@@ -3587,8 +4091,53 @@
               }
             ]
           },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "pack_reference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "package": {
             "$ref": "#/components/schemas/PackageBrief"
+          },
+          "return_case": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnCaseState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshots": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshots"
           },
           "started_at": {
             "format": "date-time",
@@ -3597,6 +4146,15 @@
           },
           "status": {
             "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "default": "PACK",
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
             "type": "string"
           },
           "warn_at": {
@@ -3790,6 +4348,59 @@
           "last_error"
         ],
         "title": "ShopOut",
+        "type": "object"
+      },
+      "SnapshotOut": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "MANUAL",
+              "PACK_CLOSE"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "taken_at": {
+            "format": "date-time",
+            "title": "Taken At",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "taken_at",
+          "url"
+        ],
+        "title": "SnapshotOut",
+        "type": "object"
+      },
+      "SnapshotRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "url"
+        ],
+        "title": "SnapshotRef",
         "type": "object"
       },
       "StateOnlyOut": {
@@ -4085,7 +4696,8 @@
               "READY",
               "PACKING",
               "MISMATCH",
-              "WAITING_APPROVAL"
+              "WAITING_APPROVAL",
+              "INSPECTING"
             ],
             "title": "State",
             "type": "string"
@@ -4095,6 +4707,16 @@
           },
           "today_count": {
             "title": "Today Count",
+            "type": "integer"
+          },
+          "today_return_count": {
+            "default": 0,
+            "title": "Today Return Count",
+            "type": "integer"
+          },
+          "today_return_issue_count": {
+            "default": 0,
+            "title": "Today Return Issue Count",
             "type": "integer"
           },
           "tray": {
@@ -6846,6 +7468,51 @@
           }
         },
         "summary": "Set Operator",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/return-lookup": {
+      "get": {
+        "description": "API-104: tìm kiện hoàn thủ công (FR-04.07).",
+        "operationId": "return_lookup_api_api_v1_station_return_lookup_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReturnLookupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Return Lookup Api",
         "tags": [
           "station"
         ]

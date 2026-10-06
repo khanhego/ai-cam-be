@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     mediamtx_rtsp_url: str = "rtsp://localhost:58554"
 
     scan_code_regex: str = r"^[A-Z0-9-]{8,40}$"
+    # Phase 2 (02a §9): mã đơn sàn chấp nhận khi quét ở bàn hoàn; API-104 tìm tiền tố từ N ký tự.
+    order_sn_regex: str = r"^[A-Z0-9]{10,20}$"
+    return_lookup_prefix_min: int = 6
     platform_lookup_timeout_s: float = 2.0
     clip_padding_s: int = 5
 

@@ -3,7 +3,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core.db import get_session
@@ -11,11 +11,12 @@ from aicam.core.deps import Principal, require_roles
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.platforms.base import PlatformAdapter
 from aicam.modules.platforms.router import get_platform_adapter
-from aicam.modules.sessions import service, station_config
+from aicam.modules.sessions import return_lookup, service, station_config
 from aicam.modules.sessions.schemas import (
     CancelIn,
     OperatorIn,
     RecentOut,
+    ReturnLookupOut,
     ScanIn,
     ScanOut,
     StateOnlyOut,
@@ -90,3 +91,16 @@ async def set_operator(
         db, station, body.name, actor=p.user_id, ip=p.ip, settings=settings
     )
     return StateOnlyOut(state=state)
+
+
+@router.get("/return-lookup", response_model=ReturnLookupOut)
+async def return_lookup_api(
+    p: StationOnly,
+    db: DbSession,
+    settings: AppSettings,
+    adapter: Annotated[PlatformAdapter, Depends(get_platform_adapter)],
+    q: Annotated[str, Query(max_length=64)] = "",
+) -> ReturnLookupOut:
+    """API-104: tìm kiện hoàn thủ công (FR-04.07)."""
+    station = await service.require_station(db, p.station_id, p.user_id)
+    return await return_lookup.lookup(db, station, q, adapter, settings)
