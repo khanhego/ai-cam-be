@@ -175,7 +175,7 @@ def test_tc_06_01_j14_overdue_after_time_travel(
     assert detail["warehouse_status"] == "RETURN_MISSING"
     assert detail["recon_alerts"][0]["br"] == "BR-12"
     report = client.get("/reports/daily", headers=sup).json()
-    assert report["counts"]["returns_missing"] == 1
+    assert report["counts"]["returns_missing"] == 2  # 41 + kiện mẫu SPXTST0000049 của seed-demo (T-116)
     assert report["counts"]["recon_open"]["HIGH"] >= 1
     assert {a["kind"] for a in report["attention"]} >= {"RETURN_MISSING", "RECON_HIGH"}
 

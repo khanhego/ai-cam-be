@@ -2,7 +2,8 @@
 
 - `aicam create-admin --username admin --display-name "Quản trị"`: tạo Admin đầu tiên (mật khẩu hỏi qua stdin
   hoặc biến `AICAM_ADMIN_PASSWORD`).
-- `aicam seed-demo`: dữ liệu demo / test theo 04-test-cases §1 (tiền tố TST, mật khẩu `matkhau123`).
+- `aicam seed-demo`: dữ liệu demo / test theo 04-test-cases §1 (tiền tố TST, mật khẩu `matkhau123`)
+  + hàng hoàn mẫu (`seed_returns`, T-116). Chặn trên production.
 """
 
 import argparse
@@ -17,6 +18,7 @@ import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại g
 from aicam import __version__
 from aicam.core import clock
 from aicam.core.db import dispose_engine, init_engine, sessionmaker
+from aicam.core.redis import close_redis, init_redis
 from aicam.core.security import hash_password
 from aicam.core.settings import get_settings
 from aicam.modules.users.models import User
@@ -67,8 +69,11 @@ async def seed_demo() -> list[str]:
     from aicam.modules.stations.models import Station
     from aicam.modules.stations.schemas import CameraIn
 
+    from .seed_returns import seed_returns
+
     settings = get_settings()
     init_engine(settings.database_url)
+    init_redis(settings.redis_url)  # J-14 (khóa `recon:run`) + publish WS sau commit
     lines: list[str] = []
     try:
         async with sessionmaker()() as session:
@@ -143,7 +148,11 @@ async def seed_demo() -> list[str]:
                     mediamtx=mediamtx, settings=settings, actor=admin_id, ip=None,
                 )  # fmt: skip
             lines.append("= TST Station 01: Cam 1 → cam-fake1, Cam 2 → cam-fake2")
+
+            # Phase 2 (T-116): hàng hoàn mẫu — đang về, chỉ hoàn tiền, chưa xác định, cảnh báo, khiếu nại.
+            lines += await seed_returns(session, settings, station_ids[2], users["tst_sup"])
     finally:
+        await close_redis()
         await dispose_engine()
     lines.append(f"Mật khẩu mọi tài khoản demo: {DEMO_PASSWORD}")
     return lines
