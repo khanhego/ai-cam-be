@@ -283,3 +283,27 @@ def test_clip_offset_uses_timeline() -> None:
     assert snapshots.clip_offset(clip, T + timedelta(seconds=10)) == 10.0
     assert snapshots.clip_offset(clip, T + timedelta(seconds=35)) == 25.0  # sau khe hở 10 giây
     assert snapshots.clip_offset(clip, T + timedelta(minutes=5)) == 39.9
+
+
+async def test_duplicate_pack_close_does_not_overwrite_file(
+    db: AsyncSession, media_settings: Settings
+) -> None:
+    """G3 B-3: J-17 giao trùng (cả hai qua bước kiểm "đã có") — bên chèn sau không ghi đè file ảnh đã là bằng
+    chứng: INSERT trước, chỉ đổi tên file khi chèn được; trùng → xóa file tạm."""
+    _, station = await make_station_account(db)
+    pack = await make_closed_session(db, station, "SPXTST0000009", T, T + timedelta(seconds=30))
+    rel = snapshots.rel_path(pack.id, T + timedelta(seconds=30), "pack")
+    path = media_settings.video_root / rel
+    first_tmp, first_sha = snapshots._write_temp(path, b"\xff\xd8first")
+    second_tmp, second_sha = snapshots._write_temp(path, b"\xff\xd8second")
+    assert first_tmp != second_tmp
+
+    assert await snapshots._insert_pack_close(db, pack.id, T, rel, first_tmp, first_sha, 7)
+    assert not await snapshots._insert_pack_close(db, pack.id, T, rel, second_tmp, second_sha, 8)
+
+    assert path.read_bytes() == b"\xff\xd8first"
+    assert not second_tmp.exists()
+    assert not first_tmp.exists()
+    shot = await snapshots.pack_close_of(db, pack.id)
+    assert shot is not None
+    assert shot.sha256 == first_sha == hashlib.sha256(path.read_bytes()).hexdigest()

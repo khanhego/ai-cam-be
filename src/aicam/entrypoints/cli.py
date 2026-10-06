@@ -13,6 +13,7 @@ import os
 import sys
 
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại giữa module phân giải được
 from aicam import __version__
@@ -59,8 +60,31 @@ DEMO_USERS = [
 ]
 
 
+class SeedRefused(Exception):
+    """seed-demo từ chối chạy (G3 F-12)."""
+
+
+def seed_refusal(app_env: str, confirm_staging: bool) -> str | None:
+    """G3 F-12 (DEC-343): chỉ dev / test; staging cần `--confirm-staging`; production không bao giờ."""
+    if app_env in ("dev", "test"):
+        return None
+    if app_env == "staging" and confirm_staging:
+        return None
+    if app_env == "staging":
+        return "seed-demo trên staging cần thêm --confirm-staging (tạo tài khoản TST mật khẩu chung)."
+    return f"seed-demo không chạy trên {app_env}."
+
+
+async def _foreign_users(session: AsyncSession) -> list[str]:
+    """Tài khoản không phải `tst_*` (dữ liệu thật) → seed-demo không trộn dữ liệu giả vào (G3 F-12)."""
+    rows = await session.scalars(
+        select(User.username).where(~User.username.ilike("tst\\_%")).order_by(User.username).limit(5)
+    )
+    return list(rows.all())
+
+
 async def seed_demo() -> list[str]:
-    """Tạo dữ liệu demo idempotent (chạy lại không nhân đôi)."""
+    """Tạo dữ liệu demo idempotent (chạy lại không nhân đôi). DB có tài khoản không phải `tst_*` → từ chối."""
     from aicam.modules.orders import service as orders
     from aicam.modules.platforms.mock.adapter import MockAdapter
     from aicam.modules.sessions.models import PackSession
@@ -77,6 +101,12 @@ async def seed_demo() -> list[str]:
     lines: list[str] = []
     try:
         async with sessionmaker()() as session:
+            foreign = await _foreign_users(session)
+            if foreign:
+                raise SeedRefused(
+                    "seed-demo từ chối: DB đã có tài khoản không phải tst_* "
+                    f"({', '.join(foreign)}) — không trộn dữ liệu demo vào dữ liệu thật."
+                )
             users: dict[str, User] = {}
             for username, name, role in DEMO_USERS:
                 user = await session.scalar(select(User).where(User.username == username))
@@ -174,19 +204,24 @@ def main(argv: list[str] | None = None) -> int:
     admin.add_argument("--username", required=True)
     admin.add_argument("--display-name", default="Quản trị viên")
 
-    sub.add_parser("seed-demo", help="Tạo dữ liệu demo / test (TST…)")
+    seed = sub.add_parser("seed-demo", help="Tạo dữ liệu demo / test (TST…) — chỉ dev / test")
+    seed.add_argument("--confirm-staging", action="store_true", help="cho phép chạy khi APP_ENV=staging")
 
     args = parser.parse_args(argv)
     if args.command == "create-admin":
         print(asyncio.run(create_admin(args.username, args.display_name, _read_password())))
         return 0
     if args.command == "seed-demo":
-        if (
-            get_settings().is_production
-        ):  # tài khoản TST mật khẩu chung không được có trên production (review #17)
-            print("seed-demo không chạy trên production.", file=sys.stderr)
+        # Tài khoản TST mật khẩu chung không được có trên production (review #17, G3 F-12).
+        refusal = seed_refusal(get_settings().app_env, args.confirm_staging)
+        if refusal:
+            print(refusal, file=sys.stderr)
             return 2
-        print("\n".join(asyncio.run(seed_demo())))
+        try:
+            print("\n".join(asyncio.run(seed_demo())))
+        except SeedRefused as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         return 0
     parser.print_help(sys.stderr)
     return 1

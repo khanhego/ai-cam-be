@@ -19,6 +19,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import ColumnElement, CompoundSelect, Select, and_, exists, or_, select, union
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -119,6 +120,18 @@ def case_session_ids(now: datetime) -> CompoundSelect[uuid.UUID]:
 def protected_sessions_sql(now: datetime, cutoff: datetime) -> CompoundSelect[uuid.UUID | None]:
     """Phiên được bảo vệ (a) + (b) + (c) — (d) `held` xét theo clip."""
     return union(claim_session_ids(cutoff), case_session_ids(now))
+
+
+def session_not_protected(column: Any, now: datetime, cutoff: datetime) -> ColumnElement[bool]:
+    """`NOT EXISTS` (G3 B-6): `NOT IN (subquery)` thành NULL khi tập con có NULL → J-02 không xóa gì, và
+    planner không dùng anti-join hiệu quả."""
+    protected = protected_sessions_sql(now, cutoff).subquery()
+    return ~exists().where(protected.c[0] == column)
+
+
+def snapshot_not_evidence(column: Any, cutoff: datetime) -> ColumnElement[bool]:
+    evidence = claim_snapshot_ids(cutoff).subquery()
+    return ~exists().where(evidence.c[0] == column)
 
 
 async def is_session_protected(

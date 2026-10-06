@@ -115,3 +115,15 @@ async def test_seed_returns_creates_every_kind_and_is_idempotent(
     await seed_returns(db, test_settings, station, sup)  # chạy lại: không nhân đôi
 
     assert await _state(db) == first
+
+
+async def test_seed_demo_refuses_database_with_real_users(db: AsyncSession) -> None:
+    """G3 F-12: DB có tài khoản không phải `tst_*` → seed-demo từ chối (danh sách tên trong lỗi)."""
+    from aicam.entrypoints import cli
+
+    assert "aaa_kho_admin" not in await cli._foreign_users(db)
+    await make_user(db, "aaa_kho_admin", "ADMIN")
+    await make_user(db, "tst_x_admin", "ADMIN")
+    found = await cli._foreign_users(db)
+    assert found[0] == "aaa_kho_admin"
+    assert "tst_x_admin" not in found

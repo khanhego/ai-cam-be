@@ -184,3 +184,30 @@ async def test_api82_impact(api: AsyncClient, db: AsyncSession) -> None:
         headers=admin,
     )  # fmt: skip
     assert res.status_code == 422
+
+
+async def test_impact_timeout_scoped_and_mapped(db: AsyncSession, monkeypatch: pytest.MonkeyPatch) -> None:
+    """G3 B-4: `statement_timeout` chỉ áp quanh truy vấn đếm (transaction PUT giữ giá trị cũ); quá giờ → 503
+    `RETENTION_IMPACT_TIMEOUT`, transaction ngoài vẫn dùng được."""
+    from sqlalchemy import text
+
+    from aicam.core.errors import AppError
+    from aicam.core.settings import Settings
+    from aicam.modules.media import service as media
+
+    settings = Settings(app_env="test")
+    before = await db.scalar(text("SHOW statement_timeout"))
+    await media.retention_impact(db, 30, 90, settings)
+    assert await db.scalar(text("SHOW statement_timeout")) == before
+
+    async def slow(*_: Any) -> dict[str, Any]:
+        await db.execute(text("SELECT pg_sleep(0.3)"))
+        return {}
+
+    monkeypatch.setattr(media, "IMPACT_TIMEOUT_MS", 50)
+    monkeypatch.setattr(media, "_retention_counts", slow)
+    with pytest.raises(AppError) as exc:
+        await media.retention_impact(db, 30, 90, settings)
+    assert (exc.value.code, exc.value.status_code) == ("RETENTION_IMPACT_TIMEOUT", 503)
+    assert await db.scalar(text("SELECT 1")) == 1
+    assert await db.scalar(text("SHOW statement_timeout")) == before

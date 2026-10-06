@@ -198,10 +198,28 @@ async def add_evidence(
     auto: bool,
     added_by: uuid.UUID | None,
 ) -> int:
-    """Thêm bằng chứng (bỏ qua cái đã có). Khóa clip của phiên trước khi ghi (DEC-251). Trả số dòng thêm."""
+    """Thêm bằng chứng (bỏ qua cái đã có). Khóa clip của phiên rồi ảnh (của phiên + ảnh được chọn) trước
+    khi ghi (DEC-251; G3 B-1, DEC-339): J-02 `_expire_snapshots` khóa dòng ảnh rồi kiểm lại bảo vệ — phải
+    chờ hồ sơ này commit, không xóa ảnh vừa thành bằng chứng. Ảnh đã `DELETED` khi lấy được khóa → bỏ qua.
+    Trả số dòng thêm."""
     sids = list(dict.fromkeys(session_ids))
     snaps = list(dict.fromkeys(snapshot_ids))
     await lock_session_clips(session, sids)
+    if snaps or sids:
+        locked = (
+            await session.execute(
+                select(Snapshot.id, Snapshot.status)
+                .where(or_(Snapshot.id.in_(snaps), Snapshot.session_id.in_(sids)))
+                .order_by(Snapshot.id)
+                .with_for_update()
+            )
+        ).all()
+        gone = {sid for sid, status in locked if status != "READY"}
+        if gone & set(snaps):
+            log.info(
+                "claim_evidence_snapshot_deleted", claim_id=str(claim.id), snapshot_ids=sorted(map(str, gone))
+            )
+        snaps = [s for s in snaps if s not in gone]
     now = clock.now()
     added = 0
     for sid in sids:

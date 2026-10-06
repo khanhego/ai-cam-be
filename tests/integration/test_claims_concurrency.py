@@ -261,3 +261,71 @@ async def test_parallel_claim_and_retention_invariant(
                 assert detail.missing == []
     async with sessionmaker()() as db:  # hồ sơ mở → J-02 sau đó không xóa clip nào đã là bằng chứng
         assert (await media.enforce_retention(db, test_settings))["clips"] == 0
+
+
+# ---------------------------------------------------------------- tạo hồ sơ ∥ J-02 ảnh (G3 B-1, DEC-339)
+
+
+async def test_claim_locks_snapshot_before_retention(
+    committed: AsyncEngine, test_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ảnh lúc đóng gói (`PACK_CLOSE`) quá hạn: hồ sơ khóa ảnh (chưa commit) → `_expire_snapshots` (đã chọn
+    ảnh làm ứng viên) chờ khóa dòng ảnh, kiểm lại thấy bằng chứng → bỏ qua; ảnh READY, file còn."""
+    from aicam.modules.media.models import Snapshot
+
+    async with sessionmaker()() as db:
+        package_id, pack_id, _, _ = await _old_packed(db, test_settings, 30)
+        rel = f"snapshots/{pack_id}.jpg"
+        path = test_settings.video_root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xd8jpeg")
+        snap = Snapshot(session_id=pack_id, kind="PACK_CLOSE", taken_at=OLD, path=rel, sha256="cd" * 32,
+                        size_bytes=6)  # fmt: skip
+        db.add(snap)
+        p = await _cskh(db, "tst_cc_snap")
+        await db.commit()
+        snap_id = snap.id
+    clock.freeze(T0)
+    locked, release = asyncio.Event(), asyncio.Event()
+    original = media.retention_snapshot_candidates
+    creator: asyncio.Task[Any] | None = None
+
+    async def create_claim() -> None:
+        async with sessionmaker()() as db:
+            await claims.create_manual(
+                db, ClaimCreateIn(package_id=package_id, type="BUYER_CLAIM", counterparty="PLATFORM"), p
+            )
+            locked.set()
+            await release.wait()
+            await commit(db)
+
+    async def candidates_then_claim(*args: Any, **kwargs: Any) -> list[Any]:
+        nonlocal creator
+        result = await original(*args, **kwargs)
+        assert snap_id in result
+        creator = asyncio.create_task(create_claim())
+        await asyncio.wait_for(locked.wait(), timeout=10)
+        return result
+
+    monkeypatch.setattr(media, "retention_snapshot_candidates", candidates_then_claim)
+
+    async def run_expire() -> int:
+        async with sessionmaker()() as db:
+            return await media._expire_snapshots(db, test_settings, T0, T0 - timedelta(days=90))
+
+    j02 = asyncio.create_task(run_expire())
+    await asyncio.wait_for(locked.wait(), timeout=10)
+    await asyncio.sleep(0.3)
+    assert not j02.done()  # chờ khóa dòng ảnh
+    release.set()
+    removed = await asyncio.wait_for(j02, timeout=15)
+    assert creator is not None
+    await creator
+
+    assert removed == 0
+    async with sessionmaker()() as db:
+        row = await db.get(Snapshot, snap_id)
+        assert row is not None
+        assert row.status == "READY"
+        assert await db.scalar(select(func.count()).where(ClaimEvidence.snapshot_id == snap_id)) == 1
+    assert path.exists()

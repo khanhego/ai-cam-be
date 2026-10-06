@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo
 
 import structlog
 from sqlalchemy import delete, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam import __version__
@@ -312,6 +312,14 @@ class _Builder:
             await asyncio.to_thread(shutil.copyfile, absolute(self.settings, snap.path), dst)
         except FileNotFoundError:
             self.miss(snap.session_id, "CAM1", "SNAPSHOT_FILE_MISSING", snapshot_id=str(snap.id))
+            return
+        if snap.sha256:  # G3 B-2: ảnh gốc bất biến như clip — lệch SHA-256 → ghi rõ, không che giấu
+            sha = await asyncio.to_thread(ffmpeg.sha256_file, dst)
+            if sha != snap.sha256:
+                self.miss(
+                    snap.session_id, "CAM1", "SNAPSHOT_CHECKSUM_MISMATCH",
+                    snapshot_id=str(snap.id), sha256_db=snap.sha256, sha256_file=sha,
+                )  # fmt: skip
 
 
 async def _session_rows(
@@ -504,10 +512,17 @@ async def _build(db: AsyncSession, pack_id: uuid.UUID, settings: Settings, rende
         pack.status, pack.progress, pack.error = "READY", 100, None
         pack.expires_at = clock.now() + timedelta(hours=settings.evidence_pack_ttl_hours)
         log.info("evidence_pack_ready", pack_id=str(pack.id), claim_id=str(claim.id), missing=len(b.missing))
-    except (ffmpeg.FFmpegError, OSError) as exc:
-        log.error("evidence_pack_failed", pack_id=str(pack.id), error=str(exc)[:300])
-        pack.status, pack.error = "FAILED", str(exc)[:500]
+    except Exception as exc:  # G3 R11: mọi lỗi (cả DB / lỗi lập trình) → FAILED + dọn, không kẹt RUNNING
+        log.exception("evidence_pack_failed", pack_id=str(pack_id), error=str(exc)[:300])
         shutil.rmtree(root, ignore_errors=True)
+        if isinstance(exc, SQLAlchemyError):  # transaction hỏng → lùi rồi đọc lại gói
+            await db.rollback()
+            failed = await db.get(EvidencePack, pack_id, populate_existing=True)
+            if failed is None:
+                return "SKIPPED"
+            pack = failed
+        pack.status, pack.error = "FAILED", (str(exc) or type(exc).__name__)[:500]
+        pack.expires_at = clock.now() + timedelta(hours=settings.evidence_pack_ttl_hours)
     await commit(db)
     await _publish(db, pack, settings)
     return pack.status

@@ -58,6 +58,44 @@ def _write_readonly(path: Path, data: bytes) -> str:
     return ffmpeg.sha256_file(path)
 
 
+def _write_temp(path: Path, data: bytes) -> tuple[Path, str]:
+    """Ghi ảnh ra file tạm riêng (tên duy nhất), chmod 0444; trả (file tạm, SHA-256). Chỉ đổi thành `path`
+    sau khi dòng `snapshot` đã chèn được (G3 B-3) — J-17 giao trùng / đóng phiên lùi không ghi đè ảnh đã là
+    bằng chứng."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.part")
+    temp.write_bytes(data)
+    os.chmod(temp, 0o444)
+    return temp, ffmpeg.sha256_file(temp)
+
+
+async def _insert_pack_close(
+    session: AsyncSession,
+    session_id: uuid.UUID,
+    taken_at: datetime,
+    rel: str,
+    temp: Path,
+    sha: str,
+    size: int,
+) -> bool:
+    """INSERT `PACK_CLOSE` (unique theo phiên) TRƯỚC, chỉ `os.replace` file khi chèn được (giữ khóa unique tới
+    commit nên không ai khác ghi cùng file); trùng → xóa file tạm, ảnh cũ giữ nguyên (G3 B-3, DEC-339)."""
+    inserted = await session.scalar(
+        insert(Snapshot)
+        .values(
+            id=uuid7(), session_id=session_id, kind="PACK_CLOSE", camera_role="CAM1", taken_at=taken_at,
+            path=rel, sha256=sha, size_bytes=size, status="READY", created_at=clock.now(),
+        )
+        .on_conflict_do_nothing(index_elements=["session_id"], index_where=Snapshot.kind == "PACK_CLOSE")
+        .returning(Snapshot.id)
+    )  # fmt: skip
+    if inserted is None:
+        await asyncio.to_thread(temp.unlink, missing_ok=True)
+        return False
+    await asyncio.to_thread(os.replace, temp, temp.with_name(Path(rel).name))
+    return True
+
+
 def url_for(settings: Settings, snapshot_id: uuid.UUID, uid: uuid.UUID) -> str:
     exp = signing.expiry(settings.media_url_ttl_s)
     return signing.snapshot_url(settings.media_signing_key, snapshot_id, uid, exp)
@@ -211,20 +249,24 @@ async def capture_pack_close_from_cache(session: AsyncSession, pack: PackSession
     cached = await _cached_frame(camera.id, settings, at=pack.ended_at)
     if cached is None:
         return False
+    rel = rel_path(pack.id, pack.ended_at, "pack")
     try:
-        rel = rel_path(pack.id, pack.ended_at, "pack")
-        sha = await asyncio.to_thread(_write_readonly, _absolute(settings, rel), cached.jpeg)
+        temp, sha = await asyncio.to_thread(_write_temp, _absolute(settings, rel), cached.jpeg)
     except OSError:
         log.exception("pack_snapshot_cache_write_failed", session_id=str(pack.id))
         return False
-    session.add(
-        Snapshot(
-            session_id=pack.id, kind="PACK_CLOSE", camera_role="CAM1", taken_at=cached.taken_at, path=rel,
-            sha256=sha, size_bytes=len(cached.jpeg), status="READY",
-        )
-    )  # fmt: skip
-    log.info("pack_snapshot_captured", session_id=str(pack.id), source="cache")
-    return True
+    try:
+        async with session.begin_nested():
+            done = await _insert_pack_close(
+                session, pack.id, cached.taken_at, rel, temp, sha, len(cached.jpeg)
+            )
+    except OSError:
+        temp.unlink(missing_ok=True)
+        log.exception("pack_snapshot_cache_write_failed", session_id=str(pack.id))
+        return False
+    if done:
+        log.info("pack_snapshot_captured", session_id=str(pack.id), source="cache")
+    return done
 
 
 # ---------------------------------------------------------------- API-106
@@ -327,23 +369,14 @@ async def capture_pack_snapshot(session: AsyncSession, session_id: uuid.UUID, se
     )
     data = partial.read_bytes()
     partial.unlink(missing_ok=True)
-    sha = await asyncio.to_thread(_write_readonly, path, data)
-    await session.execute(
-        insert(Snapshot)
-        .values(
-            id=uuid7(),
-            session_id=session_id,
-            kind="PACK_CLOSE",
-            camera_role="CAM1",
-            taken_at=target,
-            path=rel,
-            sha256=sha,
-            size_bytes=len(data),
-            status="READY",
-            created_at=clock.now(),
-        )
-        .on_conflict_do_nothing(index_elements=["session_id"], index_where=Snapshot.kind == "PACK_CLOSE")
-    )
+    temp, sha = await asyncio.to_thread(_write_temp, path, data)
+    try:
+        inserted = await _insert_pack_close(session, session_id, target, rel, temp, sha, len(data))
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
     await commit(session)
+    if not inserted:  # J-17 giao trùng / ảnh từ khung cache đã có: không ghi đè (G3 B-3)
+        return "exists"
     log.info("pack_snapshot_captured", session_id=str(session_id))
     return "captured"

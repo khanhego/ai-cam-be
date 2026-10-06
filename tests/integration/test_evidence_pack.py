@@ -294,7 +294,7 @@ async def test_pack_conflicts_permissions_and_cleanup(
     assert folder.exists()
     clock.advance(timedelta(hours=25))
     owner = await _login(api, db, "tst_cskh_pk5")
-    assert await packs.cleanup_expired(db, media_settings) == 1
+    assert await packs.cleanup_expired(db, media_settings) == 2  # + gói FAILED (có expires_at — G3 R11)
     assert not folder.exists()
     assert await db.get(EvidencePack, uuid.UUID(second["id"]), populate_existing=True) is None
 
@@ -316,3 +316,55 @@ async def test_info_json_clock_from_close_time(db: AsyncSession) -> None:
     assert fields["cameras"][0] == {"camera_role": "CAM1", "clock_offset_ms": 120, "clock_checked_at": None}
     pack.camera_clock = None
     assert {c["clock_offset_ms"] for c in session_info_fields(pack)["cameras"]} == {None}
+
+
+async def test_pack_snapshot_checksum_mismatch(
+    db: AsyncSession, media_settings: Settings, api: AsyncClient
+) -> None:
+    """G3 B-2: ảnh trên đĩa khác SHA-256 trong DB → gói vẫn có ảnh, `missing` ghi
+    `SNAPSHOT_CHECKSUM_MISMATCH`."""
+    clock.freeze(T0)
+    _, station = await make_station_account(db)
+    claim, _, ret = await _issue_claim(db, media_settings, station)
+    snap = (
+        await db.scalars(select(Snapshot).where(Snapshot.session_id == ret.id).order_by(Snapshot.taken_at))
+    ).first()
+    assert snap is not None
+    assert snap.path
+    (media_settings.video_root / snap.path).write_bytes(b"bi-sua")
+    headers = await _login(api, db, "tst_cskh_pk_sha")
+    pack_id = (await api.post(f"/api/v1/claims/{claim.id}/evidence-packs", headers=headers)).json()["id"]
+
+    assert (
+        await packs.build_evidence_pack(db, uuid.UUID(pack_id), media_settings, render=fake_render) == "READY"
+    )
+
+    row = await db.get(EvidencePack, uuid.UUID(pack_id), populate_existing=True)
+    assert row is not None
+    reasons = [m for m in row.missing if m["reason"] == "SNAPSHOT_CHECKSUM_MISMATCH"]
+    assert len(reasons) == 1
+    assert reasons[0]["snapshot_id"] == str(snap.id)
+    assert reasons[0]["sha256_db"] == snap.sha256
+
+
+async def test_pack_unexpected_error_marks_failed(
+    db: AsyncSession, media_settings: Settings, api: AsyncClient
+) -> None:
+    """G3 R11: lỗi bất kỳ (không phải FFmpeg / OSError) → FAILED + `expires_at` + thư mục được dọn."""
+    clock.freeze(T0)
+    _, station = await make_station_account(db)
+    claim, _, _ = await _issue_claim(db, media_settings, station)
+    headers = await _login(api, db, "tst_cskh_pk_err")
+    pack_id = uuid.UUID(
+        (await api.post(f"/api/v1/claims/{claim.id}/evidence-packs", headers=headers)).json()["id"]
+    )
+
+    async def broken_render(*_: Any, **__: Any) -> Rendered:
+        raise KeyError("lỗi lập trình")
+
+    assert await packs.build_evidence_pack(db, pack_id, media_settings, render=broken_render) == "FAILED"
+    row = await db.get(EvidencePack, pack_id, populate_existing=True)
+    assert row is not None
+    assert row.status == "FAILED"
+    assert row.expires_at == T0 + timedelta(hours=media_settings.evidence_pack_ttl_hours)
+    assert not (media_settings.video_root / packs.pack_dir(pack_id)).exists()

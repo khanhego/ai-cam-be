@@ -27,7 +27,7 @@ from aicam.core.db import commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings
-from aicam.modules.media import ffmpeg, jobs, signing
+from aicam.modules.media import ffmpeg, jobs, protection, signing
 from aicam.modules.media.models import Clip, Export
 from aicam.modules.media.schemas import ExportCreated, ExportFiles, ExportOut
 from aicam.modules.media.segments import timeline_bounds
@@ -70,7 +70,9 @@ async def create_export(
         if clip is None:
             raise AppError("CLIP_NOT_READY", "Clip đang được cắt, sẵn sàng trong khoảng 1 phút.", 409,
                            {"camera_role": role, "status": "PENDING"})  # fmt: skip
-        error = _clip_unavailable(clip, cfg.retention_clip_days)
+        error = _clip_unavailable(
+            clip, protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)
+        )
         if error is not None:
             error.details["camera_role"] = role
             raise error
