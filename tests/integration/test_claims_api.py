@@ -1,6 +1,6 @@
 """Hồ sơ khiếu nại (T-110): tự tạo từ phiên hoàn (BR-08, BR-27), API-130..135, J-15, gộp kiện tạm.
 
-02a §4 API-130..135, §5; TC-04.21, TC-08.01..15, TC-08.11, TC-08.12, AC-06, AC-37.
+02a §4 API-130..135, §5; TC-04.21, TC-04.22, TC-08.01..15, TC-08.11, TC-08.12, AC-06, AC-37.
 """
 
 import uuid
@@ -16,10 +16,11 @@ from aicam.core import clock
 from aicam.core.audit import AuditLog
 from aicam.modules.claims import service as claims
 from aicam.modules.claims.models import Claim, ClaimNote
-from aicam.modules.media.models import Snapshot
+from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.orders.models import Package
 from aicam.modules.platforms.mock.adapter import MockAdapter
 from aicam.modules.returns import service as returns
+from aicam.modules.sessions.models import PackSession
 from aicam.modules.sessions.router import get_platform_adapter
 
 from .factories import PASSWORD, make_user
@@ -212,6 +213,136 @@ async def test_existing_claim_same_type_gets_evidence(desk: Desk, db: AsyncSessi
     assert detail["version"] == first["version"] + 1
     assert any(e["kind"] == "SESSION" and e["session"]["type"] == "RETURN" for e in detail["evidence"])
     assert detail["notes"][-1]["text"].startswith("Thêm phiên mở hoàn lúc ")
+
+
+# ---------------------------------------------------------------- TC-04.22 (AC-06): 5 loại kết luận có vấn đề
+
+# (kết luận, tình trạng dòng, số nhận / 2) — dòng nhất quán với kết luận (BR-22 chỉ khóa "Nguyên vẹn").
+CONCLUSION_LINES: dict[str, tuple[str, int]] = {
+    "OK": ("OK", 2),
+    "DAMAGED": ("DAMAGED", 2),
+    "MISSING_ITEM": ("MISSING_ITEM", 1),
+    "WRONG_ITEM": ("WRONG_ITEM", 2),
+    "EMPTY_BOX": ("MISSING_ITEM", 0),
+    "OTHER": ("OK", 2),
+}
+
+
+async def _j01_ready(db: AsyncSession, session_id: uuid.UUID) -> None:
+    """Giả lập J-01 đã cắt xong clip Cam 1 / Cam 2 của phiên RETURN (`READY`)."""
+    pack = await db.get(PackSession, session_id)
+    assert pack is not None
+    for role in ("CAM1", "CAM2"):
+        db.add(
+            Clip(
+                session_id=session_id,
+                camera_role=role,
+                status="READY",
+                start_at=pack.started_at,
+                end_at=(pack.ended_at or pack.started_at) + timedelta(seconds=5),
+                path=f"clips/{session_id}-{role}.mp4",
+                sha256="ab" * 32,
+                flags=[],
+            )
+        )
+    await db.flush()
+
+
+async def _receive_parcel(
+    desk: Desk, db: AsyncSession, n: int, conclusion: str
+) -> tuple[Package, uuid.UUID, uuid.UUID, Any]:
+    """Kiện n: đơn + hồ sơ khách trả + phiên PACK có clip; mở / kết luận / đóng.
+
+    Trả (kiện, id phiên PACK, id phiên RETURN, body API-11 đóng)."""
+    order, (package,) = await make_order(db, n)
+    await buyer_return_case(db, order, n)
+    pack = await pack_session_with_clips(db, desk.station, package, clock.now() - timedelta(days=3))
+    condition, received = CONCLUSION_LINES[conclusion]
+    body = await _receive(
+        desk, f"SPXRTTST{n:06d}", conclusion, quantity_received=received, condition=condition
+    )
+    return package, pack.id, uuid.UUID(body["closed_session"]["id"]), body
+
+
+@pytest.mark.parametrize("conclusion", ["DAMAGED", "MISSING_ITEM", "WRONG_ITEM", "EMPTY_BOX", "OTHER", "OK"])
+async def test_each_conclusion_creates_matching_claim(
+    desk: Desk, db: AsyncSession, api: AsyncClient, conclusion: str
+) -> None:
+    """TC-04.22, AC-06, BR-08: từng kết luận có vấn đề → hồ sơ khiếu nại tự tạo đúng loại (= kết luận), bên
+    nhận Sàn (khách trả hàng), bằng chứng = phiên PACK + phiên RETURN; sau J-01 READY không còn thiếu clip.
+    "Nguyên vẹn" → không có hồ sơ."""
+    package, pack_id, return_id, body = await _receive_parcel(desk, db, 51, conclusion)
+
+    code = body["closed_session"]["claim_code"]
+    if conclusion == "OK":
+        assert code is None
+        assert body["closed_session"]["return_case_status"] == "RECEIVED_OK"
+        assert await db.scalar(select(Claim.id).where(Claim.package_id == package.id)) is None
+        return
+    assert body["closed_session"]["return_case_status"] == "RECEIVED_ISSUE"
+    claim = await db.scalar(select(Claim).where(Claim.code == code))
+    assert claim is not None
+    assert (claim.type, claim.counterparty, claim.source, claim.status) == (
+        conclusion,
+        "PLATFORM",
+        "AUTO_RETURN",
+        "NEW",
+    )
+    await _j01_ready(db, return_id)
+    headers = await _login(api, db)
+    detail = (await api.get(f"/api/v1/claims/{claim.id}", headers=headers)).json()
+    sessions = [e["session"] for e in detail["evidence"] if e["kind"] == "SESSION"]
+    assert [(s["id"], s["type"]) for s in sessions] == [(str(pack_id), "PACK"), (str(return_id), "RETURN")]
+    for s in sessions:
+        assert sorted((c["camera_role"], c["status"]) for c in s["clips"]) == [
+            ("CAM1", "READY"),
+            ("CAM2", "READY"),
+        ]
+    assert detail["missing"] == []
+    assert (
+        detail["notes"][0]["text"]
+        == f"Tạo tự động từ phiên mở hoàn ({claims.CONCLUSION_LABELS[conclusion]})."
+    )
+
+
+async def test_ten_parcels_five_ok_five_issue_types(desk: Desk, db: AsyncSession, api: AsyncClient) -> None:
+    """TC-04.22, AC-06: 10 kiện liên tiếp trên một bàn (5 Nguyên vẹn xen 5 có vấn đề — đủ 5 loại) → 10 phiên
+    `COMPLETED` có kết luận; đúng 5 hồ sơ, mỗi loại một hồ sơ, mỗi hồ sơ có phiên PACK + RETURN của chính kiện
+    đó (clip READY sau J-01); 5 kiện Nguyên vẹn không có hồ sơ."""
+    plan = ["OK", "DAMAGED", "OK", "MISSING_ITEM", "OK", "WRONG_ITEM", "OK", "EMPTY_BOX", "OK", "OTHER"]
+    received: dict[str, tuple[Package, uuid.UUID, uuid.UUID, Any]] = {}
+    for i, conclusion in enumerate(plan):
+        result = await _receive_parcel(desk, db, 51 + i, conclusion)
+        await _j01_ready(db, result[2])
+        received[f"{conclusion}-{i}"] = result
+
+    rows = (
+        await db.scalars(
+            select(PackSession).where(PackSession.type == "RETURN").order_by(PackSession.ended_at)
+        )
+    ).all()
+    assert [(r.status, r.inspection_conclusion) for r in rows] == [("COMPLETED", c) for c in plan]
+    claims_rows = (await db.scalars(select(Claim))).all()
+    assert sorted(c.type for c in claims_rows) == sorted(c for c in plan if c != "OK")
+    headers = await _login(api, db)
+    for key, (package, pack_id, return_id, body) in received.items():
+        claim = next((c for c in claims_rows if c.package_id == package.id), None)
+        if key.startswith("OK-"):
+            assert claim is None, key
+            assert body["closed_session"]["claim_code"] is None
+            continue
+        assert claim is not None, key
+        assert body["closed_session"]["claim_code"] == claim.code
+        assert (claim.type, claim.counterparty) == (key.split("-")[0], "PLATFORM")
+        detail = (await api.get(f"/api/v1/claims/{claim.id}", headers=headers)).json()
+        sessions = [e["session"] for e in detail["evidence"] if e["kind"] == "SESSION"]
+        assert [(s["id"], s["type"]) for s in sessions] == [
+            (str(pack_id), "PACK"),
+            (str(return_id), "RETURN"),
+        ]
+        assert detail["missing"] == [], key
+    state = await desk.state()
+    assert (state["today_return_count"], state["today_return_issue_count"]) == (10, 5)
 
 
 # ---------------------------------------------------------------- API-131

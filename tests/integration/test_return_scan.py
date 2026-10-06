@@ -1,5 +1,7 @@
-"""API-11 chế độ RETURN (mở phiên), API-10 khối RETURN, API-104 — 02a §4.1; TC-04.xx (04 item 02)."""
+"""API-11 chế độ RETURN (mở phiên), API-10 khối RETURN, API-104 — 02a §4.1; TC-04.xx, TC-N2.02 (item 02)."""
 
+import math
+import time
 import uuid
 from typing import Any
 
@@ -132,6 +134,30 @@ async def test_unknown_code_not_found(desk: Desk) -> None:
 
     assert alert["code"] == "RETURN_NOT_FOUND"
     assert alert["data"] == {"code": "SPXVN0000000000", "can_open_unidentified": True}
+
+
+async def test_tc_n2_02_slow_platform_lookup_return_mode(desk: Desk, adapter: MockAdapter) -> None:
+    """TC-N2.02, NFR-01 (tra sàn): chế độ RETURN, mã lạ, sàn mock trễ 3 giây → cắt ở
+    `PLATFORM_LOOKUP_TIMEOUT_S` (2 giây) → `RETURN_NOT_FOUND` ("sàn không trả lời", vẫn cho mở kiện chưa xác
+    định) trong ≤ 3 giây. Đo 5 lần (mỗi lần một mã lạ khác)."""
+    adapter.delay_s = 3.0
+    durations: list[float] = []
+    for n in range(1, 6):
+        code = f"SPXVN99900000{n:02d}"
+        started = time.perf_counter()
+        res = await desk.scan(code)
+        durations.append(time.perf_counter() - started)
+
+        alert = _alert(res)
+        assert alert["code"] == "RETURN_NOT_FOUND", alert
+        assert "sàn không trả lời" in alert["message"]
+        assert alert["data"] == {"code": code, "can_open_unidentified": True}
+    assert (await desk.state())["session"] is None
+
+    p95 = sorted(durations)[math.ceil(0.95 * len(durations)) - 1]
+    print(f"TC-N2.02: n={len(durations)} min={min(durations):.3f}s p95={p95:.3f}s max={max(durations):.3f}s")
+    assert min(durations) >= 1.9  # đã tra sàn thật (bị cắt ở 2 giây), không trả sớm
+    assert max(durations) <= 3.0
 
 
 async def test_platform_lookup_opens_unannounced(desk: Desk, db: AsyncSession) -> None:

@@ -1,5 +1,5 @@
 """T-109: ảnh Cam 1 — API-103 (chụp), API-106 (tải ký), J-17 ảnh lúc đóng gói, `pack_reference`, API-40 luật
-STATION — 02a §4, §7; FR-04.04, 04.12, 02.11; TC-04.40..04.43, TC-02.42."""
+STATION — 02a §4, §7; FR-04.04, 04.12, 02.11; TC-04.40..04.43, TC-02.42, TC-P2.04, TC-N2.08."""
 
 import hashlib
 import uuid
@@ -25,7 +25,7 @@ from aicam.modules.sessions.router import get_platform_adapter
 from aicam.modules.stations.models import Camera
 from aicam.modules.stations.probe import CameraUnreachable
 
-from .factories import make_station_account, make_user
+from .factories import PASSWORD, make_station_account, make_user
 from .media_fixtures import (
     make_cameras,
     make_closed_session,
@@ -34,7 +34,7 @@ from .media_fixtures import (
     put_segments,
     starts_every,
 )
-from .returns_helpers import Desk, buyer_return_case, make_desk, make_order
+from .returns_helpers import Desk, buyer_return_case, make_desk, make_order, pack_session_with_clips
 
 pytestmark = pytest.mark.integration
 
@@ -199,6 +199,25 @@ async def test_snapshot_signature_and_deleted(desk: Desk, db: AsyncSession, grab
     assert (gone.status_code, gone.json()["error"]["code"]) == (410, "SNAPSHOT_DELETED")
 
 
+async def test_snapshot_url_expires_after_ten_minutes(
+    desk: Desk, db: AsyncSession, grabs: list[str], media_settings: Settings
+) -> None:
+    """TC-N2.08, NFR-36: URL ảnh ký (API-106) hạn 10 phút — 9 phút vẫn tải được, tua đồng hồ 11 phút →
+    `403 SIGNATURE_INVALID`."""
+    clock.freeze(datetime.now(UTC))
+    session = await _open_41(desk, db)
+    shot = (await _snap(desk, session["id"])).json()["snapshot"]
+    assert shot["url"].startswith("/api/v1/media/snapshots/")
+
+    assert (await desk.api.get(shot["url"])).status_code == 200
+    clock.advance(timedelta(minutes=9))
+    assert (await desk.api.get(shot["url"])).status_code == 200
+    clock.advance(timedelta(minutes=2))
+    expired = await desk.api.get(shot["url"])
+
+    assert (expired.status_code, expired.json()["error"]["code"]) == (403, "SIGNATURE_INVALID")
+
+
 # ---------------------------------------------------------------- J-17 + pack_reference + API-40
 
 
@@ -272,6 +291,75 @@ async def test_pack_reference_snapshot_and_station_clip_access(
     assert "NO_PACK_CLIP" not in session["flags"]
     during = await api.get(f"/api/v1/clips/{clip.id}/play-url", headers=desk.headers)
     assert during.status_code == 200, during.text
+
+
+async def _play(api: AsyncClient, desk: Desk, clip_id: uuid.UUID) -> int:
+    return (await api.get(f"/api/v1/clips/{clip_id}/play-url", headers=desk.headers)).status_code
+
+
+async def test_station_clip_access_ends_when_return_session_closed_or_cancelled(
+    api: AsyncClient, desk: Desk, db: AsyncSession, media_settings: Settings
+) -> None:
+    """TC-P2.04, AC-35, 02 API-40: STATION xem clip PACK của kiện chỉ khi phiên RETURN của kiện đó đang
+    `OPEN` / `WAITING_APPROVAL` tại station mình; phiên đã đóng → 403; phiên đã hủy (API-12) → 403; phiên kiện
+    khác đang mở không mở quyền cho clip kiện trước."""
+    await make_user(db, "tst_sup_p204", "SUPERVISOR")
+    sup_login = await api.post(
+        "/api/v1/auth/login", json={"username": "tst_sup_p204", "password": PASSWORD, "client": "DASHBOARD"}
+    )
+    sup = {"Authorization": f"Bearer {sup_login.json()['access_token']}"}
+    _, other = await make_station_account(db, "tst_station09", "TST Station 09")
+    clip_of: dict[int, uuid.UUID] = {}
+    for n in (41, 42):
+        order, (package,) = await make_order(db, n)
+        await buyer_return_case(db, order, n)
+        pack = await pack_session_with_clips(db, other, package, T - timedelta(days=2), snapshot=False)
+        clip = await db.scalar(select(Clip).where(Clip.session_id == pack.id, Clip.camera_role == "CAM1"))
+        assert clip is not None
+        clip_of[n] = clip.id
+
+    # Kiện 41: mở → 200; kết luận + quét đóng → 403.
+    assert await _play(api, desk, clip_of[41]) == 403
+    opened = (await desk.scan("SPXRTTST000041")).json()
+    session = opened["state"]["session"]
+    assert await _play(api, desk, clip_of[41]) == 200
+    lines = [{"order_item_id": i["order_item_id"], "quantity_received": i["quantity_received"],
+              "condition": "OK"} for i in session["inspection"]["lines"]]  # fmt: skip
+    saved = await desk.api.put(
+        f"/api/v1/station/sessions/{session['id']}/inspection",
+        headers=desk.headers,
+        json={"conclusion": "OK", "note": "", "lines": lines},
+    )
+    assert saved.status_code == 200, saved.text
+    closed = (await desk.scan("SPXRTTST000041")).json()
+    assert closed["outcome"] == "SESSION_COMPLETED", closed
+    assert await _play(api, desk, clip_of[41]) == 403
+
+    # Kiện 42: mở → 200; gọi quản lý (WAITING_APPROVAL) → 200; tiếp tục rồi hủy phiên (API-12) → 403.
+    session = (await desk.scan("SPXRTTST000042")).json()["state"]["session"]
+    assert await _play(api, desk, clip_of[42]) == 200
+    assert await _play(api, desk, clip_of[41]) == 403  # phiên đang mở là của kiện khác
+    req = await api.post(
+        "/api/v1/station/approval-requests",
+        headers=desk.headers,
+        json={"type": "ASSIST", "session_id": session["id"]},
+    )
+    assert req.status_code == 201, req.text
+    assert (await desk.state())["session"]["status"] == "WAITING_APPROVAL"
+    assert await _play(api, desk, clip_of[42]) == 200
+    decided = await api.post(
+        f"/api/v1/approval-requests/{req.json()['approval_request']['id']}/decision",
+        headers=sup,
+        json={"action": "CONTINUE"},
+    )
+    assert decided.status_code == 200, decided.text
+    cancelled = await desk.api.post(
+        f"/api/v1/station/sessions/{session['id']}/cancel",
+        headers=desk.headers,
+        json={"reason": "WRONG_SCAN"},
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    assert await _play(api, desk, clip_of[42]) == 403
 
 
 def test_clip_offset_uses_timeline() -> None:

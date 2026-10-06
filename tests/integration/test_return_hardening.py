@@ -1,5 +1,6 @@
 """T-117: J-07 phiên RETURN (tự hoàn tất / bỏ dở), ASSIST phiên RETURN, bỏ qua khay, PACK chặn kiện hoàn,
-`closed_session` PACK, BR-21 `flag_order_cancelled` (02a §4, §5, §7); TC-04.26..32, 04.53, 03.72, 03.75."""
+`closed_session` PACK, BR-21 `flag_order_cancelled` (02a §4, §5, §7); TC-04.26..32, 04.53,
+03.72, 03.75."""
 
 import json
 import uuid
@@ -342,3 +343,63 @@ async def test_order_cancelled_after_session_closed(
 
     await db.refresh(package)
     assert package.warehouse_status == "CANCELLED_AFTER_PACK"
+
+
+async def test_j07_return_timer_restarts_after_assist_continue(
+    api: AsyncClient, db: AsyncSession, adapter: MockAdapter, test_settings: Settings
+) -> None:
+    """TC-04.28, R-24, DEC-60 (BR-16) cho phiên RETURN: mở 08:00, ASSIST 08:10, duyệt "Cho tiếp tục" 08:50 →
+    thời gian chờ duyệt không tính: J-07 08:49 (đang chờ) và 09:05 không làm gì; cảnh báo 20 phút lúc 09:10;
+    bỏ dở (chưa kết luận) lúc 09:35 (45 phút sau lúc duyệt)."""
+    from datetime import UTC, datetime
+
+    t0 = datetime(2026, 10, 6, 1, 0, tzinfo=UTC)  # 08:00 giờ VN
+    clock.freeze(t0)
+    desk = await make_desk(api, db)
+    session = await _open_41(desk, db)
+    await make_user(db, "tst_sup", "SUPERVISOR")
+
+    clock.freeze(t0 + timedelta(minutes=10))
+    req = await api.post(
+        "/api/v1/station/approval-requests",
+        headers=desk.headers,
+        json={"type": "ASSIST", "session_id": session["id"]},
+    )
+    assert req.status_code == 201, req.text
+    clock.freeze(t0 + timedelta(minutes=49))
+    assert await sessions.check_timeouts(db, test_settings) == {"warned": 0, "abandoned": 0}
+
+    clock.freeze(t0 + timedelta(minutes=50))
+    sup_login = await api.post(
+        "/api/v1/auth/login", json={"username": "tst_sup", "password": PASSWORD, "client": "DASHBOARD"}
+    )
+    sup = {"Authorization": f"Bearer {sup_login.json()['access_token']}"}
+    ok = await api.post(
+        f"/api/v1/approval-requests/{req.json()['approval_request']['id']}/decision",
+        headers=sup,
+        json={"action": "CONTINUE"},
+    )
+    assert ok.status_code == 200, ok.text
+    resumed = t0 + timedelta(minutes=50)
+    relogin = await api.post(  # token station cấp lúc 08:00 đã hết hạn
+        "/api/v1/auth/login", json={"username": "tst_station01", "password": PASSWORD, "client": "STATION"}
+    )
+    desk.headers = {"Authorization": f"Bearer {relogin.json()['access_token']}"}
+    state = await desk.state()
+    assert state["state"] == "INSPECTING"
+    assert datetime.fromisoformat(state["session"]["warn_at"]) == resumed + timedelta(minutes=20)
+    assert datetime.fromisoformat(state["session"]["abandon_at"]) == resumed + timedelta(minutes=45)
+
+    clock.freeze(t0 + timedelta(minutes=65))  # 09:05 — 65 phút từ lúc mở, 15 phút từ lúc duyệt
+    assert await sessions.check_timeouts(db, test_settings) == {"warned": 0, "abandoned": 0}
+    clock.freeze(t0 + timedelta(minutes=70))  # 09:10
+    assert await sessions.check_timeouts(db, test_settings) == {"warned": 1, "abandoned": 0}
+    clock.freeze(t0 + timedelta(minutes=94))  # 09:34
+    assert await sessions.check_timeouts(db, test_settings) == {"warned": 0, "abandoned": 0}
+    clock.freeze(t0 + timedelta(minutes=95))  # 09:35
+    assert await sessions.check_timeouts(db, test_settings) == {"warned": 0, "abandoned": 1}
+
+    pack = await db.get(PackSession, uuid.UUID(session["id"]))
+    assert pack is not None
+    await db.refresh(pack)
+    assert pack.status == "ABANDONED"

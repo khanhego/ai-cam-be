@@ -1,7 +1,7 @@
 """Gói bằng chứng (T-112): API-136..138, J-16, dọn J-10, `info.json` L5, `ket-luan.json` (`corrections[]`).
 
-TC-08.16, TC-08.18..21, TC-02.40, TC-02.41, AC-25. Encode video có chữ thay bằng renderer giả (máy dev thiếu
-`drawtext`; encode thật kiểm ở QA live trong container `worker-export`).
+TC-08.16, TC-08.18..21, TC-02.40, TC-02.41, TC-P2.10, TC-N2.08, AC-25. Encode video có chữ thay bằng renderer
+giả (máy dev thiếu `drawtext`; encode thật kiểm ở QA live trong container `worker-export`).
 """
 
 import hashlib
@@ -297,6 +297,61 @@ async def test_pack_conflicts_permissions_and_cleanup(
     assert await packs.cleanup_expired(db, media_settings) == 2  # + gói FAILED (có expires_at — G3 R11)
     assert not folder.exists()
     assert await db.get(EvidencePack, uuid.UUID(second["id"]), populate_existing=True) is None
+
+
+async def test_pack_status_other_supervisor_404_station_403(
+    api: AsyncClient, db: AsyncSession, media_settings: Settings
+) -> None:
+    """TC-P2.10, 02 API-137: trạng thái gói của người khác — SUPERVISOR không tạo gói → 404 (như CSKH khác),
+    STATION → 403; người tạo (SUPERVISOR) và ADMIN → 200."""
+    clock.freeze(T0)
+    station_user, station = await make_station_account(db)
+    claim, _, _ = await _issue_claim(db, media_settings, station)
+    creator = await _login(api, db, "tst_sup_p210a", "SUPERVISOR")
+    other_sup = await _login(api, db, "tst_sup_p210b", "SUPERVISOR")
+    admin = await _login(api, db, "tst_admin_p210", "ADMIN")
+    res = await api.post(
+        "/api/v1/auth/login",
+        json={"username": station_user.username, "password": PASSWORD, "client": "STATION"},
+    )
+    st = {"Authorization": f"Bearer {res.json()['access_token']}"}
+    created = await api.post(f"/api/v1/claims/{claim.id}/evidence-packs", headers=creator)
+    assert created.status_code == 202, created.text
+    url = f"/api/v1/evidence-packs/{created.json()['id']}"
+
+    assert (await api.get(url, headers=creator)).status_code == 200
+    assert (await api.get(url, headers=admin)).status_code == 200
+    hidden = await api.get(url, headers=other_sup)
+    assert (hidden.status_code, hidden.json()["error"]["code"]) == (404, "NOT_FOUND")
+    forbidden = await api.get(url, headers=st)
+    assert forbidden.status_code == 403
+
+
+async def test_pack_zip_url_expires_after_ten_minutes(
+    api: AsyncClient, db: AsyncSession, media_settings: Settings
+) -> None:
+    """TC-N2.08, NFR-36: URL zip ký (API-138) hạn 10 phút — 9 phút vẫn tải, tua đồng hồ 11 phút →
+    `403 SIGNATURE_INVALID`; lấy lại trạng thái (API-137) → URL mới tải được."""
+    clock.freeze(T0)
+    _, station = await make_station_account(db)
+    claim, _, _ = await _issue_claim(db, media_settings, station)
+    headers = await _login(api, db, "tst_cskh_n208")
+    pack_id = (await api.post(f"/api/v1/claims/{claim.id}/evidence-packs", headers=headers)).json()["id"]
+    assert (
+        await packs.build_evidence_pack(db, uuid.UUID(pack_id), media_settings, render=fake_render) == "READY"
+    )
+    zip_url = (await api.get(f"/api/v1/evidence-packs/{pack_id}", headers=headers)).json()["files"]["zip"]
+
+    assert (await api.get(zip_url)).status_code == 200
+    clock.advance(timedelta(minutes=9))
+    assert (await api.get(zip_url)).status_code == 200
+    clock.advance(timedelta(minutes=2))
+    expired = await api.get(zip_url)
+
+    assert (expired.status_code, expired.json()["error"]["code"]) == (403, "SIGNATURE_INVALID")
+    fresh = (await api.get(f"/api/v1/evidence-packs/{pack_id}", headers=headers)).json()["files"]["zip"]
+    assert fresh != zip_url
+    assert (await api.get(fresh)).status_code == 200
 
 
 async def test_info_json_clock_from_close_time(db: AsyncSession) -> None:
