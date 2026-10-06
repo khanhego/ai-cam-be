@@ -45,6 +45,7 @@ from aicam.modules.sessions.schemas import (
     RecentClip,
     RecentOut,
     RecentSession,
+    ReturnSessionIn,
     ScanOut,
     SessionOut,
     SnapshotCreated,
@@ -544,6 +545,103 @@ async def scan(
         work_mode=station.work_mode,
     )  # fmt: skip
     return ScanOut(outcome=outcome, alert=alert, state=state, closed_session=closed)
+
+
+# ---------------------------------------------------------------- API-105 (T-119)
+
+
+def _invalid(field: str, message: str) -> AppError:
+    return AppError("VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": {field: message}})
+
+
+async def open_return_by_request(
+    session: AsyncSession,
+    station: Station,
+    body: ReturnSessionIn,
+    *,
+    actor: uuid.UUID,
+    ip: str | None,
+    settings: Settings,
+) -> ScanOut:
+    """API-105 (FR-04.07, 04.13; 02 §6.2, §6.3 #9, §6.4 #2, §6.5 #1): mở phiên hoàn từ kết quả tìm thủ công
+    (`package_id`) hoặc mở phiên chưa xác định (`unidentified_code`, `force_new`). Cùng `client_scan_id` /
+    thứ tự khóa như API-11 (DEC-266, R3-4): tra mã + khóa `order:{sn}` ngoài khóa station, kiểm lại trong
+    khóa."""
+    code = (body.unidentified_code or "").strip().upper() or None
+    if (body.package_id is None) == (code is None):
+        raise _invalid("package_id", "Chọn đúng một: kiện từ kết quả tìm hoặc mã chưa xác định")
+    if code is not None and not return_scan.is_valid_code(code, settings):
+        raise _invalid("unidentified_code", "Mã không đúng định dạng mã vận đơn / mã đơn")
+    note = " ".join((body.note or "").split()) or None
+    if body.force_new:
+        if code is None:
+            raise _invalid("unidentified_code", "Nhập mã đã quét trên kiện")
+        if note is None or not 5 <= len(note) <= 200:
+            raise _invalid("note", "Nhập ghi chú 5–200 ký tự")
+    if station.work_mode != "RETURN":
+        raise AppError("WRONG_WORK_MODE", "Station không ở chế độ nhận hàng hoàn.", 409)
+    previous = await _dedup(session, body.client_scan_id, station.id)
+    if previous is not None:
+        return await _replay(session, station, previous, settings)
+
+    # Ngoài khóa station: tìm kiện / tra mã (không tra sàn — FE đã thấy RETURN_NOT_FOUND), khóa đơn trước
+    # station.
+    resolution: returns.Resolution
+    if body.package_id is not None:
+        package = await session.get(Package, body.package_id)
+        if package is None:
+            raise AppError("NOT_FOUND", "Không tìm thấy kiện.", 404)
+        order = await session.get(Order, package.order_id) if package.order_id else None
+        resolution = returns.Resolution("FOUND", package, None, order)
+        code = package.tracking_number
+    else:
+        assert code is not None  # noqa: S101 — kiểm ở trên
+        resolution = await returns.resolve_code(session, code)
+    if resolution.order is not None:
+        await orders.lock_orders(session, [resolution.order.platform_order_sn])
+
+    await lock_station(session, station.id)
+    previous = await _dedup(session, body.client_scan_id, station.id)
+    if previous is not None:
+        return await _replay(session, station, previous, settings)
+    station = await _reload_station(session, station.id)
+    if station.work_mode != "RETURN":
+        raise AppError("WRONG_WORK_MODE", "Station không ở chế độ nhận hàng hoàn.", 409)
+    if await active_session(session, station.id, refresh=True) is not None or await pending_for_station(
+        session, station.id
+    ):
+        raise AppError("SESSION_ACTIVE", "Station đang có phiên mở. Đóng phiên trước.", 409)
+
+    alert: AlertOut | None
+    if not station.operator_name:
+        outcome, alert = "ALERT", _alert("OPERATOR_REQUIRED", "Nhập tên người kiểm trước khi nhận hàng hoàn.")
+    elif body.force_new:
+        outcome, alert = await return_scan.open_force_new(
+            session, station, code, note or "", resolution, actor=actor, ip=ip, tz=settings.tz_display
+        )
+    elif body.package_id is None and resolution.status == "NOT_FOUND":
+        outcome, alert = await return_scan.open_unidentified(session, station, code)
+    else:
+        outcome, alert = await return_scan.open_from_resolution(session, station, code, resolution, settings)
+
+    session.add(
+        ScanDedup(
+            client_scan_id=body.client_scan_id,
+            station_id=station.id,
+            response={
+                "outcome": outcome,
+                "alert": alert.model_dump() if alert else None,
+                "closed_session": None,
+            },
+        )
+    )
+    await session.flush()
+    state = await build_state(session, station, settings)
+    notify_after_commit(session, station.id, state)
+    await commit(session)
+    log.info("return_session_request", station_id=str(station.id), code=code, outcome=outcome,
+             alert=alert.code if alert else None, force_new=body.force_new)  # fmt: skip
+    return ScanOut(outcome=outcome, alert=alert, state=state)
 
 
 # ---------------------------------------------------------------- Cam 2 (T-12)

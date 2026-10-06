@@ -42,6 +42,7 @@ class PackageItem(BaseModel):
     source: Literal["API", "CSV"] | None
     last_session: LastSession | None
     has_clip: bool
+    is_placeholder: bool  # kiện tạm của hàng hoàn chưa xác định (02 §6.2 API-30, DEC-260) — FE hiện chip
 
 
 class ItemDetail(BaseModel):
@@ -233,6 +234,7 @@ async def search(
             source=o.source if o else None,
             last_session=last.get(p.id),
             has_clip=p.id in with_clip,
+            is_placeholder=p.is_placeholder,
         )
         for p, o in rows
     ]

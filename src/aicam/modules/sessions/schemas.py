@@ -195,6 +195,16 @@ class ScanIn(BaseModel):
     client_scan_id: uuid.UUID
 
 
+class ReturnSessionIn(BaseModel):
+    """API-105: đúng một trong `package_id` / `unidentified_code`; `force_new` cần `note` 5–200 (02 §6.4)."""
+
+    package_id: uuid.UUID | None = None
+    unidentified_code: str | None = Field(default=None, max_length=64)
+    client_scan_id: uuid.UUID
+    force_new: bool = False
+    note: str | None = Field(default=None, max_length=500)
+
+
 class AlertOut(BaseModel):
     code: Literal[
         "ORDER_CANCELLED",

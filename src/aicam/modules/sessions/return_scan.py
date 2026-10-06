@@ -344,7 +344,7 @@ async def open_return_session(
 # ---------------------------------------------------------------- API-11 trong khóa station
 
 
-async def _open_from_resolution(
+async def open_from_resolution(
     session: AsyncSession, station: Station, code: str, resolution: returns.Resolution, settings: Settings
 ) -> tuple[str, AlertOut | None]:
     if resolution.status == "NOT_FOUND" or (resolution.package is None and resolution.status != "MULTIPLE"):
@@ -444,7 +444,7 @@ async def _open(
     resolution = prepared.resolution if prepared and prepared.resolution else None
     if resolution is None:  # chế độ vừa đổi giữa lúc quét: tra trong khóa, không tra sàn
         resolution = await returns.resolve_code(session, code)
-    return await _open_from_resolution(session, station, code, resolution, settings)
+    return await open_from_resolution(session, station, code, resolution, settings)
 
 
 # ---------------------------------------------------------------- đóng / hủy / bỏ dở (T-108)
@@ -570,3 +570,57 @@ async def end_return_session(
         returns.notify_updated(session, case)
     record_event(session, pack, status, reason=reason, note=note)
     media_jobs.enqueue_build_clips(session, pack.id, pack.ended_at)
+
+
+# ---------------------------------------------------------------- API-105 (T-119)
+
+
+async def open_unidentified(
+    session: AsyncSession, station: Station, code: str
+) -> tuple[str, AlertOut | None]:
+    """EX-R12 / FR-04.13: mã không khớp kiện / hồ sơ nào → hồ sơ `UNIDENTIFIED` + kiện tạm `TAM-…`
+    (`open_code` = mã quét — DEC-269). Người gọi giữ khóa station."""
+    case, placeholder = await returns.create_unidentified(session)
+    await open_return_session(session, station, placeholder, case, None, code)
+    return "SESSION_OPENED", None
+
+
+async def open_force_new(
+    session: AsyncSession,
+    station: Station,
+    code: str,
+    note: str,
+    resolution: returns.Resolution,
+    *,
+    actor: uuid.UUID,
+    ip: str | None,
+    tz: str,
+) -> tuple[str, AlertOut | None]:
+    """02 §6.5 #1 (R3-1): "Đây là kiện khác — vẫn ghi hình" chỉ khi mã ra `RETURN_ALREADY_RECEIVED`; khác →
+    `409 FORCE_NEW_NOT_ALLOWED` (`details.reason` = mã alert thật, `OPENABLE` khi kiện mở được bình thường).
+    Hồ sơ `UNIDENTIFIED` `manual_link_only` (chỉ gắn qua API-112), ghi chú vào hồ sơ + phiên, audit."""
+    from aicam.core import audit
+    from aicam.core.errors import AppError
+
+    if resolution.status == "MULTIPLE":
+        reason = "RETURN_MULTIPLE_PACKAGES"
+    elif resolution.package is None:
+        reason = "RETURN_NOT_FOUND"
+    else:
+        alert = await check_openable(session, resolution.package, resolution.case, resolution.order, code, tz)
+        reason = alert.code if alert else "OPENABLE"
+    if reason != "RETURN_ALREADY_RECEIVED" or resolution.package is None:
+        raise AppError(
+            "FORCE_NEW_NOT_ALLOWED",
+            "Chỉ ghi hình kiện khác khi mã này đã được nhận. Quét lại để mở phiên như bình thường.",
+            409,
+            {"reason": reason},
+        )
+    case, placeholder = await returns.create_unidentified(session, force_note=note, manual_link_only=True)
+    pack = await open_return_session(session, station, placeholder, case, None, code, note=note)
+    audit.record(
+        session, "RETURN_FORCE_NEW", user_id=actor, object_type="RETURN_CASE", object_id=case.id, ip=ip,
+        data={"code": code, "note": note, "received_package_id": str(resolution.package.id),
+              "session_id": str(pack.id)},
+    )  # fmt: skip
+    return "SESSION_OPENED", None

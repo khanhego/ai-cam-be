@@ -3051,6 +3051,299 @@
         "title": "LastSession",
         "type": "object"
       },
+      "LinkOrderIn": {
+        "description": "API-112.",
+        "properties": {
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id"
+        ],
+        "title": "LinkOrderIn",
+        "type": "object"
+      },
+      "LinkOrderOut": {
+        "description": "API-112: chi tiết hồ sơ đích (như API-111); `merged_into` = hồ sơ đích khi hồ sơ chưa xác định được gộp\nvào hồ sơ mở của đơn; `merged_claims` = hồ sơ khiếu nại gộp do trùng BR-27.",
+        "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimBrief"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "expected_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Since"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "FAILED_DELIVERY",
+              "BUYER_RETURN",
+              "REFUND_ONLY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "merged_claims": {
+            "items": {
+              "$ref": "#/components/schemas/MergedClaimRef"
+            },
+            "title": "Merged Claims",
+            "type": "array"
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaseRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needs_parcel": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Parcel"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnOrderBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "packages": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnPackageBrief"
+            },
+            "title": "Packages",
+            "type": "array"
+          },
+          "platform_return_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Return Sn"
+          },
+          "platform_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reason_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Label"
+          },
+          "reason_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Text"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "reported_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported At"
+          },
+          "requested_items": {
+            "items": {
+              "$ref": "#/components/schemas/RequestedItem"
+            },
+            "title": "Requested Items",
+            "type": "array"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "seller_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Due At"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnSessionBrief"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "source": {
+            "enum": [
+              "PLATFORM",
+              "WAREHOUSE"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "EXPECTED",
+              "INSPECTING",
+              "PARTIALLY_RECEIVED",
+              "RECEIVED_OK",
+              "RECEIVED_ISSUE",
+              "MISSING",
+              "CANCELLED",
+              "NO_PARCEL"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "waiting_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Days"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "order",
+          "packages",
+          "return_tracking_number",
+          "reason_label",
+          "reported_at",
+          "expected_since",
+          "waiting_days",
+          "received_at",
+          "conclusion",
+          "claims",
+          "merged_into",
+          "platform_return_sn",
+          "platform_status",
+          "needs_parcel",
+          "reason",
+          "reason_text",
+          "seller_due_at",
+          "source",
+          "requested_items",
+          "sessions",
+          "merged_claims"
+        ],
+        "title": "LinkOrderOut",
+        "type": "object"
+      },
       "LiveCamera": {
         "properties": {
           "id": {
@@ -3235,6 +3528,24 @@
           "permissions"
         ],
         "title": "MeOut",
+        "type": "object"
+      },
+      "MergedClaimRef": {
+        "properties": {
+          "from": {
+            "title": "From",
+            "type": "string"
+          },
+          "into": {
+            "title": "Into",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "into"
+        ],
+        "title": "MergedClaimRef",
         "type": "object"
       },
       "MismatchOut": {
@@ -3662,6 +3973,10 @@
             "title": "Id",
             "type": "string"
           },
+          "is_placeholder": {
+            "title": "Is Placeholder",
+            "type": "boolean"
+          },
           "last_session": {
             "anyOf": [
               {
@@ -3726,7 +4041,8 @@
           "platform_status",
           "source",
           "last_session",
-          "has_clip"
+          "has_clip",
+          "is_placeholder"
         ],
         "title": "PackageItem",
         "type": "object"
@@ -5204,6 +5520,62 @@
           "conclusion"
         ],
         "title": "ReturnSessionBrief",
+        "type": "object"
+      },
+      "ReturnSessionIn": {
+        "description": "API-105: đúng một trong `package_id` / `unidentified_code`; `force_new` cần `note` 5–200 (02 §6.4).",
+        "properties": {
+          "client_scan_id": {
+            "format": "uuid",
+            "title": "Client Scan Id",
+            "type": "string"
+          },
+          "force_new": {
+            "default": false,
+            "title": "Force New",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "unidentified_code": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unidentified Code"
+          }
+        },
+        "required": [
+          "client_scan_id"
+        ],
+        "title": "ReturnSessionIn",
         "type": "object"
       },
       "Roi": {
@@ -9043,6 +9415,60 @@
         ]
       }
     },
+    "/api/v1/returns/{case_id}/link-order": {
+      "post": {
+        "description": "API-112: gắn đơn cho hồ sơ chưa xác định (FR-04.13, UC-13).",
+        "operationId": "link_order_api_v1_returns__case_id__link_order_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkOrderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkOrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Link Order",
+        "tags": [
+          "returns"
+        ]
+      }
+    },
     "/api/v1/sessions/{session_id}/clips/rebuild": {
       "post": {
         "description": "API-46: cắt lại clip FAILED.",
@@ -9534,6 +9960,48 @@
           }
         },
         "summary": "Return Lookup Api",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/return-sessions": {
+      "post": {
+        "description": "API-105: mở phiên hoàn từ kết quả tìm / mở phiên chưa xác định (FR-04.07, 04.13).",
+        "operationId": "open_return_session_api_v1_station_return_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReturnSessionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open Return Session",
         "tags": [
           "station"
         ]

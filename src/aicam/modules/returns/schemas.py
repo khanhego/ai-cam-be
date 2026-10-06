@@ -1,10 +1,10 @@
-"""Schema API-110, API-111 (02 §6.2 "API-110 / API-111 / API-112")."""
+"""Schema API-110, API-111, API-112 (02 §6.2 "API-110 / API-111 / API-112")."""
 
 import uuid
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 from aicam.core.pagination import Page
 
@@ -102,3 +102,23 @@ class ReturnCaseDetail(ReturnCaseItem):
     source: Literal["PLATFORM", "WAREHOUSE"]
     requested_items: list[RequestedItem]
     sessions: list[ReturnSessionBrief]
+
+
+class LinkOrderIn(BaseModel):
+    """API-112."""
+
+    package_id: uuid.UUID
+
+
+class MergedClaimRef(BaseModel):
+    from_: str = Field(alias="from", serialization_alias="from")
+    into: str
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+class LinkOrderOut(ReturnCaseDetail):
+    """API-112: chi tiết hồ sơ đích (như API-111); `merged_into` = hồ sơ đích khi hồ sơ chưa xác định được gộp
+    vào hồ sơ mở của đơn; `merged_claims` = hồ sơ khiếu nại gộp do trùng BR-27."""
+
+    merged_claims: list[MergedClaimRef]

@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
 from aicam.core.db import after_commit
+from aicam.core.errors import AppError
 from aicam.modules.claims import service as claims
 from aicam.modules.claims.models import Claim
 from aicam.modules.orders import service as orders
@@ -779,6 +780,7 @@ async def merge_unidentified(
     *,
     actor_label: str = "Hệ thống",
     actor_user_id: uuid.UUID | None = None,
+    source: str = "WAREHOUSE",
     merged_claims: list[claims.MergedClaim] | None = None,
 ) -> bool:
     """Gộp hồ sơ chưa xác định (đã khóa, mọi phiên đã kết thúc) vào đơn: phiên sang kiện thật, kiện tạm xóa.
@@ -836,17 +838,16 @@ async def merge_unidentified(
     await link_package(session, destination, target.id)
     if completed:
         conclusion = completed[-1].inspection_conclusion or "OTHER"
-        if target.warehouse_status not in RECEIVED_STATUSES:
-            await orders.transition(
-                session, target, "RETURN_INSPECTING", source="WAREHOUSE", actor_label=actor_label
-            )
-            await orders.transition(
-                session, target, received_status(conclusion), source="WAREHOUSE", actor_label=actor_label
-            )
+        if target.warehouse_status not in RECEIVED_STATUSES:  # API-112: nguồn MANUAL (02 §5.3, R2-9)
+            for step in ("RETURN_INSPECTING", received_status(conclusion)):
+                await orders.transition(
+                    session, target, step, source=source, actor_label=actor_label, actor_user_id=actor_user_id
+                )
         if open_case is not None:
             await apply_close_to_packages(
-                session, open_case, target.id, conclusion, source="WAREHOUSE", actor_label=actor_label
-            )
+                session, open_case, target.id, conclusion, source=source, actor_label=actor_label,
+                actor_user_id=actor_user_id,
+            )  # fmt: skip
     await session.flush()
     moved = await claims.move_claims_to_package(
         session, [p.id for p in placeholders], target, return_case_id=destination.id, actor=actor_user_id
@@ -875,6 +876,95 @@ async def merge_unidentified(
         notify_updated(session, destination)
     log.info("unidentified_merged", return_case_id=str(case.id), into=str(destination.id))
     return True
+
+
+# ---------------------------------------------------------------- API-112 gắn đơn (FR-04.13, DEC-260, R2-9)
+
+
+@dataclass
+class LinkResult:
+    destination: ReturnCase
+    merged_into: ReturnCase | None
+    merged_claims: list[claims.MergedClaim]
+
+
+def _not_eligible(message: str) -> AppError:
+    return AppError("NOT_ELIGIBLE", message, 409)
+
+
+async def link_order(
+    session: AsyncSession,
+    case_id: uuid.UUID,
+    package_id: uuid.UUID,
+    *,
+    actor_user_id: uuid.UUID,
+    actor_label: str,
+    ip: str | None = None,
+) -> LinkResult:
+    """API-112: gắn đơn cho hồ sơ `UNIDENTIFIED` (một transaction — 02 §6.2 API-112).
+
+    Khóa (DEC-266): `order:{sn}` của đơn đích **trước tiên** → hồ sơ (chưa xác định + hồ sơ mở của đơn,
+    id tăng) → kiện → hồ sơ khiếu nại → clip. Phiên sang kiện đích, kiện tạm xóa; đơn có hồ sơ mở → gộp vào
+    đó; kiện đích `→ RETURN_INSPECTING → RETURN_RECEIVED_*` (nguồn MANUAL); hồ sơ khiếu nại của kiện tạm sang
+    kiện đích (trùng BR-27 → gộp)."""
+    found = await session.get(ReturnCase, case_id)
+    if found is None:
+        raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ hàng hoàn.", 404)
+    target = await session.get(Package, package_id)
+    if target is None:
+        raise AppError("NOT_FOUND", "Không tìm thấy kiện.", 404)
+    if target.is_placeholder or target.order_id is None:
+        raise _not_eligible("Kiện chưa gắn đơn sàn — chọn kiện của đơn.")
+    order = await session.get(Order, target.order_id)
+    if order is None:
+        raise _not_eligible("Kiện chưa gắn đơn sàn — chọn kiện của đơn.")
+    await orders.lock_orders(session, [order.platform_order_sn])
+    open_case = await open_case_of_order(session, order.id)
+    locked = {c.id: c for c in await lock_cases(session, [case_id, *([open_case.id] if open_case else [])])}
+    case = locked[case_id]
+    if case.kind != "UNIDENTIFIED" or case.order_id is not None or case.status == "CANCELLED":
+        raise AppError("NOT_UNIDENTIFIED", "Hồ sơ không còn ở trạng thái chưa xác định. Tải lại.", 409)
+    sessions = await return_sessions_of_case(session, case.id)
+    if any(s.status in ACTIVE_STATUSES for s in sessions):
+        raise _not_eligible("Phiên mở hoàn của hồ sơ đang mở ở station — đóng phiên trước.")
+    real = [p for p in await packages_of_case(session, case.id) if not p.is_placeholder and p.id != target.id]
+    if (
+        real
+    ):  # hồ sơ trên kiện thật chưa xác minh (DEC-307 c): chờ xác minh, không chuyển phiên sang kiện khác
+        raise _not_eligible("Hồ sơ gắn với kiện thật chưa xác minh — chờ đồng bộ đơn của kiện đó.")
+    (target,) = await lock_packages(session, [target.id])
+    returned = await session.scalar(
+        select(PackSession.id).where(
+            PackSession.package_id == target.id,
+            PackSession.type == "RETURN",
+            PackSession.status == "COMPLETED",
+            PackSession.return_case_id != case.id,
+        )
+    )
+    if returned is not None:
+        raise AppError("PACKAGE_ALREADY_RETURNED", "Đơn này đã có kiện hoàn được nhận.", 409)
+    destination = locked.get(open_case.id) if open_case else None
+    if not (
+        _openable_by_status(target, order, destination is not None)
+        or target.warehouse_status in RECEIVED_STATUSES
+    ):
+        raise _not_eligible(f"Kiện {target.tracking_number} chưa rời kho — không phải hàng hoàn.")
+    merged: list[claims.MergedClaim] = []
+    ok = await merge_unidentified(
+        session, case, order, target.tracking_number, actor_label=actor_label, actor_user_id=actor_user_id,
+        source="MANUAL", merged_claims=merged,
+    )  # fmt: skip
+    if not ok:
+        raise _not_eligible("Không gắn được đơn cho hồ sơ này.")
+    destination_case = destination or case
+    audit.record(
+        session, "RETURN_LINK_ORDER", user_id=actor_user_id, object_type="RETURN_CASE", object_id=case.id,
+        ip=ip, data={"package_id": str(target.id), "order_sn": order.platform_order_sn,
+              "merged_into": str(destination.id) if destination else None,
+              "merged_claims": [{"from": m.from_code, "into": m.into_code} for m in merged]},
+    )  # fmt: skip
+    await session.flush()
+    return LinkResult(destination_case, destination, merged)
 
 
 # ---------------------------------------------------------------- mã đóng phiên (BR-23)

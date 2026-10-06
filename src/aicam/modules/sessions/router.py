@@ -19,6 +19,7 @@ from aicam.modules.sessions.schemas import (
     OperatorIn,
     RecentOut,
     ReturnLookupOut,
+    ReturnSessionIn,
     ScanIn,
     ScanOut,
     SnapshotCreatedOut,
@@ -125,3 +126,14 @@ async def take_snapshot(
     """API-103: chụp ảnh Cam 1 (server lấy khung từ relay) cho phiên hoàn đang mở (FR-04.04)."""
     station = await service.require_station(db, p.station_id, p.user_id)
     return await service.take_snapshot(db, station, session_id, settings)
+
+
+@router.post("/return-sessions", response_model=ScanOut)
+async def open_return_session(
+    body: ReturnSessionIn, p: StationOnly, db: DbSession, settings: AppSettings
+) -> ScanOut:
+    """API-105: mở phiên hoàn từ kết quả tìm / mở phiên chưa xác định (FR-04.07, 04.13)."""
+    station = await service.require_station(db, p.station_id, p.user_id)
+    return await service.open_return_by_request(
+        db, station, body, actor=p.user_id, ip=p.ip, settings=settings
+    )
