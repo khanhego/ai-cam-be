@@ -37,6 +37,7 @@ from aicam.modules.media.segments import (
     plan_cut,
     timeline_bounds,
 )
+from aicam.modules.returns.models import ReturnCasePackage
 from aicam.modules.sessions import service as sessions
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.settings import service as settings_service
@@ -361,6 +362,14 @@ async def build_session_clips(
         await sessions.add_flag(db, session_id, "VIDEO_INCOMPLETE")
     if result.ready:
         _notify_clip_ready(db, pack.station_id, session_id, result.ready)
+        if pack.type == "PACK" and pack.status == "COMPLETED":
+            cam1 = await db.scalar(
+                select(Clip.id).where(
+                    Clip.session_id == session_id, Clip.camera_role == "CAM1", Clip.status == "READY"
+                )
+            )
+            if cam1 in result.ready:
+                jobs.enqueue_capture_pack_snapshot(db, session_id)  # J-17 ảnh lúc đóng gói (L8)
     await commit(db)
     return result
 
@@ -453,7 +462,8 @@ async def play_url(db: AsyncSession, clip_id: uuid.UUID, p: Principal, settings:
         pack = await db.get(PackSession, clip.session_id)
         tz = settings.tz_display
         today = sessions.vn_day_start(clock.now().astimezone(ZoneInfo(tz)).date(), tz)
-        if pack is None or pack.station_id != station.id or pack.started_at < today:
+        own_today = pack is not None and pack.station_id == station.id and pack.started_at >= today
+        if pack is None or not (own_today or await _pack_clip_for_return(db, pack, station.id)):
             raise AppError("FORBIDDEN", "Tài khoản không có quyền thực hiện thao tác này.", 403)
     cfg = await settings_service.get(db)
     error = _clip_unavailable(clip, cfg.retention_clip_days)
@@ -464,6 +474,35 @@ async def play_url(db: AsyncSession, clip_id: uuid.UUID, p: Principal, settings:
         url=signing.clip_url(settings.media_signing_key, clip.id, p.user_id, exp),
         expires_at=signing.expires_at(exp),
     )
+
+
+async def _pack_clip_for_return(db: AsyncSession, pack: PackSession, station_id: uuid.UUID) -> bool:
+    """02 API-40 (Phase 2): STATION xem clip phiên PACK của kiện (hoặc kiện cùng hồ sơ hàng hoàn) đang có
+    phiên RETURN hoạt động (`OPEN` / `WAITING_APPROVAL`) tại station của token."""
+    if pack.type != "PACK":
+        return False
+    active = await db.scalar(
+        select(PackSession)
+        .where(
+            PackSession.station_id == station_id,
+            PackSession.type == "RETURN",
+            PackSession.status.in_(("OPEN", "WAITING_APPROVAL")),
+        )
+        .limit(1)
+    )
+    if active is None:
+        return False
+    if active.package_id == pack.package_id:
+        return True
+    if active.return_case_id is None:
+        return False
+    linked = await db.scalar(
+        select(ReturnCasePackage.package_id).where(
+            ReturnCasePackage.return_case_id == active.return_case_id,
+            ReturnCasePackage.package_id == pack.package_id,
+        )
+    )
+    return linked is not None
 
 
 def _signature_invalid() -> AppError:

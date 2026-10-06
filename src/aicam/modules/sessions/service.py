@@ -46,6 +46,8 @@ from aicam.modules.sessions.schemas import (
     RecentSession,
     ScanOut,
     SessionOut,
+    SnapshotCreated,
+    SnapshotCreatedOut,
     StationStateOut,
     StationStateRef,
     TrayOut,
@@ -196,7 +198,7 @@ async def build_state(session: AsyncSession, station: Station, settings: Setting
             abandon_at=base + timedelta(minutes=abandon_m),
         )
         if is_return:
-            await return_state.fill(session, session_out, current, settings)
+            await return_state.fill(session, session_out, current, settings, station.account_user_id)
     if pending is not None:
         state = "WAITING_APPROVAL"
     elif current is not None:
@@ -722,6 +724,25 @@ async def save_inspection(
     _publish_state_after_commit(session, station.id, state)
     await commit(session)
     return InspectionSavedOut(inspection=out)
+
+
+async def take_snapshot(
+    session: AsyncSession, station: Station, session_id: uuid.UUID, settings: Settings
+) -> SnapshotCreatedOut:
+    """API-103 (FR-04.04): chụp Cam 1 cho phiên RETURN đang mở; đẩy `station.state` sau commit."""
+    from aicam.modules.media import snapshots
+
+    shot = await snapshots.take(session, station.id, session_id, settings, lock=lock_station)
+    state = await build_state(session, station, settings)
+    _publish_state_after_commit(session, station.id, state)
+    await commit(session)
+    uid = station.account_user_id
+    return SnapshotCreatedOut(
+        snapshot=SnapshotCreated(
+            id=shot.id, kind="MANUAL", camera_role="CAM1", taken_at=shot.taken_at, sha256=shot.sha256 or "",
+            url=snapshots.url_for(settings, shot.id, uid) if uid else "",
+        )
+    )  # fmt: skip
 
 
 async def recent(session: AsyncSession, station: Station, settings: Settings, limit: int = 5) -> RecentOut:

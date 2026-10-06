@@ -14,7 +14,7 @@ from aicam.core.db import dispose_engine, init_engine, sessionmaker
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import get_settings
 from aicam.modules.imports import service as imports
-from aicam.modules.media import exports, jobs
+from aicam.modules.media import exports, jobs, snapshots
 from aicam.modules.media import service as media
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms import sync as platform_sync
@@ -51,6 +51,20 @@ def check_clock_drift() -> int:
 def check_timeouts() -> dict[str, int]:
     """J-07 (02a §7): mỗi 30 giây, BR-16."""
     return _run(lambda db: sessions.check_timeouts(db, get_settings()))
+
+
+@app.task(  # type: ignore[untyped-decorator]
+    name="media.capture_pack_snapshot", bind=True, max_retries=3, default_retry_delay=30, soft_time_limit=60
+)
+def capture_pack_snapshot(self: Any, session_id: str) -> str:
+    """J-17 (queue `video`, 02a §7): ảnh Cam 1 lúc đóng gói từ clip gốc; lỗi → thử lại 3 lần / 30 giây."""
+    try:
+        return _run(lambda db: snapshots.capture_pack_snapshot(db, uuid.UUID(session_id), get_settings()))
+    except Exception as exc:  # ffmpeg / IO: thiếu ảnh không chặn gì, chỉ thử lại rồi log
+        if self.request.retries >= self.max_retries:
+            log.error("pack_snapshot_failed", session_id=session_id, error=str(exc)[:300])
+            return "failed"
+        raise self.retry(exc=exc) from exc
 
 
 @app.task(name="sessions.flag_order_cancelled", soft_time_limit=60)  # type: ignore[untyped-decorator]

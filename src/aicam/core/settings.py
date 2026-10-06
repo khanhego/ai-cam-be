@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     export_side_scale: str = "1280:720"  # kích thước mỗi camera trong bản xuất; dự phòng "960:540"
     export_ttl_hours: int = 24  # 02a API-44/45: file xuất giữ ≤ 24 giờ (J-10 dọn)
     export_timeout_s: int = 600
+    # Phase 2 (02a §9): ảnh Cam 1 (API-103, J-17).
+    snapshot_timeout_s: float = 3.0
+    snapshot_max_per_session: int = 20
+    snapshot_jpeg_quality: int = 85
     export_font_file: Path = Path("/usr/share/fonts/truetype/bevietnampro/BeVietnamPro-SemiBold.ttf")
     # Phase 2 (02a §9): sàn giữ clip (BR-25, DEC-210) — chỉ đổi qua env; migration 0003 nâng setting lên sàn.
     retention_clip_min_days: int = 60

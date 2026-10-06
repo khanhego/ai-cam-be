@@ -117,6 +117,21 @@ class SnapshotOut(BaseModel):
     url: str
 
 
+class SnapshotCreated(BaseModel):
+    id: uuid.UUID
+    kind: Literal["MANUAL", "PACK_CLOSE"]
+    camera_role: Literal["CAM1"]
+    taken_at: datetime
+    sha256: str
+    url: str
+
+
+class SnapshotCreatedOut(BaseModel):
+    """API-103 (02 §6.2) — 201."""
+
+    snapshot: SnapshotCreated
+
+
 class SnapshotRef(BaseModel):
     id: uuid.UUID
     url: str

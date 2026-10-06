@@ -519,6 +519,22 @@ CONTRACT: tuple[Api, ...] = (
         request_fields=("conclusion", "note", "lines"),
     ),
     Api(
+        "API-103",
+        "POST",
+        "/station/sessions/{session_id}/snapshots",
+        201,
+        (
+            "snapshot.id",
+            "snapshot.kind",
+            "snapshot.camera_role",
+            "snapshot.taken_at",
+            "snapshot.sha256",
+            "snapshot.url",
+        ),
+        {"snapshot.kind": _e("MANUAL", "PACK_CLOSE"), "snapshot.camera_role": _e("CAM1")},
+    ),
+    Api("API-106", "GET", "/media/snapshots/{snapshot_id}", 200),
+    Api(
         "API-104",
         "GET",
         "/station/return-lookup",

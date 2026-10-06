@@ -82,7 +82,7 @@ services:
       - sh
       - -c
       - >-
-        mkdir -p /data/video/raw /data/video/clips /data/video/exports /data/imports;
+        mkdir -p /data/video/raw /data/video/clips /data/video/exports /data/video/snapshots /data/imports;
         find /data/video /data/imports -maxdepth 2 ! -user 10001 -exec chown 10001:10001 {} + ||
         echo "CẢNH BÁO volume-init: không chown được /data/video hoặc /data/imports (NFS root_squash?) — xem docs/ops.md §2" >&2;
         exit 0

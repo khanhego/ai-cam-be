@@ -21,6 +21,7 @@ from aicam.modules.sessions.schemas import (
     ReturnLookupOut,
     ScanIn,
     ScanOut,
+    SnapshotCreatedOut,
     StateOnlyOut,
     StationStateOut,
     WorkModeIn,
@@ -115,3 +116,12 @@ async def save_inspection(
     """API-102: lưu kết luận + dòng kiểm phiên hoàn (FR-04.03, 04.09; BR-22)."""
     station = await service.require_station(db, p.station_id, p.user_id)
     return await service.save_inspection(db, station, session_id, body, settings)
+
+
+@router.post("/sessions/{session_id}/snapshots", response_model=SnapshotCreatedOut, status_code=201)
+async def take_snapshot(
+    session_id: uuid.UUID, p: StationOnly, db: DbSession, settings: AppSettings
+) -> SnapshotCreatedOut:
+    """API-103: chụp ảnh Cam 1 (server lấy khung từ relay) cho phiên hoàn đang mở (FR-04.04)."""
+    station = await service.require_station(db, p.station_id, p.user_id)
+    return await service.take_snapshot(db, station, session_id, settings)

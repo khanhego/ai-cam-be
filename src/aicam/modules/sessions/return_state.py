@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import clock
 from aicam.core.settings import Settings
+from aicam.modules.media import snapshots
 from aicam.modules.media.queries import clips_of_session
 from aicam.modules.orders.models import Package
 from aicam.modules.returns.models import ReturnCase, ReturnCasePackage
@@ -19,7 +20,14 @@ from aicam.modules.returns.views import reason_label
 from aicam.modules.sessions import inspection
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.sessions.return_scan import effective_pack_session
-from aicam.modules.sessions.schemas import PackReference, PackReferenceClip, ReturnCaseState, SessionOut
+from aicam.modules.sessions.schemas import (
+    PackReference,
+    PackReferenceClip,
+    ReturnCaseState,
+    SessionOut,
+    SnapshotOut,
+    SnapshotRef,
+)
 from aicam.modules.stations.models import Station
 
 
@@ -52,29 +60,47 @@ async def _case_state(session: AsyncSession, case: ReturnCase) -> ReturnCaseStat
     )
 
 
-async def pack_reference(session: AsyncSession, package_id: uuid.UUID) -> PackReference | None:
+async def pack_reference(
+    session: AsyncSession, package_id: uuid.UUID, settings: Settings, uid: uuid.UUID | None
+) -> PackReference | None:
     pack = await effective_pack_session(session, package_id)
     if pack is None:
         return None
     station = await session.get(Station, pack.station_id)
     clips = await clips_of_session(session, pack.id)
+    shot = await snapshots.pack_close_of(session, pack.id)
     return PackReference(
         session_id=pack.id,
         ended_at=pack.ended_at,
         station_name=station.name if station else "",
         clips=[PackReferenceClip(id=c.id, camera_role=c.camera_role, status=c.status) for c in clips],
-        snapshot=None,
+        snapshot=SnapshotRef(id=shot.id, url=snapshots.url_for(settings, shot.id, uid))
+        if shot and uid
+        else None,
     )
 
 
-async def fill(session: AsyncSession, out: SessionOut, pack: PackSession, settings: Settings) -> None:
-    """Điền `return_case`, `inspection`, `snapshots`, `pack_reference` cho phiên RETURN."""
+async def fill(
+    session: AsyncSession, out: SessionOut, pack: PackSession, settings: Settings, uid: uuid.UUID | None
+) -> None:
+    """Điền `return_case`, `inspection`, `snapshots`, `pack_reference` cho phiên RETURN.
+
+    URL ảnh ký theo tài khoản station (`uid`) — station tải bằng `<img>` không cần Bearer (API-106)."""
     case = await session.get(ReturnCase, pack.return_case_id) if pack.return_case_id else None
     if case is not None:
         out.return_case = await _case_state(session, case)
     out.inspection = inspection.inspection_out(pack, await inspection.lines_of(session, pack.id))
-    out.snapshots = []
-    out.pack_reference = await pack_reference(session, pack.package_id)
+    out.snapshots = (
+        [
+            SnapshotOut(
+                id=s.id, kind="MANUAL", taken_at=s.taken_at, url=snapshots.url_for(settings, s.id, uid)
+            )
+            for s in await snapshots.of_session(session, pack.id)
+        ]
+        if uid
+        else []
+    )
+    out.pack_reference = await pack_reference(session, pack.package_id, settings, uid)
 
 
 def _day_start(tz: str) -> datetime:

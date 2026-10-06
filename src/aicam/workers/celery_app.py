@@ -23,6 +23,7 @@ app.conf.update(
     task_routes={
         "media.build_session_clips": {"queue": "video"},
         "media.render_export": {"queue": "export"},
+        "media.capture_pack_snapshot": {"queue": "video"},  # J-17
         "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12 (gọi Shopee) tách khỏi cắt clip
     },
     beat_schedule={

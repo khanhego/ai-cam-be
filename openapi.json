@@ -4626,6 +4626,64 @@
         "title": "ShopOut",
         "type": "object"
       },
+      "SnapshotCreated": {
+        "properties": {
+          "camera_role": {
+            "const": "CAM1",
+            "title": "Camera Role",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "MANUAL",
+              "PACK_CLOSE"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "taken_at": {
+            "format": "date-time",
+            "title": "Taken At",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "camera_role",
+          "taken_at",
+          "sha256",
+          "url"
+        ],
+        "title": "SnapshotCreated",
+        "type": "object"
+      },
+      "SnapshotCreatedOut": {
+        "description": "API-103 (02 §6.2) — 201.",
+        "properties": {
+          "snapshot": {
+            "$ref": "#/components/schemas/SnapshotCreated"
+          }
+        },
+        "required": [
+          "snapshot"
+        ],
+        "title": "SnapshotCreatedOut",
+        "type": "object"
+      },
       "SnapshotOut": {
         "properties": {
           "id": {
@@ -6725,6 +6783,72 @@
         ]
       }
     },
+    "/api/v1/media/snapshots/{snapshot_id}": {
+      "get": {
+        "description": "API-106: ảnh JPEG bằng chữ ký `snapshot:` (FR-04.04, 02.11).",
+        "operationId": "snapshot_media_api_v1_media_snapshots__snapshot_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "uid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Uid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exp",
+            "required": true,
+            "schema": {
+              "title": "Exp",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sig",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "title": "Sig",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Snapshot Media",
+        "tags": [
+          "media"
+        ]
+      }
+    },
     "/api/v1/packages": {
       "get": {
         "description": "API-30: tra cứu kiện (FR-07.01, 07.03).",
@@ -7958,6 +8082,50 @@
           }
         },
         "summary": "Save Inspection",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/sessions/{session_id}/snapshots": {
+      "post": {
+        "description": "API-103: chụp ảnh Cam 1 (server lấy khung từ relay) cho phiên hoàn đang mở (FR-04.04).",
+        "operationId": "take_snapshot_api_v1_station_sessions__session_id__snapshots_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotCreatedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Take Snapshot",
         "tags": [
           "station"
         ]

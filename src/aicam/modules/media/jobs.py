@@ -19,6 +19,7 @@ from aicam.core.settings import get_settings
 BUILD_CLIPS = "media.build_session_clips"
 RENDER_EXPORT = "media.render_export"
 FLAG_ORDER_CANCELLED = "sessions.flag_order_cancelled"
+CAPTURE_PACK_SNAPSHOT = "media.capture_pack_snapshot"
 
 Sender = Callable[[str, list[Any], str, float], None]
 
@@ -61,6 +62,15 @@ def enqueue_build_clips(session: AsyncSession, session_id: uuid.UUID, ended_at: 
 def enqueue_render_export(session: AsyncSession, export_id: uuid.UUID) -> None:
     async def _send() -> None:
         await send(RENDER_EXPORT, [str(export_id)], "export")
+
+    after_commit(session, _send)
+
+
+def enqueue_capture_pack_snapshot(session: AsyncSession, session_id: uuid.UUID) -> None:
+    """J-17 (queue `video`) sau khi J-01 cắt xong clip Cam 1 của phiên PACK `COMPLETED` (DEC-227)."""
+
+    async def _send() -> None:
+        await send(CAPTURE_PACK_SNAPSHOT, [str(session_id)], "video")
 
     after_commit(session, _send)
 
