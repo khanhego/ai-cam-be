@@ -222,6 +222,7 @@ ROW_ARCHIVES: tuple[tuple[str, str], ...] = (
     # Cặp do backfill 4b thêm — nâng cấp lại không thêm lại cặp người dùng đã bỏ khi chạy Phase 2 (DEC-498).
     ("backfill_prior_pairs", "SELECT claim_id, session_id FROM claim_evidence WHERE backfilled"),
     ("missing_clips", "SELECT id FROM clip WHERE status = 'MISSING'"),
+    ("missing_snapshots", "SELECT id, deleted_at FROM snapshot WHERE status = 'MISSING'"),  # v0.3 (DEC-524)
 )
 
 
@@ -796,9 +797,22 @@ def _backfill_claim_times(bind: sa.Connection) -> dict[str, int]:
 
 
 def _excluded_session_sql(alias: str) -> str:
-    """Vị từ "phiên bị loại khỏi bằng chứng tự chọn" (BR-39) — hằng trong migration, cùng luật code."""
+    """Vị từ "phiên bị loại khỏi bằng chứng tự chọn" (BR-39 v0.4, DEC-514, 515, 521) — hằng trong migration,
+    cùng luật `sessions.queries.excluded_return_sql`: lý do hiệu lực (`cancel_cause` của Supervisor, không thì
+    `cancel_reason` của station) ∈ lý do loại, hoặc đã đánh dấu quét nhầm."""
     reasons = ", ".join(f"'{r}'" for r in EXCLUDED_CANCEL_REASONS)
-    return f"COALESCE({alias}.cancel_reason, '') IN ({reasons})"
+    return (
+        f"(COALESCE({alias}.cancel_cause, {alias}.cancel_reason, '') IN ({reasons}) "
+        f"OR {alias}.wrong_scan_at IS NOT NULL)"
+    )
+
+
+def _review_needed_sql(alias: str) -> str:
+    """Phiên Supervisor hủy trước Phase 3 (không mã lý do) — vào bằng chứng nhưng "Cần soát" (DEC-516)."""
+    return (
+        f"({alias}.cancel_reason = 'SUPERVISOR' AND {alias}.cancel_cause IS NULL "
+        f"AND {alias}.review_confirmed_at IS NULL AND {alias}.wrong_scan_at IS NULL)"
+    )
 
 
 def _archive_exists(bind: sa.Connection) -> bool:
@@ -831,10 +845,21 @@ def _backfill_prior_sessions(bind: sa.Connection) -> dict[str, int]:
             f"   AND NOT ({_excluded_session_sql('s')}) AND {skip}"
             "  ON CONFLICT (claim_id, session_id) DO NOTHING"
             "  RETURNING claim_id, session_id"
-            ") SELECT claim_id, array_agg(session_id::text ORDER BY session_id) FROM added GROUP BY claim_id"
+            "), logged AS ("
+            "  SELECT a.claim_id, a.session_id, c.code, s.started_at, "
+            f"   {_review_needed_sql('s')} AS review_needed "
+            "  FROM added a JOIN claim c ON c.id = a.claim_id JOIN session s ON s.id = a.session_id"
+            ") SELECT claim_id, array_agg(session_id::text ORDER BY session_id), "
+            "  COALESCE(jsonb_agg(jsonb_build_object('claim_code', code, 'session_id', session_id, "
+            "    'started_at', started_at) ORDER BY started_at) FILTER (WHERE review_needed), '[]'::jsonb) "
+            "FROM logged GROUP BY claim_id"
         )
     ).all()
-    for claim_id, session_ids in rows:
+    review = [item for r in rows for item in r[2]]
+    if review:
+        # v0.3 (DEC-516): CSKH soát — phiên vào bằng chứng nhưng không bao giờ là phiên chính tới khi xác nhận.
+        log.warning("backfill_review_needed %s", json.dumps(review, ensure_ascii=False, default=str))
+    for claim_id, session_ids, _ in rows:
         bind.execute(
             sa.text(
                 "INSERT INTO audit_log (user_id, action, object_type, object_id, at, data) VALUES "
@@ -848,7 +873,32 @@ def _backfill_prior_sessions(bind: sa.Connection) -> dict[str, int]:
             sa.text("UPDATE claim SET version = version + 1 WHERE id = ANY(:ids)"),
             {"ids": [r[0] for r in rows]},
         )
-    return {"prior_rows": sum(len(r[1]) for r in rows), "prior_claims": len(rows)}
+    return {
+        "prior_rows": sum(len(r[1]) for r in rows),
+        "prior_claims": len(rows),
+        "prior_review_needed": len(review),
+    }
+
+
+def _log_cancel_candidates(bind: sa.Connection) -> int:
+    """(4c) v0.3 (DEC-519): kiện bị hủy oan khi Phase 2 coi `IN_CANCEL` là hủy — chỉ đếm + log (sửa cần
+    `transition` + audit của code: ops chạy `aicam fix-cancel-requests`, docs/ops.md §7.2)."""
+    rows = bind.execute(
+        sa.text(
+            "SELECT p.tracking_number, p.warehouse_status, o.platform_order_sn, o.platform_status_group "
+            'FROM package p JOIN "order" o ON o.id = p.order_id '
+            "WHERE p.warehouse_status IN ('CANCELLED', 'CANCELLED_AFTER_PACK') "
+            "AND o.platform_status_group NOT IN ('CANCELLED', 'UNKNOWN') ORDER BY p.tracking_number"
+        )
+    ).all()
+    if rows:
+        log.warning(
+            "0006: %s kiện có thể bị hủy oan (đơn nay không ở nhóm Đã hủy) — chạy `aicam fix-cancel-requests` "
+            "(dry-run rồi --apply): %s",
+            len(rows),
+            ", ".join(f"{r[0]} ({r[1]}, đơn {r[2]} {r[3]})" for r in rows[:50]),
+        )
+    return len(rows)
 
 
 # ---------------------------------------------------------------- nâng cấp lại (bước 6) — phase3_archive
@@ -1038,7 +1088,17 @@ def _restore_detached(bind: sa.Connection) -> dict[str, int]:
             f"UPDATE clip c SET status = 'MISSING' FROM {ARCHIVE}.missing_clips m WHERE c.id = m.id AND c.status = 'FAILED'"
         )
     ).rowcount
-    return {"detached_reattached": int(reattached or 0), "missing_clips": int(missing or 0)}
+    missing_snaps = bind.execute(
+        sa.text(
+            f"UPDATE snapshot s SET status = 'MISSING' FROM {ARCHIVE}.missing_snapshots m WHERE s.id = m.id "
+            "AND s.status = 'DELETED' AND s.deleted_at IS NOT DISTINCT FROM m.deleted_at"
+        )
+    ).rowcount
+    return {
+        "detached_reattached": int(reattached or 0),
+        "missing_clips": int(missing or 0),
+        "missing_snapshots": int(missing_snaps or 0),
+    }
 
 
 # ---------------------------------------------------------------- downgrade (02a §3, DEC-475) — chép trước, xóa sau
@@ -1341,10 +1401,11 @@ def _check_subset(bind: sa.Connection, held_clips: set[str], held_snaps: set[str
 
 def _missing_to_phase2(bind: sa.Connection) -> int:
     """Bước 7: Phase 2 không có `MISSING` → clip `FAILED` (J-11 Phase 2 chỉ đẩy lại J-01 — vô hại; D2 đếm
-    `CLIP_FAILED`); danh sách ở `missing_clips`, nâng cấp lại trả `MISSING`."""
-    return int(
-        bind.execute(sa.text("UPDATE clip SET status = 'FAILED' WHERE status = 'MISSING'")).rowcount or 0
-    )
+    `CLIP_FAILED`); ảnh `DELETED` (Phase 2 ảnh chỉ `READY` / `DELETED`; J-02 Phase 2 chỉ xét `READY`). Danh sách ở
+    `missing_clips` / `missing_snapshots`, nâng cấp lại trả `MISSING`."""
+    clips = bind.execute(sa.text("UPDATE clip SET status = 'FAILED' WHERE status = 'MISSING'")).rowcount
+    snaps = bind.execute(sa.text("UPDATE snapshot SET status = 'DELETED' WHERE status = 'MISSING'")).rowcount
+    return int(clips or 0) + int(snaps or 0)
 
 
 def _prepare_phase2(bind: sa.Connection) -> None:
@@ -1378,6 +1439,7 @@ def upgrade() -> None:
     _add_checks()
     stats = _backfill(bind)
     stats.update(_backfill_prior_sessions(bind))
+    stats["cancel_revert_candidates"] = _log_cancel_candidates(bind)
     restored = _restore_phase3(bind)
     _create_indexes()
     stats["seconds"] = round(time.monotonic() - started, 1)
@@ -1405,7 +1467,11 @@ def downgrade() -> None:
     held_clips, held_snaps = _hold_removed_evidence(bind, days)
     _check_subset(bind, held_clips, held_snaps, days)
     missing = _missing_to_phase2(bind)
-    log.info("0006 downgrade: tách %s kiện của đơn ngoài, %s clip MISSING → FAILED", detached, missing)
+    log.info(
+        "0006 downgrade: tách %s kiện của đơn ngoài, %s clip / ảnh MISSING về trạng thái Phase 2",
+        detached,
+        missing,
+    )
     _prepare_phase2(bind)
     op.drop_index("ix_status_history_to_status_at", table_name="status_history")
     op.drop_index(op.f("ix_shop_platform_grant_ref"), table_name="shop")

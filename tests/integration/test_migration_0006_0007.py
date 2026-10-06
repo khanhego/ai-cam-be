@@ -310,7 +310,9 @@ def seed_phase3() -> None:
             f"UPDATE backup_object SET clip_id = '{i(0x781)}' WHERE id = '{i(0xB22)}'",
             "UPDATE setting SET packer_name_required = true, refund_only_default_hours = 24, quiet_start = '23:00', "
             "backup_enabled = true, backup_confirmed_fingerprint = 'fp1', backup_upload_mbps = 20",
-            f"UPDATE session SET cancel_cause = 'OTHER' WHERE id = '{SESS_C}'",
+            f"UPDATE session SET cancel_cause = 'OTHER', wrong_scan_at = now(), wrong_scan_by = '{U2}', "
+            f"wrong_scan_code = 'NOT_A_RETURN', wrong_scan_note = 'Không phải hàng hoàn', review_confirmed_at = now(), "
+            f"review_confirmed_by = '{U1}', review_confirmed_note = 'Đã xem video' WHERE id = '{SESS_C}'",
             f"UPDATE claim SET submitted_at = '2026-09-30T00:00:00Z' WHERE id = '{CLAIM_NEW}'",
             "INSERT INTO return_case (id, order_id, shop_id, kind, status, source, platform_return_sn, platform_status, "
             f"platform_status_group) VALUES ('{i(0x8F1)}', '{O_T1}', '{SHOP_T1}', 'REFUND_ONLY', 'NO_PARCEL', "
@@ -684,3 +686,66 @@ def test_missing_clip_failed_in_phase2_then_back(mig_db: None, monkeypatch: pyte
     assert dict(run(f"SELECT session_id::text, status FROM clip WHERE session_id IN ('{S_D}', '{S_A}')")) == {
         S_D: "MISSING", S_A: "READY"
     }  # fmt: skip
+
+
+# ---------------------------------------------------------------- T-282: 0006 v0.3
+
+
+def _capture_warnings(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """env.py gọi `fileConfig` (xóa handler logger alembic) → bắt cảnh báo migration qua `Logger.warning`."""
+    out: list[str] = []
+    real = logging.Logger.warning
+
+    def capture(self: logging.Logger, msg: object, *args: object, **kw: object) -> None:
+        out.append(str(msg) % args if args else str(msg))
+        real(self, msg, *args, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(logging.Logger, "warning", capture)
+    return out
+
+
+def test_4b_supervisor_cancel_is_review_needed_and_cancel_candidates_logged(
+    mig_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v0.3 (DEC-516): phiên Supervisor hủy Phase 2 (không mã lý do) có clip → 4b vẫn thêm + log
+    `backfill_review_needed`; (4c, DEC-519): kiện `CANCELLED` mà đơn `IN_CANCEL` (nay `CANCEL_REQUESTED`) → log
+    ứng viên trả lại, migration không sửa."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    seed_return_claims()
+    s_sup = i(0x695)
+    run_many(
+        [
+            *_session(s_sup, "RETURN", "CANCELLED", 250, cancel="SUPERVISOR"),
+            f"INSERT INTO package (id, order_id, tracking_number, warehouse_status) VALUES ('{i(0x5B1)}', '{i(0x407)}', "
+            "'SPXP3IC0001', 'CANCELLED')",
+        ]
+    )
+    warnings = _capture_warnings(monkeypatch)
+
+    command.upgrade(cfg, SCHEMA_HEAD)
+
+    assert (s_sup, True) in _evidence(CLAIM_OPEN)
+    review = [w for w in warnings if w.startswith("backfill_review_needed")]
+    assert len(review) == 1
+    assert s_sup in review[0]
+    assert "KN-" in review[0]
+    candidates = [w for w in warnings if "có thể bị hủy oan" in w]
+    assert len(candidates) == 1
+    assert "SPXP3IC0001 (CANCELLED, đơn 2410P300007 CANCEL_REQUESTED)" in candidates[0]
+    assert run(f"SELECT warehouse_status FROM package WHERE id = '{i(0x5B1)}'") == [("CANCELLED",)]
+
+
+def test_missing_snapshot_deleted_in_phase2_then_back(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """v0.3 (DEC-524): ảnh `MISSING` → `DELETED` khi lùi; lên lại → `MISSING` nếu vẫn `DELETED`, `deleted_at` không
+    đổi (J-02 Phase 2 không xét ảnh này)."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    seed_return_claims()
+    command.upgrade(cfg, SCHEMA_HEAD)
+    run(f"UPDATE snapshot SET status = 'MISSING' WHERE id = '{SNAP_P}'")
+    monkeypatch.setenv(DETACH_ENV, "1")
+    command.downgrade(cfg, "0005")
+    assert run(f"SELECT status, deleted_at FROM snapshot WHERE id = '{SNAP_P}'") == [("DELETED", None)]
+    command.upgrade(cfg, SCHEMA_HEAD)
+    assert run(f"SELECT status FROM snapshot WHERE id = '{SNAP_P}'") == [("MISSING",)]
