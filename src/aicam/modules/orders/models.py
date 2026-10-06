@@ -116,3 +116,17 @@ class StatusHistory(UUIDPk, Base):
     at: Mapped[datetime] = mapped_column(default=utcnow)
     actor_user_id: Mapped[uuid.UUID | None]
     actor_label: Mapped[str | None] = mapped_column(Text)
+
+
+# API-104 khớp / tìm tiền tố `LIKE 'Q%'` theo `upper()`: DB collation không phải C → btree mặc định không dùng
+# được cho LIKE, cần `text_pattern_ops` (T-118, DEC-334, migration 0005).
+Index(
+    "ix_package_tracking_upper_pattern",
+    func.upper(Package.tracking_number).label("tracking_upper"),
+    postgresql_ops={"tracking_upper": "text_pattern_ops"},
+)
+Index(
+    "ix_order_platform_order_sn_upper_pattern",
+    func.upper(Order.platform_order_sn).label("order_sn_upper"),
+    postgresql_ops={"order_sn_upper": "text_pattern_ops"},
+)

@@ -144,8 +144,10 @@ Làm nên lúc ngoài giờ đóng gói: api khởi động lại vài giây, st
 
 ### 7.1 Phase 2 (hàng hoàn, đối soát, khiếu nại): nâng cấp và lùi về Phase 1
 
-Phase 2 thêm 2 migration: **0003** (bảng / cột mới, chỉ thêm) và **0004** (clip đang "Giữ" → hồ sơ khiếu nại
-"Chuyển từ cờ giữ" — `LEGACY_HOLD`). Từ Phase 2, clip được giữ theo **hồ sơ** (ADR-009) thay cho cờ giữ từng clip.
+Phase 2 thêm 3 migration: **0003** (bảng / cột mới, chỉ thêm), **0004** (clip đang "Giữ" → hồ sơ khiếu nại
+"Chuyển từ cờ giữ" — `LEGACY_HOLD`) và **0005** (index tìm kiện hoàn theo tiền tố). Thời gian: đo trên máy dev với
+1 triệu kiện, 0003 chạy ~34 giây và **khóa bảng kiện suốt thời gian đó** (một transaction; đọc / ghi kiện chờ) —
+nâng cấp ngoài giờ đóng gói, dừng `api` / worker trước nếu kho rất lớn; 0005 ~1,3 giây. Từ Phase 2, clip được giữ theo **hồ sơ** (ADR-009) thay cho cờ giữ từng clip.
 
 **Nâng cấp** (như mục 7, thêm):
 
@@ -167,7 +169,7 @@ dc exec backup /bin/sh /pg-backup.sh once                  # 1. sao lưu (bắt 
 # 2. Hoàn tất / hủy mọi phiên nhận hàng hoàn đang mở ở station (downgrade từ chối nếu còn — không đổi gì).
 #    Phiên hoàn có clip "Không cắt được": bấm Thử lại (API-46) trước — image cũ không giữ video thô cho chúng.
 dc stop api vision worker worker-sync worker-export beat   # 3. dừng dịch vụ (không để job ghi giữa chừng)
-dc run --rm migrate alembic downgrade 0002                 # 4. bằng IMAGE MỚI (0004 rồi 0003, một transaction)
+dc run --rm migrate alembic downgrade 0002                 # 4. bằng IMAGE MỚI (0005, 0004 rồi 0003, một transaction)
 dc run --rm migrate alembic current                        #    phải in 0002
 # 5. Log bước 4: "0004 downgrade: đặt held cho N clip…", "0003 downgrade: chép sang phase2_archive {…số dòng…}"
 AICAM_IMAGE=<tag Phase 1> dc up -d                         # 6. rồi mới đổi image BE (và build FE Phase 1)
@@ -175,7 +177,7 @@ AICAM_IMAGE=<tag Phase 1> dc up -d                         # 6. rồi mới đ�
 
 - **Không** xóa schema `phase2_archive`, **không** dọn `clips/`, `snapshots/`, `exports/pack-*` bằng tay, **không** bỏ
   "Giữ" hàng loạt khi đang chạy Phase 1 (bỏ giữ → J-02 cũ xóa được clip bằng chứng).
-- Image cũ **không chạy được** trên DB đã nâng cấp: `migrate` của nó báo `Can't locate revision identified by '0004'`
+- Image cũ **không chạy được** trên DB đã nâng cấp: `migrate` của nó báo `Can't locate revision identified by '0005'` (revision mới nhất)
   (thoát ≠ 0) nên `api` / worker không khởi động — đúng ý (chặn J-02 cũ). Gặp lỗi này: làm lại bước 3–4 bằng image
   mới. Không bỏ qua bằng `docker start` / `dc start api`.
 - Lỗi ở bước 4 → cả lệnh lùi lại, DB giữ nguyên Phase 2 (chạy lại sau khi xử lý nguyên nhân trong log).

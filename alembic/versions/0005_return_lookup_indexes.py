@@ -1,0 +1,37 @@
+"""return_lookup_indexes — index `text_pattern_ops` cho API-104 tìm tiền tố (T-118, DEC-334)
+
+DB collation `en_US.utf8` → `LIKE 'Q%'` (và `= OR LIKE` của API-104) không dùng được btree mặc định: quét cả bảng.
+Đo 1 triệu kiện (máy dev): API-104 ~460 ms → ~8–11 ms; tạo 3 index ~1,3 giây (khóa ghi bảng trong lúc tạo).
+
+Revision ID: 0005
+Revises: 0004
+"""
+
+from typing import Sequence, Union
+
+from alembic import op
+
+revision: str = "0005"
+down_revision: Union[str, Sequence[str], None] = "0004"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+INDEXES = (
+    ("ix_package_tracking_upper_pattern", "package", "upper(tracking_number) text_pattern_ops"),
+    ("ix_order_platform_order_sn_upper_pattern", '"order"', "upper(platform_order_sn) text_pattern_ops"),
+    (
+        "ix_return_case_return_tracking_upper_pattern",
+        "return_case",
+        "upper(return_tracking_number) text_pattern_ops",
+    ),
+)
+
+
+def upgrade() -> None:
+    for name, table, expr in INDEXES:
+        op.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {table} ({expr})")
+
+
+def downgrade() -> None:
+    for name, _, _ in INDEXES:
+        op.execute(f"DROP INDEX IF EXISTS {name}")

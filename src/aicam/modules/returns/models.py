@@ -47,6 +47,10 @@ class ReturnCase(UUIDPk, Base):
         Index(None, "order_id"),
         Index(None, "status", "expected_since"),
         Index("ix_return_case_return_tracking_upper", text("upper(return_tracking_number)")),
+        Index(
+            "ix_return_case_return_tracking_upper_pattern",
+            text("upper(return_tracking_number) text_pattern_ops"),
+        ),
         Index("ix_return_case_signal_keys", "signal_keys", postgresql_using="gin"),
         enum_check("kind", RETURN_KINDS),
         enum_check("status", RETURN_CASE_STATUSES),
@@ -98,3 +102,11 @@ class ReturnCasePackage(Base):
     package_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("package.id", ondelete="RESTRICT"), primary_key=True
     )
+
+
+# API-104 tìm tiền tố mã chiều về (T-118, DEC-334, migration 0005).
+Index(
+    "ix_return_case_return_tracking_upper_pattern",
+    func.upper(ReturnCase.return_tracking_number).label("return_tracking_upper"),
+    postgresql_ops={"return_tracking_upper": "text_pattern_ops"},
+)

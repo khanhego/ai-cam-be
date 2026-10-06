@@ -425,14 +425,14 @@ def test_downgrade_refused_with_open_return_session(mig_db: None) -> None:
     with pytest.raises(RuntimeError, match="1 phiên nhận hàng hoàn đang mở"):
         command.downgrade(cfg, "0002")
 
-    assert run("SELECT version_num FROM alembic_version") == [("0004",)]
+    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
     assert dump() == before
     assert run("SELECT to_regnamespace('phase2_archive')") == [(None,)]
 
 
 def test_old_image_refuses_new_database(mig_db: None, tmp_path: Path) -> None:
     """TC-MG.06 (mô phỏng): image Phase 1 chỉ có 0001 / 0002 → `alembic upgrade head` của service `migrate` lỗi
-    revision lạ trên DB 0004 → `api` (depends_on migrate completed_successfully) không khởi động."""
+    revision lạ trên DB head (0005) → `api` (depends_on migrate completed_successfully) không khởi động."""
     command.upgrade(alembic_config(), "head")
     scripts = tmp_path / "alembic"
     (scripts / "versions").mkdir(parents=True)
@@ -443,6 +443,6 @@ def test_old_image_refuses_new_database(mig_db: None, tmp_path: Path) -> None:
     old = alembic_config()
     old.set_main_option("script_location", str(scripts))
 
-    with pytest.raises(CommandError, match="0004"):
+    with pytest.raises(CommandError, match="0005"):
         command.upgrade(old, "head")
-    assert run("SELECT version_num FROM alembic_version") == [("0004",)]
+    assert run("SELECT version_num FROM alembic_version") == [("0005",)]

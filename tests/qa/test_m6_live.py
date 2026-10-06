@@ -78,9 +78,9 @@ def _package_id(client: httpx.Client, headers: dict[str, str], code: str) -> str
 def test_mg_migration_head_and_retention_floor(
     client: httpx.Client, tokens: dict[str, dict[str, str]]
 ) -> None:
-    """TC-MG.01 (một phần, trên stack): DB ở head (0004 từ M8 — T-111), cột / bảng mới có, retention ≥ sàn 60
+    """TC-MG.01 (một phần, trên stack): DB ở head (0005 từ M10 — T-118), cột / bảng mới có, retention ≥ sàn 60
     (DEC-257)."""
-    assert _psql("SELECT version_num FROM alembic_version") == "0004"
+    assert _psql("SELECT version_num FROM alembic_version") == "0005"
     assert _psql("SELECT count(*) FROM package WHERE status_changed_at IS NULL OR created_at IS NULL") == "0"
     assert _psql("SELECT to_regclass('return_case') IS NOT NULL AND to_regclass('claim') IS NOT NULL") == "t"
     setting = client.get("/settings", headers=tokens["ADMIN"]).json()
