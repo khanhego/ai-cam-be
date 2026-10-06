@@ -52,9 +52,11 @@ async def search_packages(
 
 
 @router.get("/packages/{package_id}", response_model=packages.PackageDetail)
-async def package_detail(package_id: uuid.UUID, _: Staff, db: DbSession) -> packages.PackageDetail:
-    """API-31: chi tiết kiện, phiên, clip, dòng thời gian (FR-07.02)."""
-    return await packages.detail(db, package_id)
+async def package_detail(
+    package_id: uuid.UUID, _: Staff, db: DbSession, settings: AppSettings
+) -> packages.PackageDetail:
+    """API-31: chi tiết kiện, phiên, clip (+ `protection` — ADR-009), dòng thời gian (FR-07.02, FR-02.09)."""
+    return await packages.detail(db, package_id, settings)
 
 
 @router.post("/packages/{package_id}/warehouse-status", response_model=adjust.AdjustOut)

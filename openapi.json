@@ -1540,6 +1540,25 @@
         "title": "ClaimPatchIn",
         "type": "object"
       },
+      "ClaimRef": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code"
+        ],
+        "title": "ClaimRef",
+        "type": "object"
+      },
       "ClaimReturnCase": {
         "properties": {
           "code": {
@@ -1628,6 +1647,20 @@
             "title": "Id",
             "type": "string"
           },
+          "protected_by_claim": {
+            "title": "Protected By Claim",
+            "type": "boolean"
+          },
+          "protection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Protection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "retention_until": {
             "anyOf": [
               {
@@ -1665,7 +1698,9 @@
           "held",
           "retention_until",
           "deleted_at",
-          "flags"
+          "flags",
+          "protected_by_claim",
+          "protection"
         ],
         "title": "ClipDetail",
         "type": "object"
@@ -3870,6 +3905,57 @@
         "title": "PlayUrlOut",
         "type": "object"
       },
+      "Protection": {
+        "description": "02 §6.2 API-31 v0.2 (DEC-245, ADR-009): lý do clip / ảnh không bị retention xóa.",
+        "properties": {
+          "claims": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "CLAIM",
+                "RETURN_CASE",
+                "HELD"
+              ],
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "return_cases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Return Cases",
+            "type": "array"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "reasons",
+          "claims",
+          "return_cases",
+          "until"
+        ],
+        "title": "Protection",
+        "type": "object"
+      },
       "QueuedOut": {
         "properties": {
           "queued": {
@@ -5366,6 +5452,13 @@
             ],
             "title": "Note"
           },
+          "protected_by_claims": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimRef"
+            },
+            "title": "Protected By Claims",
+            "type": "array"
+          },
           "started_at": {
             "format": "date-time",
             "title": "Started At",
@@ -5390,7 +5483,8 @@
           "flags",
           "cancel_reason",
           "note",
-          "clips"
+          "clips",
+          "protected_by_claims"
         ],
         "title": "SessionDetail",
         "type": "object"
@@ -7794,7 +7888,7 @@
     },
     "/api/v1/clips/{clip_id}/hold": {
       "put": {
-        "description": "API-42: giữ / bỏ giữ clip (FR-02.09).",
+        "description": "API-42: giữ / bỏ giữ clip — chỉ ADMIN, deprecated (DEC-209, ADR-009: bảo vệ theo hồ sơ khiếu nại).",
         "operationId": "hold_api_v1_clips__clip_id__hold_put",
         "parameters": [
           {
@@ -8609,7 +8703,7 @@
     },
     "/api/v1/packages/{package_id}": {
       "get": {
-        "description": "API-31: chi tiết kiện, phiên, clip, dòng thời gian (FR-07.02).",
+        "description": "API-31: chi tiết kiện, phiên, clip (+ `protection` — ADR-009), dòng thời gian (FR-07.02, FR-02.09).",
         "operationId": "package_detail_api_v1_packages__package_id__get",
         "parameters": [
           {

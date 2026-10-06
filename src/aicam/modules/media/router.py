@@ -26,6 +26,7 @@ AppSettings = Annotated[Settings, Depends(get_settings)]
 Viewer = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR", "CSKH", "STATION"))]
 Staff = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR", "CSKH"))]
 Manager = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR"))]
+Admin = Annotated[Principal, Depends(require_roles("ADMIN"))]
 
 router = APIRouter(tags=["media"])
 
@@ -55,9 +56,9 @@ async def clip_media(
 
 
 @router.put("/clips/{clip_id}/hold", response_model=HoldOut)
-async def hold(clip_id: uuid.UUID, body: HoldIn, p: Staff, db: DbSession) -> HoldOut:
-    """API-42: giữ / bỏ giữ clip (FR-02.09)."""
-    return await service.set_hold(db, clip_id, body.held, p)
+async def hold(clip_id: uuid.UUID, body: HoldIn, p: Admin, db: DbSession, settings: AppSettings) -> HoldOut:
+    """API-42: giữ / bỏ giữ clip — chỉ ADMIN, deprecated (DEC-209, ADR-009: bảo vệ theo hồ sơ khiếu nại)."""
+    return await service.set_hold(db, clip_id, body.held, p, settings)
 
 
 @router.post("/sessions/{session_id}/clips/rebuild", response_model=RebuildOut, status_code=202)

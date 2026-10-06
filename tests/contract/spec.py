@@ -550,6 +550,14 @@ CONTRACT: tuple[Api, ...] = (
                     "clips[].retention_until",
                     "clips[].deleted_at",
                     "clips[].flags",
+                    # Phase 2 (02 §6.2 API-31 v0.2, ADR-009).
+                    "clips[].protected_by_claim",
+                    "clips[].protection.reasons",
+                    "clips[].protection.claims",
+                    "clips[].protection.return_cases",
+                    "clips[].protection.until",
+                    "protected_by_claims[].id",
+                    "protected_by_claims[].code",
                 ),
             ),
             "timeline[].at",
@@ -558,6 +566,7 @@ CONTRACT: tuple[Api, ...] = (
             "timeline[].to_status",
             "timeline[].actor",
         ),
+        {"sessions[].clips[].protection.reasons[]": _e("CLAIM", "RETURN_CASE", "HELD")},
     ),
     Api(
         "API-100",

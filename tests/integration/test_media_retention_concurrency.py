@@ -133,8 +133,8 @@ async def test_set_hold_uses_row_lock(committed: AsyncEngine, test_settings: Set
 
         async def hold() -> Any:
             async with sessionmaker()() as api_db:
-                p = Principal(user_id=user_id, role="CSKH", station_id=None, ip=None)
-                return await media.set_hold(api_db, clip_id, True, p)
+                p = Principal(user_id=user_id, role="ADMIN", station_id=None, ip=None)
+                return await media.set_hold(api_db, clip_id, True, p, test_settings)
 
         api_call = asyncio.create_task(hold())
         await asyncio.sleep(0.3)

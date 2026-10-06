@@ -148,16 +148,16 @@ def test_play_url_and_range(
 def test_hold_and_rebuild_permissions(
     client: httpx.Client, tokens: dict[str, dict[str, str]], packed: dict[str, Any]
 ) -> None:
-    """TC-P.05: giữ clip CSKH ✅, Station ⛔; cắt lại CSKH ⛔; không có clip FAILED → 409 CLIP_NOT_FAILED."""
+    """TC-P.05 + item 02 TC-02.35 (DEC-209): giữ clip chỉ ADMIN ✅ — Station / Quản lý / CSKH ⛔; cắt lại
+    CSKH ⛔; không có clip FAILED → 409 CLIP_NOT_FAILED."""
     session = packed["detail"]["sessions"][0]
     clip_id = session["clips"][0]["id"]
-    assert (
-        client.put(f"/clips/{clip_id}/hold", headers=tokens["STATION"], json={"held": True}).status_code
-        == 403
-    )
-    held = client.put(f"/clips/{clip_id}/hold", headers=tokens["CSKH"], json={"held": True}).json()
+    for role in ("STATION", "SUPERVISOR", "CSKH"):
+        res = client.put(f"/clips/{clip_id}/hold", headers=tokens[role], json={"held": True})
+        assert res.status_code == 403, role
+    held = client.put(f"/clips/{clip_id}/hold", headers=tokens["ADMIN"], json={"held": True}).json()
     assert held["retention_until"] is None
-    client.put(f"/clips/{clip_id}/hold", headers=tokens["CSKH"], json={"held": False})
+    client.put(f"/clips/{clip_id}/hold", headers=tokens["ADMIN"], json={"held": False})
     url = f"/sessions/{session['id']}/clips/rebuild"
     assert client.post(url, headers=tokens["CSKH"]).status_code == 403
     res = client.post(url, headers=tokens["SUPERVISOR"])

@@ -10,8 +10,11 @@ from sqlalchemy import ColumnElement, and_, any_, exists, func, literal, or_, se
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aicam.core import clock
 from aicam.core.errors import AppError
 from aicam.core.pagination import Page
+from aicam.core.settings import Settings
+from aicam.modules.media import protection
 from aicam.modules.media.models import Clip
 from aicam.modules.orders.models import Order, OrderItem, Package, Shop, StatusHistory
 from aicam.modules.sessions.models import PackSession
@@ -58,6 +61,15 @@ class OrderDetail(BaseModel):
     items: list[ItemDetail]
 
 
+class Protection(BaseModel):
+    """02 §6.2 API-31 v0.2 (DEC-245, ADR-009): lý do clip / ảnh không bị retention xóa."""
+
+    reasons: list[Literal["CLAIM", "RETURN_CASE", "HELD"]]
+    claims: list[str]
+    return_cases: list[str]
+    until: datetime | None
+
+
 class ClipDetail(BaseModel):
     id: uuid.UUID
     camera_role: str
@@ -68,6 +80,13 @@ class ClipDetail(BaseModel):
     retention_until: datetime | None
     deleted_at: datetime | None
     flags: list[str]
+    protected_by_claim: bool
+    protection: Protection | None
+
+
+class ClaimRef(BaseModel):
+    id: uuid.UUID
+    code: str
 
 
 class SessionDetail(BaseModel):
@@ -81,6 +100,7 @@ class SessionDetail(BaseModel):
     cancel_reason: str | None
     note: str | None
     clips: list[ClipDetail]
+    protected_by_claims: list[ClaimRef]
 
 
 class TimelineItem(BaseModel):
@@ -222,7 +242,7 @@ async def search(
 # ---------------------------------------------------------------- API-31
 
 
-async def detail(db: AsyncSession, package_id: uuid.UUID) -> PackageDetail:
+async def detail(db: AsyncSession, package_id: uuid.UUID, settings: Settings) -> PackageDetail:
     package = await db.get(Package, package_id)
     if package is None:
         raise AppError("NOT_FOUND", "Không tìm thấy kiện hàng.", 404)
@@ -260,18 +280,16 @@ async def detail(db: AsyncSession, package_id: uuid.UUID) -> PackageDetail:
     ).all()
     session_ids = [s.id for s, _ in rows]
     clips_by_session: dict[uuid.UUID, list[ClipDetail]] = {sid: [] for sid in session_ids}
+    guarded = await protection.sessions_protection(db, session_ids, clock.now())
+    days = protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)
     if session_ids:
         clips = (
             await db.scalars(select(Clip).where(Clip.session_id.in_(session_ids)).order_by(Clip.camera_role))
         ).all()
         for c in clips:
-            # Clip đã xóa: `retention_until` = ngày bị xóa (FE DEC-76 đọc cho câu "Clip đã bị xóa ngày …").
-            if c.status == "DELETED":
-                until = c.deleted_at
-            elif c.held:
-                until = None
-            else:
-                until = c.end_at + timedelta(days=cfg.retention_clip_days)
+            # Clip đã xóa: `retention_until` = ngày bị xóa (FE DEC-76 đọc cho câu "Clip đã bị xóa ngày …");
+            # được bảo vệ vô hạn → null; còn lại theo ADR-009 (DEC-245, DEC-268).
+            info = protection.clip_protection(c, guarded.get(c.session_id), days)
             clips_by_session[c.session_id].append(
                 ClipDetail(
                     id=c.id,
@@ -280,9 +298,18 @@ async def detail(db: AsyncSession, package_id: uuid.UUID) -> PackageDetail:
                     sha256=c.sha256,
                     duration_s=float(c.duration_s) if c.duration_s is not None else None,
                     held=c.held,
-                    retention_until=until,
+                    retention_until=info.retention_until,
                     deleted_at=c.deleted_at,
                     flags=list(c.flags),
+                    protected_by_claim="CLAIM" in info.reasons,
+                    protection=Protection(
+                        reasons=info.reasons,
+                        claims=info.claims,
+                        return_cases=info.return_cases,
+                        until=info.until,
+                    )
+                    if info.reasons
+                    else None,
                 )
             )
     sessions = [
@@ -297,6 +324,7 @@ async def detail(db: AsyncSession, package_id: uuid.UUID) -> PackageDetail:
             cancel_reason=s.cancel_reason,
             note=s.note,
             clips=clips_by_session[s.id],
+            protected_by_claims=[ClaimRef(id=cid, code=code) for cid, code in guarded[s.id].claims],
         )
         for s, name in rows
     ]
