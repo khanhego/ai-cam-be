@@ -117,7 +117,10 @@ async def test_connect_flow(
     audit = await db.scalar(select(AuditLog).where(AuditLog.action == "SHOP_CONNECT"))
     assert audit is not None
     assert audit.object_id == str(shop.id)
-    assert sent_jobs[-1] == ("platforms.sync_orders", [str(shop.id), False], "sync", 0.0)
+    assert sent_jobs[-2:] == [
+        ("platforms.sync_orders", [str(shop.id), False], "sync", 0.0),
+        ("platforms.sync_returns", [str(shop.id)], "sync", 0.0),  # J-13 ngay sau kết nối (T-105)
+    ]
 
     # state dùng một lần: gọi lại cùng URL → error
     res = await api.get(f"{url.path}?{url.query}")

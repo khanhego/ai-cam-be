@@ -18,6 +18,9 @@ from aicam.core.settings import get_settings
 
 BUILD_CLIPS = "media.build_session_clips"
 RENDER_EXPORT = "media.render_export"
+FLAG_ORDER_CANCELLED = "sessions.flag_order_cancelled"
+CAPTURE_PACK_SNAPSHOT = "media.capture_pack_snapshot"
+BUILD_EVIDENCE_PACK = "claims.build_evidence_pack"
 
 Sender = Callable[[str, list[Any], str, float], None]
 
@@ -60,5 +63,32 @@ def enqueue_build_clips(session: AsyncSession, session_id: uuid.UUID, ended_at: 
 def enqueue_render_export(session: AsyncSession, export_id: uuid.UUID) -> None:
     async def _send() -> None:
         await send(RENDER_EXPORT, [str(export_id)], "export")
+
+    after_commit(session, _send)
+
+
+def enqueue_capture_pack_snapshot(session: AsyncSession, session_id: uuid.UUID) -> None:
+    """J-17 (queue `video`) sau khi J-01 cắt xong clip Cam 1 của phiên PACK `COMPLETED` (DEC-227)."""
+
+    async def _send() -> None:
+        await send(CAPTURE_PACK_SNAPSHOT, [str(session_id)], "video")
+
+    after_commit(session, _send)
+
+
+def enqueue_flag_order_cancelled(session: AsyncSession, package_id: uuid.UUID) -> None:
+    """BR-21 (DEC-266): đơn hủy khi kiện `PACKING` → task riêng gắn cờ phiên, sau commit của job đồng bộ."""
+
+    async def _send() -> None:
+        await send(FLAG_ORDER_CANCELLED, [str(package_id)], "default")
+
+    after_commit(session, _send)
+
+
+def enqueue_build_evidence_pack(session: AsyncSession, pack_id: uuid.UUID) -> None:
+    """J-16 (queue `export`, cùng worker encode với J-03) sau khi API-136 commit."""
+
+    async def _send() -> None:
+        await send(BUILD_EVIDENCE_PACK, [str(pack_id)], "export")
 
     after_commit(session, _send)

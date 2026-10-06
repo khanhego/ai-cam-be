@@ -47,6 +47,7 @@ from aicam.modules.users.queries import get_user_ref
 log = structlog.get_logger()
 
 _REQUIRED_STATUS = {"MISMATCH": "MISMATCH", "ASSIST": "OPEN"}
+RETURN_ACTIONS = ("CONTINUE", "CANCEL_SESSION")  # yêu cầu từ phiên RETURN (02 API-21)
 
 
 def _not_eligible(message: str) -> AppError:
@@ -138,6 +139,8 @@ async def request(
     if body.type == "REPACK":
         tracking = (body.tracking_number or "").strip().upper()
         package = await orders.find_package(session, tracking)
+        if station.work_mode == "RETURN":
+            raise _not_eligible("Station đang ở chế độ nhận hàng hoàn, không đóng gói lại được.")
         if pack is not None:
             raise _not_eligible("Station đang có phiên mở. Đóng hoặc hủy phiên trước.")
         if package is None or package.warehouse_status != "PACKED":
@@ -292,6 +295,9 @@ async def _decide_on_session(
     pack = await _locked_session(session, approval.session_id)
     if pack is None or pack.status != "WAITING_APPROVAL":
         raise _not_eligible("Phiên không còn chờ duyệt.")
+    if pack.type == "RETURN" and action not in RETURN_ACTIONS:
+        # Phiên hoàn đóng bằng quét + kết luận (02 API-21): chỉ "Cho tiếp tục" / "Hủy phiên".
+        raise AppError("INVALID_ACTION", "Phiên mở hoàn chỉ được cho tiếp tục hoặc hủy.", 422)
     tray = await read_tray(get_redis(), station.id, pack.open_code)
     pack.status_before_approval = None
     pack.warn_notified = False  # cảnh báo 15 phút tính lại từ lúc hết chờ (DEC-60)

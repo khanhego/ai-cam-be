@@ -62,7 +62,9 @@ async def _station_ref(session: AsyncSession, user: User) -> StationRef | None:
     if user.role != "STATION":
         return None
     station = await stations.get_station_by_account(session, user.id)
-    return StationRef(id=station.id, name=station.name) if station else None
+    if station is None:
+        return None
+    return StationRef(id=station.id, name=station.name, kind=station.kind, work_mode=station.work_mode)
 
 
 async def user_out(session: AsyncSession, user: User) -> UserOut:
@@ -227,14 +229,19 @@ async def refresh(
     )
 
 
-async def logout(session: AsyncSession, token: str | None) -> None:
+async def logout(
+    session: AsyncSession, token: str | None, *, station_user_id: uuid.UUID | None = None
+) -> None:
+    """API-03. Tài khoản station đăng xuất → xóa tên người kiểm (BR-28, 02 §6.3 #17)."""
     if token:
         await session.execute(
             update(RefreshToken)
             .where(RefreshToken.token_hash == sha256_hex(token), RefreshToken.revoked_at.is_(None))
             .values(revoked_at=clock.now())
         )
-        await session.commit()
+    if station_user_id is not None:
+        await stations.clear_operator(session, station_user_id)
+    await session.commit()
 
 
 async def revoke_all(session: AsyncSession, user_id: uuid.UUID) -> None:
@@ -342,9 +349,12 @@ async def patch_user(
 async def revoke_sessions(
     session: AsyncSession, user_id: uuid.UUID, actor: uuid.UUID, ip: str | None
 ) -> None:
-    if await session.get(User, user_id) is None:
+    user = await session.get(User, user_id)
+    if user is None:
         raise AppError("NOT_FOUND", "Không tìm thấy tài khoản.", 404)
     await revoke_all(session, user_id)
+    if user.role == "STATION":  # BR-28: thu hồi phiên station → người kiểm phải nhập lại tên
+        await stations.clear_operator(session, user_id)
     audit.record(session, "SESSIONS_REVOKED", user_id=actor, object_type="USER", object_id=user_id, ip=ip)
     await session.commit()
 

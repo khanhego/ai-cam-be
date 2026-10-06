@@ -169,7 +169,10 @@ def test_shopee_connect_or_not_configured(client: httpx.Client, tokens: dict[str
         )
     assert res.status_code == 200, res.text
     url = httpx.URL(res.json()["url"])
-    redirect = client.get(f"{BASE}{url.raw_path.decode()}", follow_redirects=False)
+    # Cookie state `Secure`: httpx không gửi qua http://localhost → gửi tay
+    # (trình duyệt coi localhost an toàn).
+    cookie = {"Cookie": f"aicam_shopee_state={res.cookies['aicam_shopee_state']}"}
+    redirect = client.get(f"{BASE}{url.raw_path.decode()}", headers=cookie, follow_redirects=False)
     assert redirect.status_code == 302
     assert redirect.headers["location"] == "/admin/settings/shopee?result=connected"
     items = client.get("/shops", headers=_h(tokens["ADMIN"])).json()["items"]

@@ -1,4 +1,4 @@
-"""Task Celery J-01: chờ settle không tiêu lượt thử (G3)."""
+"""Task Celery J-01: chờ settle không tiêu lượt thử (G3); lịch beat J-13 (TC-N2.07)."""
 
 import uuid
 from typing import Any
@@ -45,3 +45,24 @@ def test_missing_video_still_consumes_retry(monkeypatch: pytest.MonkeyPatch) -> 
             task.run(str(uuid.uuid4()))
     finally:
         task.pop_request()
+
+
+def test_tc_n2_07_j13_sync_returns_beat_within_15_minutes() -> None:
+    """TC-N2.07, NFR-35: lịch beat J-13 (`platforms.sync_returns`) ≤ 900 giây → yêu cầu trả mới trên sàn thành
+    kiện `RETURN_EXPECTED` trong ≤ 15 phút; task đã đăng ký, chạy ở queue `sync`, giới hạn thời gian < chu kỳ
+    (lượt trước xong trước khi lượt sau tới)."""
+    from fnmatch import fnmatch
+
+    from aicam.workers.celery_app import app
+
+    entries = [e for e in app.conf.beat_schedule.values() if e["task"] == "platforms.sync_returns"]
+    assert len(entries) == 1
+    schedule = entries[0]["schedule"]
+    assert isinstance(schedule, float)
+    assert 0 < schedule <= 900.0
+    task = app.tasks["platforms.sync_returns"]
+    assert task.name == tasks.sync_returns.name
+    assert task.time_limit is not None
+    assert task.time_limit < schedule
+    queues = [r["queue"] for pattern, r in app.conf.task_routes.items() if fnmatch(task.name, pattern)]
+    assert queues == ["sync"]

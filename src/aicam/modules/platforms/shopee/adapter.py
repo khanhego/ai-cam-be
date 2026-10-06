@@ -11,6 +11,8 @@ Endpoint dùng (tài liệu công khai Shopee v2):
 | Đơn cập nhật | `GET /api/v2/order/get_order_list` (`update_time`, ≤ 15 ngày, ≤ 100 / trang, `cursor`) |
 | Chi tiết đơn | `GET /api/v2/order/get_order_detail` (`order_sn_list` ≤ 50, `response_optional_fields`) |
 | Mã vận đơn | `GET /api/v2/logistics/get_tracking_number` (`order_sn`, `package_number`) |
+| Yêu cầu trả | `GET /api/v2/returns/get_return_list` (`page_no`, `page_size`, `update_time_*` ≤ 15 ngày) |
+| Chi tiết yêu cầu trả | `GET /api/v2/returns/get_return_detail` (`return_sn`) |
 
 Shopee không có API công khai "tìm đơn theo mã vận đơn" → `find_by_tracking` dò các đơn cập nhật gần đây
 (`SHOPEE_LOOKUP_LOOKBACK_MIN`) và nhớ cặp mã vận đơn → mã đơn đã thấy (DEC-123, cần xác nhận ở T-3).
@@ -23,17 +25,22 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import structlog
+
 from aicam.core import clock
 from aicam.modules.platforms.base import (
     PlatformError,
     PlatformItem,
     PlatformOrder,
+    PlatformReturn,
     ShipmentRef,
     ShippingStatus,
     ShopCredentials,
 )
-from aicam.modules.platforms.shopee import mapping
+from aicam.modules.platforms.shopee import mapping, returns_mapping
 from aicam.modules.platforms.shopee.client import ShopeeClient, ShopeeRequestError
+
+log = structlog.get_logger()
 
 MAX_WINDOW = timedelta(days=15)  # get_order_list: time_to − time_from ≤ 15 ngày
 DETAIL_BATCH = 50
@@ -43,6 +50,10 @@ CACHE_SIZE = 5000
 # lần quét — người gọi chỉ chờ 2 giây, không đốt hạn mức API của shop cho một mã lạ.
 LOOKUP_MAX_PAGES = 1
 LOOKUP_MAX_CANDIDATES = 10
+# J-13 (G3 F-4, F-5): tài liệu công khai `get_return_list` ghi `page_no` bắt đầu từ 0 — GIẢ ĐỊNH, chờ T-3
+# xác nhận (02a §7 bảng Shopee returns). Trần số trang mỗi cửa sổ: phòng `more` luôn true (lỗi phía sàn).
+RETURNS_FIRST_PAGE = 0
+RETURNS_MAX_PAGES = 200
 
 
 def _ts(value: Any) -> datetime | None:
@@ -60,9 +71,18 @@ def _body(data: dict[str, Any]) -> dict[str, Any]:
 class ShopeeAdapter:
     code = "SHOPEE"
 
-    def __init__(self, client: ShopeeClient, *, lookup_lookback: timedelta = timedelta(minutes=60)) -> None:
+    def __init__(
+        self,
+        client: ShopeeClient,
+        *,
+        lookup_lookback: timedelta = timedelta(minutes=60),
+        returns_page_size: int = 50,
+        returns_window: timedelta = MAX_WINDOW,
+    ) -> None:
         self.client = client
         self.lookup_lookback = lookup_lookback
+        self.returns_page_size = returns_page_size
+        self.returns_window = min(returns_window, MAX_WINDOW)
         # Mã vận đơn → mã đơn đã thấy (giới hạn kích thước) — tra khi quét khỏi dò lại.
         self._tracking_cache: OrderedDict[str, str] = OrderedDict()
 
@@ -273,5 +293,52 @@ class ShopeeAdapter:
                         logistics[number] = str(p.get("logistics_status") or "")
             for code in codes:
                 raw = logistics.get(code, "")
-                out.append(ShippingStatus(code, raw or status, mapping.warehouse_hint(status, raw), status))
+                out.append(
+                    ShippingStatus(
+                        code,
+                        raw or status,
+                        mapping.warehouse_hint(status, raw),
+                        status,
+                        _ts(detail.get("update_time")),
+                    )
+                )
         return out
+
+    # ------------------------------------------------------- yêu cầu trả (FR-05.05, 05.12 — chưa test, T-3)
+    async def list_returns(
+        self, creds: ShopCredentials | None, since: datetime
+    ) -> AsyncIterator[PlatformReturn]:
+        """J-13: yêu cầu trả cập nhật từ `since`, chia cửa sổ ≤ 15 ngày, phân trang `page_no` (02a §7)."""
+        if creds is None:
+            return
+        start, until = since, clock.now()
+        while start < until:
+            end = min(start + self.returns_window, until)
+            for page in range(RETURNS_FIRST_PAGE, RETURNS_FIRST_PAGE + RETURNS_MAX_PAGES):
+                params = {
+                    "page_no": page, "page_size": self.returns_page_size,
+                    "update_time_from": int(start.timestamp()), "update_time_to": int(end.timestamp()),
+                }  # fmt: skip
+                body = _body(await self._shop_call("GET", "/api/v2/returns/get_return_list", creds, params))
+                items = body.get("return") or []
+                for detail in items:
+                    if isinstance(detail, dict) and detail.get("return_sn") and detail.get("order_sn"):
+                        yield returns_mapping.to_platform_return(detail)
+                if not items or not body.get("more"):
+                    break
+            else:
+                log.error(
+                    "returns_list_max_pages", pages=RETURNS_MAX_PAGES, window_from=start.isoformat(),
+                    window_to=end.isoformat(),
+                )  # fmt: skip
+            start = end
+
+    async def get_return(self, creds: ShopCredentials | None, return_sn: str) -> PlatformReturn | None:
+        if creds is None:
+            return None
+        body = _body(
+            await self._shop_call("GET", "/api/v2/returns/get_return_detail", creds, {"return_sn": return_sn})
+        )
+        if not body.get("return_sn"):
+            return None
+        return returns_mapping.to_platform_return(body)

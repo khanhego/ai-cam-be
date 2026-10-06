@@ -8,23 +8,25 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
-from sqlalchemy import delete, func, select
+from sqlalchemy import Select, delete, func, literal, select, text
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aicam.core import audit, clock
+from aicam.core import audit, clock, schema_guard
 from aicam.core.db import after_commit, commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings
-from aicam.modules.media import ffmpeg, jobs, signing
-from aicam.modules.media.models import Clip, VideoSegment
+from aicam.modules.media import ffmpeg, jobs, protection, signing
+from aicam.modules.media.models import Clip, Snapshot, VideoSegment
 from aicam.modules.media.schemas import HoldOut, PlayUrlOut, RebuildOut, UserBrief
 from aicam.modules.media.segments import (
     Segment,
@@ -37,6 +39,7 @@ from aicam.modules.media.segments import (
     plan_cut,
     timeline_bounds,
 )
+from aicam.modules.returns.models import ReturnCasePackage
 from aicam.modules.sessions import service as sessions
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.settings import service as settings_service
@@ -75,11 +78,16 @@ def _rel(settings: Settings, path: Path) -> str:
         return path.as_posix()
 
 
-def retention_until(clip: Clip, retention_clip_days: int) -> datetime | None:
-    """DEC-30: không lưu, tính từ setting hiện tại. Clip đang giữ hoặc đã xóa → None."""
-    if clip.held or clip.status == "DELETED":
-        return None
-    return clip.end_at + timedelta(days=retention_clip_days)
+async def retention_days(db: AsyncSession, settings: Settings) -> int:
+    """Số ngày giữ clip thực dùng = max(setting, `RETENTION_CLIP_MIN_DAYS`) (BR-25, DEC-257)."""
+    cfg = await settings_service.get(db)
+    return protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)
+
+
+async def clip_retention(db: AsyncSession, clip: Clip, settings: Settings) -> protection.ClipProtection:
+    """DEC-30: không lưu, tính lúc đọc theo setting + bảo vệ theo hồ sơ (ADR-009)."""
+    info = await protection.sessions_protection(db, [clip.session_id], clock.now())
+    return protection.clip_protection(clip, info.get(clip.session_id), await retention_days(db, settings))
 
 
 # ---------------------------------------------------------------- J-10 index segment
@@ -361,6 +369,14 @@ async def build_session_clips(
         await sessions.add_flag(db, session_id, "VIDEO_INCOMPLETE")
     if result.ready:
         _notify_clip_ready(db, pack.station_id, session_id, result.ready)
+        if pack.type == "PACK" and pack.status == "COMPLETED":
+            cam1 = await db.scalar(
+                select(Clip.id).where(
+                    Clip.session_id == session_id, Clip.camera_role == "CAM1", Clip.status == "READY"
+                )
+            )
+            if cam1 in result.ready:
+                jobs.enqueue_capture_pack_snapshot(db, session_id)  # J-17 ảnh lúc đóng gói (L8)
     await commit(db)
     return result
 
@@ -453,10 +469,13 @@ async def play_url(db: AsyncSession, clip_id: uuid.UUID, p: Principal, settings:
         pack = await db.get(PackSession, clip.session_id)
         tz = settings.tz_display
         today = sessions.vn_day_start(clock.now().astimezone(ZoneInfo(tz)).date(), tz)
-        if pack is None or pack.station_id != station.id or pack.started_at < today:
+        own_today = pack is not None and pack.station_id == station.id and pack.started_at >= today
+        if pack is None or not (own_today or await _pack_clip_for_return(db, pack, station.id)):
             raise AppError("FORBIDDEN", "Tài khoản không có quyền thực hiện thao tác này.", 403)
     cfg = await settings_service.get(db)
-    error = _clip_unavailable(clip, cfg.retention_clip_days)
+    error = _clip_unavailable(
+        clip, protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)
+    )
     if error:
         raise error
     exp = signing.expiry(settings.media_url_ttl_s)
@@ -464,6 +483,35 @@ async def play_url(db: AsyncSession, clip_id: uuid.UUID, p: Principal, settings:
         url=signing.clip_url(settings.media_signing_key, clip.id, p.user_id, exp),
         expires_at=signing.expires_at(exp),
     )
+
+
+async def _pack_clip_for_return(db: AsyncSession, pack: PackSession, station_id: uuid.UUID) -> bool:
+    """02 API-40 (Phase 2): STATION xem clip phiên PACK của kiện (hoặc kiện cùng hồ sơ hàng hoàn) đang có
+    phiên RETURN hoạt động (`OPEN` / `WAITING_APPROVAL`) tại station của token."""
+    if pack.type != "PACK":
+        return False
+    active = await db.scalar(
+        select(PackSession)
+        .where(
+            PackSession.station_id == station_id,
+            PackSession.type == "RETURN",
+            PackSession.status.in_(("OPEN", "WAITING_APPROVAL")),
+        )
+        .limit(1)
+    )
+    if active is None:
+        return False
+    if active.package_id == pack.package_id:
+        return True
+    if active.return_case_id is None:
+        return False
+    linked = await db.scalar(
+        select(ReturnCasePackage.package_id).where(
+            ReturnCasePackage.return_case_id == active.return_case_id,
+            ReturnCasePackage.package_id == pack.package_id,
+        )
+    )
+    return linked is not None
 
 
 def _signature_invalid() -> AppError:
@@ -494,7 +542,9 @@ async def open_clip_media(
         raise _signature_invalid()
     clip = await _require_clip(db, clip_id)
     cfg = await settings_service.get(db)
-    error = _clip_unavailable(clip, cfg.retention_clip_days)
+    error = _clip_unavailable(
+        clip, protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)
+    )
     if error:
         raise error
     path = absolute(settings, clip.path or "")
@@ -511,8 +561,11 @@ async def open_clip_media(
 # ---------------------------------------------------------------- API-42 / 46
 
 
-async def set_hold(db: AsyncSession, clip_id: uuid.UUID, held: bool, p: Principal) -> HoldOut:
-    """API-42 (FR-02.09, BR-09): clip giữ không bị retention xóa. Khóa dòng để không tranh với J-02."""
+async def set_hold(
+    db: AsyncSession, clip_id: uuid.UUID, held: bool, p: Principal, settings: Settings
+) -> HoldOut:
+    """API-42 (FR-02.09, BR-09 d): chỉ ADMIN (DEC-209, deprecated — bảo vệ chính theo hồ sơ, ADR-009).
+    Khóa dòng để không tranh với J-02."""
     clip = await db.scalar(
         select(Clip).where(Clip.id == clip_id).with_for_update().execution_options(populate_existing=True)
     )
@@ -520,7 +573,9 @@ async def set_hold(db: AsyncSession, clip_id: uuid.UUID, held: bool, p: Principa
         raise AppError("NOT_FOUND", "Không tìm thấy clip.", 404)
     cfg = await settings_service.get(db)
     if clip.status == "DELETED":
-        error = _clip_unavailable(clip, cfg.retention_clip_days)
+        error = _clip_unavailable(
+            clip, protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)
+        )
         assert error is not None  # noqa: S101
         raise error
     if clip.held != held:
@@ -535,7 +590,7 @@ async def set_hold(db: AsyncSession, clip_id: uuid.UUID, held: bool, p: Principa
         held=clip.held,
         held_by=UserBrief(id=holder.id, display_name=holder.display_name) if holder else None,
         held_at=clip.held_at,
-        retention_until=retention_until(clip, cfg.retention_clip_days),
+        retention_until=(await clip_retention(db, clip, settings)).retention_until,
     )
     await commit(db)
     return out
@@ -638,15 +693,36 @@ async def protected_raw_ranges(db: AsyncSession, padding_s: float, ended_after: 
     return out
 
 
-async def retention_clip_candidates(db: AsyncSession, clip_cutoff: datetime) -> list[uuid.UUID]:
-    """Ứng viên J-02 (đọc không khóa — mỗi clip được khóa và kiểm lại trước khi xóa)."""
-    return list(
-        (
-            await db.scalars(
-                select(Clip.id).where(Clip.held.is_(False), Clip.status == "READY", Clip.end_at < clip_cutoff)
-            )
-        ).all()
+def retention_clip_query(clip_cutoff: datetime, now: datetime) -> Select[uuid.UUID]:
+    """Clip quá hạn giữ, không `held`, phiên không được bảo vệ theo hồ sơ (ADR-009 a–c) — J-02, API-82."""
+    return select(Clip.id).where(
+        Clip.held.is_(False),
+        Clip.status == "READY",
+        Clip.end_at < clip_cutoff,
+        protection.session_not_protected(Clip.session_id, now, clip_cutoff),
     )
+
+
+async def retention_clip_candidates(
+    db: AsyncSession, clip_cutoff: datetime, now: datetime | None = None
+) -> list[uuid.UUID]:
+    """Ứng viên J-02 (đọc không khóa — mỗi clip được khóa và kiểm lại trước khi xóa — DEC-251)."""
+    query = retention_clip_query(clip_cutoff, now or clock.now()).order_by(Clip.id)
+    return list((await db.scalars(query)).all())
+
+
+async def retention_snapshot_candidates(
+    db: AsyncSession, cutoff: datetime, now: datetime | None = None
+) -> list[uuid.UUID]:
+    """Ảnh (chụp tay / lúc đóng gói) quá hạn giữ, phiên không được bảo vệ, không tự là bằng chứng."""
+    now = now or clock.now()
+    query = select(Snapshot.id).where(
+        Snapshot.status == "READY",
+        Snapshot.taken_at < cutoff,
+        protection.session_not_protected(Snapshot.session_id, now, cutoff),
+        protection.snapshot_not_evidence(Snapshot.id, cutoff),
+    )
+    return list((await db.scalars(query.order_by(Snapshot.id))).all())
 
 
 def _remove_clip_file(settings: Settings, clip: Clip) -> bool:
@@ -662,18 +738,25 @@ def _remove_clip_file(settings: Settings, clip: Clip) -> bool:
 
 
 async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, int]:
-    """J-02 (02:00 giờ VN): video thô quá `retention_raw_days`; clip không giữ quá `retention_clip_days`.
+    """J-02 (02:00 giờ VN): video thô quá `retention_raw_days`; clip / ảnh quá số ngày giữ clip.
 
-    Setting đọc lúc chạy (DEC-30, AC-20). Video thô của phiên có clip FAILED / PENDING được giữ (G3-F7)
-    — chỉ khi phiên kết thúc trong `retention_clip_days` (DEC-163).
-    Clip: khóa dòng → kiểm lại (API-42 vừa giữ thì bỏ qua — BR-09) → `DELETED` + audit `DELETE_CLIP`
-    (actor hệ thống) → commit → **rồi** xóa file (G3-F8: DB không bao giờ nói READY cho file đã mất).
+    Setting đọc lúc chạy (DEC-30, AC-20); số ngày giữ clip = max(setting, `RETENTION_CLIP_MIN_DAYS`) (BR-25).
+    Video thô của phiên có clip FAILED / PENDING được giữ (G3-F7) — chỉ khi phiên kết thúc trong số ngày giữ
+    clip (DEC-163). Clip / ảnh của phiên được bảo vệ theo hồ sơ (ADR-009 a–c) hoặc clip `held` (d) không xóa.
+    Clip: khóa dòng → kiểm lại **dưới khóa** cả `held` lẫn bảo vệ theo hồ sơ (DEC-251: hồ sơ vừa gắn bằng
+    chứng thì bỏ qua) → `DELETED` + audit `DELETE_CLIP` (actor hệ thống) → commit → **rồi** xóa file (G3-F8).
     Xóa file lỗi → lượt sau dọn lại các clip `DELETED` còn file.
     """
+    if not await schema_guard.matches(
+        db
+    ):  # G3 M-F1: image lệch schema (vd. cờ `held` đã đổi nghĩa) → không xóa
+        await db.rollback()
+        return {"skipped_schema_mismatch": 1}
     cfg = await settings_service.get(db)
     now = clock.now()
+    days = protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)
     raw_cutoff = now - timedelta(days=cfg.retention_raw_days)
-    clip_cutoff = now - timedelta(days=cfg.retention_clip_days)
+    clip_cutoff = now - timedelta(days=days)
     keep = await protected_raw_ranges(db, settings.clip_padding_s, clip_cutoff)
     await db.commit()
 
@@ -681,7 +764,7 @@ async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, i
     rows = await db.execute(delete(VideoSegment).where(VideoSegment.end_at < raw_cutoff))
     await db.commit()
 
-    candidates_ = await retention_clip_candidates(db, clip_cutoff)
+    candidates_ = await retention_clip_candidates(db, clip_cutoff, now)
     await db.commit()
     deleted = 0
     for clip_id in candidates_:
@@ -692,7 +775,13 @@ async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, i
                 .with_for_update()
                 .execution_options(populate_existing=True)
             )
-            if clip is None or clip.held or clip.status != "READY" or clip.end_at >= clip_cutoff:
+            if (
+                clip is None
+                or clip.held
+                or clip.status != "READY"
+                or clip.end_at >= clip_cutoff
+                or await protection.is_session_protected(db, clip.session_id, now, clip_cutoff)
+            ):
                 await db.rollback()
                 continue
             clip.status = "DELETED"
@@ -700,7 +789,7 @@ async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, i
             audit.record(db, "DELETE_CLIP", user_id=None, object_type="CLIP", object_id=clip.id,
                          data={"session_id": str(clip.session_id), "camera_role": clip.camera_role,
                                "sha256": clip.sha256, "reason": "RETENTION",
-                               "retention_clip_days": cfg.retention_clip_days})  # fmt: skip
+                               "retention_clip_days": days})  # fmt: skip
             await db.commit()
             deleted += 1
         except Exception:
@@ -714,6 +803,7 @@ async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, i
         "segment_rows": rows.rowcount or 0,  # type: ignore[attr-defined]
         "clips": deleted,
         "clip_files_retried": leftovers,
+        "snapshots": await _expire_snapshots(db, settings, now, clip_cutoff),
     }
     log.info("retention_done", **result)
     return result
@@ -738,3 +828,137 @@ async def _purge_deleted_clip_files(db: AsyncSession, settings: Settings, now: d
         if exists and _remove_clip_file(settings, clip):
             retried += 1
     return retried
+
+
+async def _expire_snapshots(db: AsyncSession, settings: Settings, now: datetime, cutoff: datetime) -> int:
+    """Ảnh quá hạn (cùng số ngày giữ clip, theo `taken_at`): khóa dòng → kiểm lại bảo vệ → `DELETED` → commit
+    → xóa file (như clip — G3-F8). Không có action audit riêng cho ảnh (02 API-92) → chỉ log."""
+    removed = 0
+    for snapshot_id in await retention_snapshot_candidates(db, cutoff, now):
+        await db.commit()
+        try:
+            snap = await db.scalar(
+                select(Snapshot)
+                .where(Snapshot.id == snapshot_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+            if (
+                snap is None
+                or snap.status != "READY"
+                or snap.taken_at >= cutoff
+                or await protection.is_session_protected(db, snap.session_id, now, cutoff)
+                or await protection.is_snapshot_evidence(db, snap.id, cutoff)
+            ):
+                await db.rollback()
+                continue
+            snap.status, snap.deleted_at = "DELETED", now
+            path = snap.path
+            await db.commit()
+            removed += 1
+        except Exception:
+            await db.rollback()
+            log.exception("retention_snapshot_failed", snapshot_id=str(snapshot_id))
+            continue
+        if path:
+            try:
+                _unlink(absolute(settings, path))
+            except (OSError, ValueError):
+                log.exception("retention_snapshot_unlink_failed", snapshot_id=str(snapshot_id))
+    await db.commit()
+    return removed
+
+
+# ---------------------------------------------------------------- API-82 (FR-02.10)
+
+J02_HOUR_UTC = 19  # beat `j02-enforce-retention`: 02:00 giờ VN = 19:00 UTC (celery_app)
+IMPACT_TIMEOUT_MS = 5000  # 02a §8: truy vấn đếm có `statement_timeout` 5 giây
+
+
+def next_retention_run(now: datetime) -> datetime:
+    """Lần J-02 kế tiếp (crontab 19:00 UTC mỗi ngày)."""
+    run = now.astimezone(UTC).replace(hour=J02_HOUR_UTC, minute=0, second=0, microsecond=0)
+    return run if run > now else run + timedelta(days=1)
+
+
+async def retention_impact(
+    db: AsyncSession, raw_days: int, clip_days_setting: int, settings: Settings
+) -> dict[str, Any]:
+    """API-82: lần J-02 kế tiếp sẽ xóa gì nếu retention = (`raw_days`, `clip_days_setting`) — tính theo giờ
+    hiện tại, cùng điều kiện J-02: clip `READY` quá max(số ngày, sàn), không `held`, phiên không được bảo vệ
+    theo hồ sơ (ADR-009 — `protected_sessions_sql`); video thô (`video_segment`) kết thúc trước mốc, trừ
+    đoạn của phiên có clip FAILED / PENDING còn trong hạn giữ clip (G3-F7). `protected_clips` = clip quá hạn
+    nhưng được giữ.
+
+    `statement_timeout` 5 giây chỉ áp cho các truy vấn đếm (savepoint, trả lại giá trị cũ sau đó — G3 B-4,
+    DEC-339): PUT API-80 dùng chung transaction không bị giới hạn theo. Quá giờ → 503
+    `RETENTION_IMPACT_TIMEOUT`.
+    """
+    try:
+        async with db.begin_nested():
+            previous = await db.scalar(text("SHOW statement_timeout"))
+            await db.execute(text(f"SET LOCAL statement_timeout = {IMPACT_TIMEOUT_MS}"))
+            out = await _retention_counts(db, raw_days, clip_days_setting, settings)
+            await db.execute(text("SELECT set_config('statement_timeout', :v, true)"), {"v": str(previous)})
+    except DBAPIError as exc:
+        if getattr(exc.orig, "sqlstate", None) != "57014" and getattr(exc.orig, "pgcode", None) != "57014":
+            raise
+        log.warning("retention_impact_timeout", raw_days=raw_days, clip_days=clip_days_setting)
+        raise AppError(
+            "RETENTION_IMPACT_TIMEOUT",
+            "Không tính kịp số clip / video sẽ bị xóa (dữ liệu lớn). Thử lại sau ít phút.",
+            503,
+        ) from exc
+    return out
+
+
+async def _retention_counts(
+    db: AsyncSession, raw_days: int, clip_days_setting: int, settings: Settings
+) -> dict[str, Any]:
+    now = clock.now()
+    days = protection.clip_days(clip_days_setting, settings.retention_clip_min_days)
+    clip_cutoff = now - timedelta(days=days)
+    raw_cutoff = now - timedelta(days=raw_days)
+    deletable = retention_clip_query(clip_cutoff, now)
+    clips, clip_bytes = (
+        await db.execute(
+            select(func.count(), func.coalesce(func.sum(Clip.size_bytes), 0)).where(Clip.id.in_(deletable))
+        )
+    ).one()
+    expired = int(
+        await db.scalar(select(func.count()).where(Clip.status == "READY", Clip.end_at < clip_cutoff)) or 0
+    )
+    pad = timedelta(seconds=settings.clip_padding_s)
+    kept = (
+        select(literal(1))
+        .select_from(Clip)
+        .join(PackSession, PackSession.id == Clip.session_id)
+        .join(Camera, (Camera.station_id == PackSession.station_id) & (Camera.role == Clip.camera_role))
+        .where(
+            Camera.id == VideoSegment.camera_id,
+            Clip.status.in_(("FAILED", "PENDING")),
+            PackSession.ended_at.is_not(None),
+            PackSession.ended_at >= clip_cutoff,
+            VideoSegment.start_at >= PackSession.started_at - pad - _SEGMENT_MAX,
+            VideoSegment.start_at <= PackSession.ended_at + pad,
+        )
+        .exists()
+    )
+    raw_seconds, raw_bytes = (
+        await db.execute(
+            select(
+                func.coalesce(
+                    func.sum(func.extract("epoch", VideoSegment.end_at - VideoSegment.start_at)), 0
+                ),
+                func.coalesce(func.sum(VideoSegment.size_bytes), 0),
+            ).where(VideoSegment.end_at < raw_cutoff, ~kept)
+        )
+    ).one()
+    return {
+        "clips": int(clips),
+        "clip_bytes": int(clip_bytes or 0),
+        "raw_hours": round(float(raw_seconds) / 3600),
+        "raw_bytes": int(raw_bytes),
+        "protected_clips": max(0, expired - int(clips)),
+        "next_run_at": next_retention_run(now),
+    }

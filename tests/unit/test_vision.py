@@ -9,6 +9,7 @@ import time
 import uuid
 
 import numpy as np
+import pytest
 import zxingcpp
 
 from aicam.modules.vision.capture import CameraReader, Observation
@@ -184,3 +185,108 @@ def test_reader_samples_at_interval() -> None:
     reader.stop()
     reader.join(5)
     assert 3 <= len(got) <= 7
+
+
+# ---------------------------------------------------------------- T-121: khung mới nhất cho ảnh chụp
+
+
+def test_cam1_reader_only_frames_no_decode() -> None:
+    """Cam 1 (không `code_pattern`): không giải mã / không Observation khi đọc được; JPEG ~mỗi
+    `frame_interval_s` kèm giờ chụp; JPEG giải nén lại được (đủ làm bằng chứng)."""
+    import cv2
+
+    got: list[Observation] = []
+    frames: list[tuple[uuid.UUID, bytes, object]] = []
+
+    class _Endless(_FakeCapture):
+        def grab(self) -> bool:
+            time.sleep(0.01)
+            return True
+
+        def retrieve(self) -> tuple[bool, np.ndarray | None]:
+            return True, np.full((360, 640, 3), 90, dtype=np.uint8)
+
+    camera_id = uuid.uuid4()
+    reader = CameraReader(
+        camera_id, "u", None, None, got.append, opener=lambda _: _Endless([]),
+        on_frame=lambda cid, jpeg, at: frames.append((cid, jpeg, at)), frame_interval_s=0.1,
+    )  # fmt: skip
+    reader.start()
+    time.sleep(0.55)
+    reader.stop()
+    reader.join(5)
+    assert got == []
+    assert 3 <= len(frames) <= 7
+    cid, jpeg, _ = frames[-1]
+    assert cid == camera_id
+    image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert image.shape == (360, 640, 3)
+
+
+def test_cam2_reader_decodes_and_sends_frames() -> None:
+    """Cam 2: vẫn giải mã mỗi `sample_interval_s` và thêm JPEG mỗi `frame_interval_s` (thưa hơn)."""
+    got: list[Observation] = []
+    frames: list[bytes] = []
+
+    class _Endless(_FakeCapture):
+        def grab(self) -> bool:
+            time.sleep(0.01)
+            return True
+
+        def retrieve(self) -> tuple[bool, np.ndarray | None]:
+            return True, _tray()
+
+    reader = CameraReader(
+        uuid.uuid4(), "u", None, PATTERN, got.append, opener=lambda _: _Endless([]), sample_interval_s=0.05,
+        on_frame=lambda _cid, jpeg, _at: frames.append(jpeg), frame_interval_s=0.2,
+    )  # fmt: skip
+    reader.start()
+    time.sleep(0.65)
+    reader.stop()
+    reader.join(5)
+    assert len(got) > len(frames) >= 2
+
+
+async def test_health_loop_survives_db_error_on_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    """QA G3 Phase 2: reset schema làm `watched_paths` lỗi → vision không thoát, vòng sau đọc lại."""
+    import asyncio
+
+    from aicam.modules.vision import health_loop
+
+    calls = {"n": 0}
+
+    async def flaky(_session: object) -> list[str]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError('relation "camera" does not exist')
+        return ["cam-x"]
+
+    class _Session:
+        async def __aenter__(self) -> "_Session":
+            return self
+
+        async def __aexit__(self, *a: object) -> None:
+            return None
+
+    class _MediaMTX:
+        async def list_paths(self) -> dict[str, object]:
+            return {}
+
+    class _Redis:
+        async def publish(self, *_a: object) -> None:
+            return None
+
+    monkeypatch.setattr(health_loop, "sessionmaker", lambda: lambda: _Session())
+    monkeypatch.setattr(health_loop.stations, "watched_paths", flaky)
+    monkeypatch.setattr(health_loop, "INTERVAL_S", 0.01)
+    monkeypatch.setattr(health_loop, "WATCH_REFRESH_S", 0.0)
+    stop = asyncio.Event()
+    task = asyncio.create_task(health_loop.run_health_loop(_Redis(), _MediaMTX(), stop))  # type: ignore[arg-type]
+    for _ in range(100):
+        if calls["n"] >= 2:
+            break
+        await asyncio.sleep(0.01)
+    stop.set()
+    await asyncio.wait_for(task, timeout=2)
+
+    assert calls["n"] >= 2

@@ -42,6 +42,24 @@ x-app: &app
     SHOPEE_BASE_URL: ${SHOPEE_BASE_URL:-https://partner.shopeemobile.com}
     EXPORT_PRESET: ${EXPORT_PRESET:-veryfast}
     EXPORT_SIDE_SCALE: ${EXPORT_SIDE_SCALE:-1280:720}
+    RETENTION_CLIP_MIN_DAYS: ${RETENTION_CLIP_MIN_DAYS:-60}
+    RECON_ENABLED: ${RECON_ENABLED:-true}
+    # Phase 2 (02a §9; G3 F-8): đặt trong docker/.env mới có tác dụng.
+    RECON_RUN_SOFT_LIMIT_S: ${RECON_RUN_SOFT_LIMIT_S:-120}
+    SHOPEE_RETURNS_ENABLED: ${SHOPEE_RETURNS_ENABLED:-false}
+    SHOPEE_RETURNS_INITIAL_DAYS: ${SHOPEE_RETURNS_INITIAL_DAYS:-15}
+    SHOPEE_RETURNS_PAGE_SIZE: ${SHOPEE_RETURNS_PAGE_SIZE:-50}
+    SHOPEE_RETURNS_WINDOW_DAYS: ${SHOPEE_RETURNS_WINDOW_DAYS:-15}
+    SNAPSHOT_TIMEOUT_S: ${SNAPSHOT_TIMEOUT_S:-3}
+    SNAPSHOT_MAX_PER_SESSION: ${SNAPSHOT_MAX_PER_SESSION:-20}
+    SNAPSHOT_JPEG_QUALITY: ${SNAPSHOT_JPEG_QUALITY:-85}
+    SNAPSHOT_FRAME_MAX_AGE_S: ${SNAPSHOT_FRAME_MAX_AGE_S:-2}
+    VISION_FRAMES_ENABLED: ${VISION_FRAMES_ENABLED:-true}
+    VISION_FRAME_INTERVAL_S: ${VISION_FRAME_INTERVAL_S:-1}
+    EVIDENCE_PACK_TTL_HOURS: ${EVIDENCE_PACK_TTL_HOURS:-24}
+    EVIDENCE_PACK_TIMEOUT_S: ${EVIDENCE_PACK_TIMEOUT_S:-900}
+    RETURN_LOOKUP_PREFIX_MIN: ${RETURN_LOOKUP_PREFIX_MIN:-6}
+    ORDER_SN_REGEX: ${ORDER_SN_REGEX:-^[A-Z0-9]{10,20}$$}
 
 services:
   postgres:
@@ -82,7 +100,7 @@ services:
       - sh
       - -c
       - >-
-        mkdir -p /data/video/raw /data/video/clips /data/video/exports /data/imports;
+        mkdir -p /data/video/raw /data/video/clips /data/video/exports /data/video/snapshots /data/imports;
         find /data/video /data/imports -maxdepth 2 ! -user 10001 -exec chown 10001:10001 {} + ||
         echo "CẢNH BÁO volume-init: không chown được /data/video hoặc /data/imports (NFS root_squash?) — xem docs/ops.md §2" >&2;
         exit 0
@@ -234,6 +252,10 @@ networks:
     ipam:
       config:
         - subnet: ${AICAM_SUBNET:-172.30.10.0/24}
+          # IP cấp động chỉ lấy từ nửa trên của dải (G5 item 02): IP tĩnh CADDY_IP (.10) nằm ngoài dải này nên
+          # container khác không chiếm được khi caddy được tạo lại sau (lỗi "Address already in use" → caddy không
+          # lên). Đổi AICAM_SUBNET thì đổi AICAM_IP_RANGE cùng dải, CADDY_IP ngoài AICAM_IP_RANGE.
+          ip_range: ${AICAM_IP_RANGE:-172.30.10.128/25}
 
 # Video: đặt Docker data-root trên ổ dữ liệu lớn, hoặc gắn volume `video` vào NAS / RAID bằng compose.override.yml
 # (docs/ops.md §2). Xóa volume = mất bằng chứng — không chạy `down -v` ở production.

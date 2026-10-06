@@ -30,7 +30,7 @@ def test_entrypoint_registers_all_tables(module: str) -> None:
     )
 
     assert result.returncode == 0, result.stderr[-2000:]
-    assert result.stdout.strip() == "19"
+    assert result.stdout.strip() == "28"  # 19 Phase 1 + 9 Phase 2 (migration 0003)
 
 
 def test_seed_demo_refuses_production(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -42,3 +42,24 @@ def test_seed_demo_refuses_production(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "get_settings", lambda: prod)
 
     assert cli.main(["seed-demo"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("env", "confirm", "allowed"),
+    [("dev", False, True), ("test", False, True), ("staging", False, False), ("staging", True, True),
+     ("production", True, False)],
+)  # fmt: skip
+def test_seed_refusal_by_environment(env: str, confirm: bool, allowed: bool) -> None:
+    """G3 F-12: seed-demo chỉ dev / test; staging cần --confirm-staging; production không bao giờ."""
+    from aicam.entrypoints import cli
+
+    assert (cli.seed_refusal(env, confirm) is None) is allowed
+
+
+def test_app_env_rejects_unknown_value() -> None:
+    from pydantic import ValidationError
+
+    from aicam.core.settings import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(app_env="prod")

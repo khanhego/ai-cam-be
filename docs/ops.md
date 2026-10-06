@@ -138,9 +138,97 @@ dc ps && dc logs migrate                            # 4. migrate Exited (0), api
 
 Khi có image trên registry: đặt `AICAM_IMAGE=ghcr.io/<org>/ai-cam-be:<tag>` rồi `dc pull && dc up -d`.
 
-Rollback (02 §10): về tag image / commit trước + `dc up -d`; migration mới có `downgrade`: `dc run --rm migrate alembic downgrade -1` (chạy **trước** khi về image cũ). Nặng hơn: khôi phục DB từ bản sao lưu ở bước 1.
+Rollback (02 §10): về tag image / commit trước + `dc up -d`; migration mới có `downgrade`: `dc run --rm migrate alembic downgrade <revision>` bằng **image mới** (chạy **trước** khi về image cũ). Nặng hơn: khôi phục DB từ bản sao lưu ở bước 1. Lùi từ Phase 2 về Phase 1: theo mục 7.1, không dùng `downgrade -1`.
 
 Làm nên lúc ngoài giờ đóng gói: api khởi động lại vài giây, station tự nối lại (phiên đang mở nằm trong DB).
+
+### 7.1 Phase 2 (hàng hoàn, đối soát, khiếu nại): nâng cấp và lùi về Phase 1
+
+Phase 2 thêm 3 migration: **0003** (bảng / cột mới, chỉ thêm), **0004** (clip đang "Giữ" → hồ sơ khiếu nại
+"Chuyển từ cờ giữ" — `LEGACY_HOLD`) và **0005** (index tìm kiện hoàn theo tiền tố). Thời gian: đo trên máy dev với
+1 triệu kiện, 0003 chạy ~34 giây và **khóa bảng kiện suốt thời gian đó** (một transaction; đọc / ghi kiện chờ) —
+nâng cấp ngoài giờ đóng gói; 0005 ~1,3 giây (index tạo không `CONCURRENTLY` — mọi service đã dừng). Từ Phase 2, clip được giữ theo **hồ sơ** (ADR-009) thay cho cờ giữ từng clip.
+
+**Nâng cấp** — khác mục 7: **dừng mọi service ứng dụng trước khi migrate** (như phần lùi). Lý do: 0004 bỏ cờ
+"Giữ" của clip đã chuyển thành hồ sơ `LEGACY_HOLD`; J-02 của image Phase 1 (02:00 giờ VN) nếu còn chạy chỉ biết cờ
+này → xóa đúng các clip bằng chứng đó. 0004 tự từ chối khi còn kết nối khác vào DB và có clip đang giữ (log
+`0004: còn N kết nối khác…`); từ Phase 2, api / worker / beat / vision so phiên bản schema với image lúc khởi động
+và **thoát** (log `schema_version_mismatch`; worker / beat / vision mã 78, api mã 3 vì uvicorn bọc lỗi lifespan
+thành `Application startup failed` — đo ở G5) nếu lệch, J-02 kiểm lại ngay trước khi xóa.
+
+```sh
+dc exec backup /bin/sh /pg-backup.sh once                  # 1. sao lưu DB + snapshot volume video (NAS / RAID)
+git -C ../ai-cam-be pull && git -C ../ai-cam-fe pull         # 2. mã Phase 2 (BE + FE cùng lúc)
+(cd ../ai-cam-fe && pnpm install --frozen-lockfile && pnpm build)
+dc stop api vision worker worker-sync worker-export beat   # 3. BẮT BUỘC: không còn tiến trình Phase 1 nào
+dc build migrate && dc run --rm migrate alembic current    # 4. image mới; phải in 0002 (Phase 1)
+dc run --rm migrate alembic upgrade head                   # 5. 0003 → 0004 → 0005 (một transaction)
+dc run --rm migrate alembic current                        #    phải in 0005 (head)
+dc exec postgres psql -U aicam -d aicam -c 'VACUUM ANALYZE package'   # 6. dọn bloat backfill 0003, cập nhật thống kê
+dc up -d                                                   # 7. mọi service image mới
+dc ps                                                      # 8. api healthy; worker, worker-sync, worker-export, beat, vision Up
+```
+
+Mạng compose của bản Phase 1 chưa có `ip_range` (thêm ở G5 item 02 — giữ `CADDY_IP` không bị container khác chiếm):
+bước 7 lần đầu báo lỗi tạo lại mạng ("has active endpoints") → thay bước 7 bằng `dc down` (**không** `-v`, giữ
+volume) rồi `dc up -d`.
+
+1. Sàn giữ clip: `RETENTION_CLIP_MIN_DAYS` (mặc định 60, đặt trong `docker/.env`). 0003 nâng `retention_clip_days`
+   dưới sàn lên sàn + audit `RETENTION_RAISED_TO_MINIMUM`.
+2. Log bước 5: `0004: N clip giữ → M hồ sơ LEGACY_HOLD` và `held_before=… protected_after=…` (tập sau ≥ tập trước —
+   giữ theo phiên, cả Cam 1 + Cam 2). Lỗi → không có gì thay đổi (một transaction): `lock_timeout` 5 giây (còn
+   tiến trình giữ khóa bảng kiện) → làm lại bước 3; lỗi khác → giữ image cũ (`AICAM_IMAGE=<tag Phase 1> dc up -d`),
+   gửi log cho BE.
+3. **Đối soát và hàng hoàn chạy ngay khi beat lên**: J-14 (đối soát, 30 phút) và J-13 (yêu cầu trả hàng Shopee, 15
+   phút). Muốn bật dần: đặt `RECON_ENABLED=false` (tắt J-14) trong `docker/.env` trước bước 7. J-13 với Shopee thật
+   **tắt mặc định** (`SHOPEE_RETURNS_ENABLED=false`) tới khi API `returns` được xác nhận với tài khoản partner (T-3);
+   bật bằng `SHOPEE_RETURNS_ENABLED=true` + `dc up -d`.
+4. Lượt J-13 đầu của mỗi shop (chưa có mốc hàng hoàn) lùi `SHOPEE_RETURNS_INITIAL_DAYS` ngày (mặc định 15 — shop
+   kết nối từ Phase 1 có yêu cầu trả đang chạy từ trước nâng cấp). Cần lùi xa hơn: đặt biến này (tối đa 60) trước
+   lượt đầu; đã chạy rồi thì xóa mốc của shop: `dc exec postgres psql -U aicam -d aicam -c "UPDATE shop SET
+   last_return_cursor = NULL"` — lượt kế lùi lại từ đầu (idempotent theo mã yêu cầu trả). Cảnh báo / mốc quá hạn
+   chỉ tính cho kiện vào hàng hoàn **sau** lúc nâng cấp (`recon_start_at`).
+5. Admin xem **Hồ sơ khiếu nại** lọc nguồn "Chuyển từ cờ giữ" (hạn = lúc nâng cấp + 30 ngày) — đóng hồ sơ không còn cần.
+
+**Lùi về Phase 1** — chỉ khi không sửa tiến được (ưu tiên forward-fix). Thứ tự bắt buộc: **downgrade bằng image mới
+trước, đổi image sau**. Downgrade không xóa dữ liệu Phase 2: chép sang schema `phase2_archive` (hồ sơ hàng hoàn,
+phiên nhận hàng hoàn + clip / sự kiện / bản xuất / yêu cầu duyệt của nó, kiện tạm `TAM-`, ảnh, hồ sơ khiếu nại +
+bằng chứng + ghi chú + gói bằng chứng, cảnh báo đối soát, lịch sử trạng thái hoàn, cột Phase 2 của station / cài đặt
+/ phiên / kiện, số thứ tự mã HH- / KN- / TAM-). Kiện đang ở trạng thái hoàn hiện lại trạng thái cuối trước đó (không
+có → "Đã giao"). Clip đang được bảo vệ theo hồ sơ được đặt cờ **Giữ** để J-02 của image cũ không xóa. File video,
+ảnh, gói zip **giữ nguyên trên đĩa**. Cờ Giữ do downgrade đặt đứng tên "Hệ thống (bảo vệ bằng chứng Phase 2)" (người
+dùng không đăng nhập được). Kiện tạm `TAM-` còn phiên đóng gói (hiếm) giữ lại với trạng thái "Đã hủy".
+
+```sh
+dc exec backup /bin/sh /pg-backup.sh once                  # 1. sao lưu (bắt buộc) + snapshot volume video
+# 2. Hoàn tất / hủy mọi phiên nhận hàng hoàn đang mở ở station (downgrade từ chối nếu còn — không đổi gì).
+#    Phiên hoàn có clip "Không cắt được" / đang cắt: bấm Thử lại (API-46), chờ READY — downgrade TỪ CHỐI nếu còn
+#    (image cũ không giữ video thô cho chúng); chấp nhận mất: AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS=1 (dc run -e).
+dc stop api vision worker-sync worker-export beat          # 3a. dừng nhận việc mới; worker còn chạy để cắt clip
+dc exec redis redis-cli llen video                         # 3b. chờ tới khi in 0 (J-01 phiên vừa đóng đã chạy xong —
+#    downgrade TỪ CHỐI nếu còn phiên hoàn đã kết thúc chưa có clip, BUG-G5-P2-2)
+dc stop worker                                             # 3c. dừng worker
+dc run --rm migrate alembic downgrade 0002                 # 4. bằng IMAGE MỚI (0005, 0004 rồi 0003, một transaction)
+dc run --rm migrate alembic current                        #    phải in 0002
+# 5. Log bước 4: "0004 downgrade: đặt held cho N clip…", "0003 downgrade: chép sang phase2_archive {…số dòng…}"
+AICAM_IMAGE=<tag Phase 1> dc up -d                         # 6. rồi mới đổi image BE (và build FE Phase 1)
+```
+
+- **Không** xóa schema `phase2_archive`, **không** dọn `clips/`, `snapshots/`, `exports/pack-*` bằng tay, **không** bỏ
+  "Giữ" hàng loạt khi đang chạy Phase 1 (bỏ giữ → J-02 cũ xóa được clip bằng chứng).
+- Image cũ **không chạy được** trên DB đã nâng cấp: `migrate` của nó báo `Can't locate revision identified by '0005'` (revision mới nhất)
+  (thoát ≠ 0) nên `api` / worker không khởi động — đúng ý (chặn J-02 cũ). Gặp lỗi này: làm lại bước 3–4 bằng image
+  mới. Không bỏ qua bằng `docker start` / `dc start api`.
+- Lỗi ở bước 4 → cả lệnh lùi lại, DB giữ nguyên Phase 2 (chạy lại sau khi xử lý nguyên nhân trong log).
+
+**Nâng cấp lại lên Phase 2** sau khi đã lùi: như phần Nâng cấp. 0003 khôi phục mọi thứ từ `phase2_archive` (kiện mà
+image cũ đã đổi trạng thái thì giữ trạng thái mới — log `kiện hoàn đã đổi trạng thái`, đối soát J-14 sẽ báo lệch nếu
+có); 0004 trả cờ giữ do downgrade đặt (clip Admin đã giữ trước khi lùi vẫn giữ), khôi phục hồ sơ "Chuyển từ cờ giữ"
+cũ, chỉ tạo hồ sơ mới cho clip được giữ thêm trong lúc chạy Phase 1, rồi drop `phase2_archive`. Mã HH- / KN- / TAM-
+mới không trùng mã cũ. Kiểm log migrate: `0003: khôi phục từ phase2_archive {…}` (số dòng = lúc chép) và
+`0004: khôi phục …`. Hồ sơ có clip bằng chứng bị xóa trong lúc chạy Phase 1 → log `0004: N hồ sơ có clip bằng chứng
+bị xóa…` + audit `EVIDENCE_CLIP_DELETED_DURING_ROLLBACK` (báo CSKH). Mã `TAM-` bị kiện khác dùng trong lúc chạy
+Phase 1 → 0003 dừng với danh sách mã (đổi mã kiện kia rồi chạy lại).
 
 ## 8. Xem log, giám sát
 
@@ -180,6 +268,7 @@ Log Docker giới hạn 20 MB × 5 file / service. Khung **Sức khỏe hệ th�
 | Live view không lên hình (ICE `failed`) | `LAN_IP` đúng IP server? 8189/udp mở? | Sửa `LAN_IP` → `dc up -d mediamtx`; mở tường lửa |
 | Đăng nhập báo "Thử lại sau ít phút" cho mọi người | 30 lần sai / 5 phút theo IP | Chờ 5 phút. Nếu mọi máy bị chung một IP → kiểm `FORWARDED_ALLOW_IPS` = `CADDY_IP` (mục 11) |
 | `api` không khởi động: "cần đặt secret thật" | `dc logs api` | Điền secret thật trong `docker/.env` |
+| `caddy` đứng ở `Created`, `dc up` báo "Address already in use" | `docker network inspect <dự án>_aicam` — container khác đang giữ `CADDY_IP` | Mạng tạo từ bản compose chưa có `ip_range` (trước G5 item 02): `dc down` (**không** `-v`) rồi `dc up -d` để tạo lại mạng với `AICAM_IP_RANGE`. Gấp: `dc restart <container đang giữ IP>` rồi `dc up -d caddy` |
 
 ## 11. Checklist bảo mật trước khi đưa vào dùng (DEC-53)
 

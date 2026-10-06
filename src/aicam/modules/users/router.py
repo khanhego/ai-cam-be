@@ -90,7 +90,11 @@ async def logout(
     rt_dashboard: Annotated[str | None, Cookie()] = None,
 ) -> Response:
     client = "STATION" if principal.role == "STATION" else "DASHBOARD"
-    await service.logout(db, rt_station if client == "STATION" else rt_dashboard)
+    await service.logout(
+        db,
+        rt_station if client == "STATION" else rt_dashboard,
+        station_user_id=principal.user_id if principal.role == "STATION" else None,
+    )
     response.status_code = 204
     response.delete_cookie(service.COOKIE_NAMES[client], path=service.COOKIE_PATH)
     return response

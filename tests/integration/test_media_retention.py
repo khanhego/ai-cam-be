@@ -78,9 +78,9 @@ async def _reload(db: AsyncSession, clip_id: uuid.UUID) -> Clip:
 
 
 async def test_hold_and_unhold(api: AsyncClient, db: AsyncSession, media_settings: Settings) -> None:
-    """FR-02.09: CSKH giữ → retention_until null + audit; bỏ giữ → tính lại từ setting."""
+    """FR-02.09: ADMIN giữ (API-42 chỉ ADMIN — DEC-209) → retention_until null + audit; bỏ giữ → tính lại."""
     clock.freeze(T0)
-    headers, uid = await _login(api, db, "CSKH")
+    headers, uid = await _login(api, db, "ADMIN")
     _, station = await make_station_account(db)
     clip, _ = await _clip(db, media_settings, station, "SPXTST0000001", T0)
 
@@ -88,7 +88,7 @@ async def test_hold_and_unhold(api: AsyncClient, db: AsyncSession, media_setting
     assert held.status_code == 200
     body = held.json()
     assert (body["held"], body["retention_until"]) == (True, None)
-    assert body["held_by"] == {"id": str(uid), "display_name": "Người CSKH"}
+    assert body["held_by"] == {"id": str(uid), "display_name": "Người ADMIN"}
     unheld = (await api.put(f"/api/v1/clips/{clip.id}/hold", headers=headers, json={"held": False})).json()
     assert (unheld["held"], unheld["held_by"], unheld["held_at"]) == (False, None, None)
     assert datetime.fromisoformat(unheld["retention_until"]) == clip.end_at + timedelta(days=90)
@@ -99,16 +99,18 @@ async def test_hold_and_unhold(api: AsyncClient, db: AsyncSession, media_setting
 async def test_hold_permissions_and_deleted(
     api: AsyncClient, db: AsyncSession, media_settings: Settings
 ) -> None:
-    """TC-P.05: Station ⛔ giữ clip; clip đã xóa → 410 CLIP_DELETED."""
+    """TC-P.05, TC-02.35: API-42 chỉ ADMIN — Station / Quản lý / CSKH 403; clip đã xóa → 410 CLIP_DELETED."""
     station_h, _ = await _login(api, db, "STATION")
     sup, _ = await _login(api, db, "SUPERVISOR")
+    cskh, _ = await _login(api, db, "CSKH")
+    admin, _ = await _login(api, db, "ADMIN")
     _, station = await make_station_account(db)
     clip, _ = await _clip(db, media_settings, station, "SPXTST0000002", T0, status="DELETED")
 
-    assert (
-        await api.put(f"/api/v1/clips/{clip.id}/hold", headers=station_h, json={"held": True})
-    ).status_code == 403
-    res = await api.put(f"/api/v1/clips/{clip.id}/hold", headers=sup, json={"held": True})
+    for headers in (station_h, sup, cskh):
+        res = await api.put(f"/api/v1/clips/{clip.id}/hold", headers=headers, json={"held": True})
+        assert (res.status_code, res.json()["error"]["code"]) == (403, "FORBIDDEN")
+    res = await api.put(f"/api/v1/clips/{clip.id}/hold", headers=admin, json={"held": True})
     assert (res.status_code, res.json()["error"]["code"]) == (410, "CLIP_DELETED")
 
 
@@ -118,9 +120,10 @@ async def test_hold_permissions_and_deleted(
 async def test_retention_keeps_held_clip_deletes_others(
     api: AsyncClient, db: AsyncSession, media_settings: Settings
 ) -> None:
-    """TC-02.06 / AC-15 / BR-09: +91 ngày, clip giữ còn READY; clip không giữ DELETED, mất file, 410."""
+    """TC-02.06 / AC-15 / BR-09 (d): +91 ngày, clip giữ còn READY; clip không giữ DELETED, mất file, 410."""
     clock.freeze(T0)
-    headers, _ = await _login(api, db, "CSKH")
+    headers, _ = await _login(api, db, "ADMIN")
+    await _login(api, db, "CSKH")
     _, station = await make_station_account(db)
     clip_a, path_a = await _clip(db, media_settings, station, "SPXTST0000001", T0)
     clip_b, path_b = await _clip(db, media_settings, station, "SPXTST0000002", T0)
@@ -133,7 +136,9 @@ async def test_retention_keeps_held_clip_deletes_others(
     a, b = await _reload(db, clip_a.id), await _reload(db, clip_b.id)
     assert (a.status, path_a.exists()) == ("READY", True)
     assert (b.status, path_b.exists(), b.deleted_at) == ("DELETED", False, clock.now())
-    entry = await db.scalar(select(AuditLog).where(AuditLog.action == "DELETE_CLIP"))
+    entry = await db.scalar(
+        select(AuditLog).where(AuditLog.action == "DELETE_CLIP", AuditLog.object_id == str(clip_b.id))
+    )
     assert entry is not None
     assert (entry.user_id, entry.object_id) == (None, str(clip_b.id))
     login = await api.post(  # token cũ đã hết hạn sau khi tua 91 ngày
@@ -245,12 +250,12 @@ async def test_retention_keeps_raw_video_of_failed_clip(db: AsyncSession, media_
 async def test_retention_failed_clip_protection_expires_with_clip_days(
     db: AsyncSession, media_settings: Settings
 ) -> None:
-    """G3-V2 (DEC-163): phiên có clip FAILED kết thúc quá `retention_clip_days` (đọc lúc chạy) → video thô
-    không còn được giữ; còn trong hạn → giữ."""
+    """G3-V2 (DEC-163): phiên có clip FAILED kết thúc quá số ngày giữ clip (đọc lúc chạy, không thấp hơn sàn
+    60 — BR-25) → video thô không còn được giữ; còn trong hạn → giữ."""
     clock.freeze(T0)
     _, station = await make_station_account(db)
     cam = (await make_cameras(db, station))["CAM1"]
-    ended = T0 - timedelta(days=40)
+    ended = T0 - timedelta(days=70)
     await _clip(db, media_settings, station, "SPXTST0000033", ended, status="PENDING")
     start = ended - timedelta(seconds=30)
     f = media_settings.video_root / "raw" / cam.mediamtx_path / f"{start:%Y/%m/%d/%H-%M-%S-%f}.mp4"
@@ -262,13 +267,14 @@ async def test_retention_failed_clip_protection_expires_with_clip_days(
     assert f.exists()
     assert cam.mediamtx_path in await media.protected_raw_ranges(db, 0, T0 - timedelta(days=90))
 
-    # Hạ hạn lưu clip xuống 30 ngày (setting đọc lúc chạy) → phiên 40 ngày trước hết được bảo vệ.
+    # Hạ hạn lưu clip xuống 30 ngày (setting đọc lúc chạy) → J-02 dùng sàn 60 → phiên 70 ngày trước hết
+    # được bảo vệ.
     await db.execute(
         update(Setting).where(Setting.id == 1).values(retention_raw_days=7, retention_clip_days=30)
     )
     assert (await media.enforce_retention(db, media_settings))["raw_files"] == 1
     assert not f.exists()
-    assert await media.protected_raw_ranges(db, 0, T0 - timedelta(days=30)) == {}
+    assert await media.protected_raw_ranges(db, 0, T0 - timedelta(days=60)) == {}
 
 
 async def test_retention_commits_before_unlink_and_retries_file(

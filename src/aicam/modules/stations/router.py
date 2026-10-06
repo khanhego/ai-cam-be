@@ -58,9 +58,14 @@ async def create_station(body: StationCreateIn, p: AdminOnly, db: DbSession) -> 
 
 @router.patch("/stations/{station_id}", response_model=StationOut)
 async def patch_station(
-    station_id: uuid.UUID, body: StationPatchIn, p: AdminOnly, db: DbSession
+    station_id: uuid.UUID, body: StationPatchIn, p: AdminOnly, db: DbSession, settings: AppSettings
 ) -> StationOut:
-    return await service.patch_station(db, station_id, body, p.user_id, p.ip)
+    out, mode_changed = await service.patch_station(db, station_id, body, p.user_id, p.ip)
+    if mode_changed:  # station đang mở màn hình chuyển S1 ⇄ R1 ngay (WS-01)
+        from aicam.modules.sessions.service import publish_state
+
+        await publish_state(db, station_id, settings)
+    return out
 
 
 @router.put("/stations/{station_id}/cameras/{role}", response_model=CameraOut)

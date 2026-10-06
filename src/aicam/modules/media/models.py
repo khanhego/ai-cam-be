@@ -13,6 +13,8 @@ CAMERA_ROLES = ("CAM1", "CAM2")
 CLIP_STATUSES = ("PENDING", "READY", "FAILED", "DELETED")
 EXPORT_LAYOUTS = ("CAM1", "CAM2", "SIDE_BY_SIDE")
 EXPORT_STATUSES = ("QUEUED", "RUNNING", "READY", "FAILED")
+SNAPSHOT_KINDS = ("MANUAL", "PACK_CLOSE")
+SNAPSHOT_STATUSES = ("READY", "DELETED")
 
 
 class VideoSegment(UUIDPk, Base):
@@ -80,3 +82,33 @@ class Export(UUIDPk, Base):
     created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("user.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
     expires_at: Mapped[datetime | None]
+
+
+class Snapshot(UUIDPk, Base):
+    """Ảnh Cam 1: chụp tay ở phiên RETURN (API-103) hoặc lúc đóng gói (J-17, `PACK_CLOSE`) — 02a §3."""
+
+    __tablename__ = "snapshot"
+    __table_args__ = (
+        Index(None, "session_id"),
+        Index(
+            "uq_snapshot_pack_close_session",
+            "session_id",
+            unique=True,
+            postgresql_where=text("kind = 'PACK_CLOSE'"),
+        ),
+        Index("ix_snapshot_retention_candidates", "taken_at", postgresql_where=text("status = 'READY'")),
+        enum_check("kind", SNAPSHOT_KINDS),
+        enum_check("camera_role", CAMERA_ROLES),
+        enum_check("status", SNAPSHOT_STATUSES),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("session.id", ondelete="RESTRICT"))
+    kind: Mapped[str] = mapped_column(Text)
+    camera_role: Mapped[str] = mapped_column(Text, default="CAM1", server_default="CAM1")
+    taken_at: Mapped[datetime]
+    path: Mapped[str | None] = mapped_column(Text)
+    sha256: Mapped[str | None] = mapped_column(Text)
+    size_bytes: Mapped[int | None]
+    status: Mapped[str] = mapped_column(Text, default="READY", server_default="READY")
+    deleted_at: Mapped[datetime | None]
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())

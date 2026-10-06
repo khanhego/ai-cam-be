@@ -18,6 +18,28 @@ def export_message(export_id: uuid.UUID, file: str, uid: uuid.UUID, exp: int) ->
     return f"export:{export_id}:{file}:{uid}:{exp}"
 
 
+def snapshot_message(snapshot_id: uuid.UUID, uid: uuid.UUID, exp: int) -> str:
+    return f"snapshot:{snapshot_id}:{uid}:{exp}"
+
+
+def snapshot_url(key: str, snapshot_id: uuid.UUID, uid: uuid.UUID, exp: int) -> str:
+    """API-106 (02 §6.2): `sig = HMAC("snapshot:{id}:{uid}:{exp}")`."""
+    query = urlencode(
+        {"uid": str(uid), "exp": exp, "sig": sign(key, snapshot_message(snapshot_id, uid, exp))}
+    )
+    return f"/api/v1/media/snapshots/{snapshot_id}?{query}"
+
+
+def pack_message(pack_id: uuid.UUID, uid: uuid.UUID, exp: int) -> str:
+    return f"pack:{pack_id}:pack.zip:{uid}:{exp}"
+
+
+def pack_url(key: str, pack_id: uuid.UUID, uid: uuid.UUID, exp: int) -> str:
+    """API-138 (02a §4): `sig = HMAC("pack:{id}:pack.zip:{uid}:{exp}")`."""
+    query = urlencode({"uid": str(uid), "exp": exp, "sig": sign(key, pack_message(pack_id, uid, exp))})
+    return f"/api/v1/media/evidence-packs/{pack_id}/pack.zip?{query}"
+
+
 def expiry(ttl_s: int) -> int:
     return int(clock.now().timestamp()) + ttl_s
 

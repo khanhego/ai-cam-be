@@ -31,6 +31,24 @@ ACTIONS = frozenset(
         "SESSIONS_REVOKED",
         "SHOP_CONNECT",
         "ORDER_OVERWRITTEN_BY_API",
+        # Phase 2 (02 §6.2 API-92, §6.3 #19, §6.5 #1).
+        "STATION_WORK_MODE",
+        "STATION_OPERATOR",
+        "INSPECTION_CORRECT",
+        "RETURN_LINK_ORDER",
+        "RETURN_CASE_MERGED",
+        "RETURN_FORCE_NEW",
+        "RECON_RESOLVE",
+        "WAREHOUSE_STATUS_ADJUST",
+        "CLAIM_CREATE",
+        "CLAIM_UPDATE",
+        "CLAIM_EVIDENCE_UPDATE",
+        "EXPORT_CLAIM_PACK",
+        "DOWNLOAD_CLAIM_PACK",
+        "VIEW_SNAPSHOT",
+        "RETENTION_REDUCED",
+        "RETENTION_RAISED_TO_MINIMUM",
+        "CLIP_PROTECTION_MIGRATED",
     }
 )
 

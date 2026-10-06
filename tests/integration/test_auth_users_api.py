@@ -45,7 +45,13 @@ async def test_station_login_returns_station_and_sets_station_cookie(
     assert res.status_code == 200
     body = res.json()
     assert body["user"]["role"] == "STATION"
-    assert body["user"]["station"] == {"id": str(station.id), "name": "TST Station 01"}
+    # Phase 2 (02 API-04): thêm `kind`, `work_mode` — chỉ thêm trường.
+    assert body["user"]["station"] == {
+        "id": str(station.id),
+        "name": "TST Station 01",
+        "kind": "PACK",
+        "work_mode": "PACK",
+    }
     assert body["expires_in"] == 900
     cookie = res.headers["set-cookie"]
     assert cookie.startswith("rt_station=")

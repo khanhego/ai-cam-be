@@ -5,8 +5,9 @@ from typing import Any
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import after_setup_logger, after_setup_task_logger
+from celery.signals import after_setup_logger, after_setup_task_logger, beat_init, worker_init
 
+from aicam.core import schema_guard
 from aicam.core.logging import install_stdlib_redaction
 from aicam.core.settings import get_settings
 
@@ -23,7 +24,9 @@ app.conf.update(
     task_routes={
         "media.build_session_clips": {"queue": "video"},
         "media.render_export": {"queue": "export"},
-        "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12 (gọi Shopee) tách khỏi cắt clip
+        "media.capture_pack_snapshot": {"queue": "video"},  # J-17
+        "claims.build_evidence_pack": {"queue": "export"},  # J-16 — cùng worker encode J-03
+        "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12, J-13 (gọi Shopee) tách khỏi cắt clip
     },
     beat_schedule={
         "j07-session-timeouts": {"task": "sessions.check_timeouts", "schedule": 30.0},
@@ -34,7 +37,10 @@ app.conf.update(
         "j04-sync-orders": {"task": "platforms.sync_orders", "schedule": 300.0},
         "j05-verify-unverified": {"task": "platforms.verify_unverified", "schedule": 600.0},
         "j06-sync-shipping-status": {"task": "platforms.sync_shipping_status", "schedule": 900.0},
+        "j13-sync-returns": {"task": "platforms.sync_returns", "schedule": 900.0},  # NFR-35 ≤ 15 phút
         "j12-refresh-tokens": {"task": "platforms.refresh_tokens", "schedule": 1800.0},
+        "j14-recon-rules": {"task": "reconciliation.run_rules", "schedule": 1800.0},
+        "j15-claim-deadlines": {"task": "claims.check_deadlines", "schedule": 3600.0},
         # 02:00 giờ VN (UTC+7, không đổi giờ mùa hè) = 19:00 UTC.
         "j02-enforce-retention": {"task": "media.enforce_retention", "schedule": crontab(hour=19, minute=0)},
     },
@@ -48,3 +54,13 @@ def _redact_logs(logger: logging.Logger | None = None, **_: Any) -> None:
 
 after_setup_logger.connect(_redact_logs, weak=False)
 after_setup_task_logger.connect(_redact_logs, weak=False)
+
+
+def _check_schema(sender: Any = None, **_: Any) -> None:
+    """G3 M-F1 (DEC-336): worker / beat thoát khi schema DB lệch head của image (staging / production)."""
+    component = "beat" if sender is not None and type(sender).__name__ == "Service" else "worker"
+    schema_guard.enforce_blocking(get_settings(), component)
+
+
+worker_init.connect(_check_schema, weak=False)
+beat_init.connect(_check_schema, weak=False)

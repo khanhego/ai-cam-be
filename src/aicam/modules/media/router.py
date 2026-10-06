@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core.db import get_session
 from aicam.core.deps import Principal, require_roles
 from aicam.core.settings import Settings, get_settings
-from aicam.modules.media import exports, service
+from aicam.modules.media import exports, service, snapshots
 from aicam.modules.media.schemas import (
     ExportCreated,
     ExportIn,
@@ -26,6 +26,7 @@ AppSettings = Annotated[Settings, Depends(get_settings)]
 Viewer = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR", "CSKH", "STATION"))]
 Staff = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR", "CSKH"))]
 Manager = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR"))]
+Admin = Annotated[Principal, Depends(require_roles("ADMIN"))]
 
 router = APIRouter(tags=["media"])
 
@@ -55,9 +56,9 @@ async def clip_media(
 
 
 @router.put("/clips/{clip_id}/hold", response_model=HoldOut)
-async def hold(clip_id: uuid.UUID, body: HoldIn, p: Staff, db: DbSession) -> HoldOut:
-    """API-42: giữ / bỏ giữ clip (FR-02.09)."""
-    return await service.set_hold(db, clip_id, body.held, p)
+async def hold(clip_id: uuid.UUID, body: HoldIn, p: Admin, db: DbSession, settings: AppSettings) -> HoldOut:
+    """API-42: giữ / bỏ giữ clip — chỉ ADMIN, deprecated (DEC-209, ADR-009: bảo vệ theo hồ sơ khiếu nại)."""
+    return await service.set_hold(db, clip_id, body.held, p, settings)
 
 
 @router.post("/sessions/{session_id}/clips/rebuild", response_model=RebuildOut, status_code=202)
@@ -98,3 +99,21 @@ async def export_media(
     )  # fmt: skip
     media_type = "video/mp4" if file == "video.mp4" else "application/json"
     return FileResponse(path, media_type=media_type, filename=filename)
+
+
+@router.get("/media/snapshots/{snapshot_id}", response_class=FileResponse)
+async def snapshot_media(
+    snapshot_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    settings: AppSettings,
+    uid: Annotated[uuid.UUID, Query()],
+    exp: Annotated[int, Query()],
+    sig: Annotated[str, Query(max_length=128)],
+) -> FileResponse:
+    """API-106: ảnh JPEG bằng chữ ký `snapshot:` (FR-04.04, 02.11)."""
+    path = await snapshots.open_snapshot(
+        db, snapshot_id, uid=uid, exp=exp, sig=sig, ip=request.client.host if request.client else None,
+        settings=settings,
+    )  # fmt: skip
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=600"})

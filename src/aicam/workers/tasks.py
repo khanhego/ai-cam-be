@@ -13,11 +13,15 @@ import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại g
 from aicam.core.db import dispose_engine, init_engine, sessionmaker
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import get_settings
+from aicam.modules.claims import pack as claim_packs
+from aicam.modules.claims import service as claims
 from aicam.modules.imports import service as imports
-from aicam.modules.media import exports, jobs
+from aicam.modules.media import exports, jobs, snapshots
 from aicam.modules.media import service as media
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms import sync as platform_sync
+from aicam.modules.platforms.shopee import client as shopee_client
+from aicam.modules.reconciliation import service as reconciliation
 from aicam.modules.sessions import service as sessions
 from aicam.modules.stations import service as stations
 from aicam.modules.stations.mediamtx import HttpMediaMTX, MediaMTXError
@@ -54,6 +58,32 @@ def check_timeouts() -> dict[str, int]:
 
 
 @app.task(  # type: ignore[untyped-decorator]
+    name="media.capture_pack_snapshot", bind=True, max_retries=3, default_retry_delay=30, soft_time_limit=60
+)
+def capture_pack_snapshot(self: Any, session_id: str) -> str:
+    """J-17 (queue `video`, 02a §7): ảnh Cam 1 lúc đóng gói từ clip gốc; lỗi → thử lại 3 lần / 30 giây."""
+    try:
+        return _run(lambda db: snapshots.capture_pack_snapshot(db, uuid.UUID(session_id), get_settings()))
+    except Exception as exc:  # ffmpeg / IO: thiếu ảnh không chặn gì, chỉ thử lại rồi log
+        if self.request.retries >= self.max_retries:
+            log.error("pack_snapshot_failed", session_id=session_id, error=str(exc)[:300])
+            return "failed"
+        raise self.retry(exc=exc) from exc
+
+
+@app.task(name="claims.check_deadlines", soft_time_limit=120)  # type: ignore[untyped-decorator]
+def check_claim_deadlines() -> int:
+    """J-15 (60 phút, 02a §7): hồ sơ khiếu nại sắp hết hạn → ghi chú + WS (FR-08.04)."""
+    return _run(claims.check_deadlines)
+
+
+@app.task(name="sessions.flag_order_cancelled", soft_time_limit=60)  # type: ignore[untyped-decorator]
+def flag_order_cancelled(package_id: str) -> str:
+    """BR-21 (02a §5, DEC-266): đơn hủy khi kiện đang đóng → gắn cờ phiên / hủy sau khi đóng (R3-8)."""
+    return _run(lambda db: sessions.flag_order_cancelled(db, uuid.UUID(package_id), get_settings()))
+
+
+@app.task(  # type: ignore[untyped-decorator]
     name="media.build_session_clips", bind=True, max_retries=3, soft_time_limit=120, time_limit=150
 )
 def build_session_clips(self: Any, session_id: str) -> dict[str, Any]:
@@ -87,6 +117,7 @@ def index_segments() -> dict[str, int]:
             log.warning("mediamtx_unreachable", error=str(exc))
         out["indexed"] = await media.index_segments(db, settings)
         out["exports_expired"] = await exports.cleanup_expired(db, settings)
+        out["evidence_packs_expired"] = await claim_packs.cleanup_expired(db, settings)
         return out
 
     return _run(_job)
@@ -102,6 +133,12 @@ def enforce_retention() -> dict[str, int]:
 def render_export(export_id: str) -> str:
     """J-03 (queue `export`, worker riêng concurrency 1 — DEC-32): encode bản xuất có overlay."""
     return _run(lambda db: exports.render_export(db, uuid.UUID(export_id), get_settings()))
+
+
+@app.task(name="claims.build_evidence_pack", soft_time_limit=900, time_limit=960)  # type: ignore[untyped-decorator]
+def build_evidence_pack(pack_id: str) -> str:
+    """J-16 (queue `export`, cùng worker J-03 concurrency 1): dựng gói bằng chứng zip (FR-08.05)."""
+    return _run(lambda db: claim_packs.build_evidence_pack(db, uuid.UUID(pack_id), get_settings()))
 
 
 @app.task(name="maintenance.housekeeping", soft_time_limit=240)  # type: ignore[untyped-decorator]
@@ -127,6 +164,8 @@ def housekeeping() -> dict[str, int]:
 
 # ---------------------------------------------------------------- Shopee (T-22, queue `sync`)
 
+SYNC_BUDGET_S = 210.0  # < soft_time_limit 240: còn thời gian ghi lỗi / nhả lock
+
 
 @app.task(name="platforms.sync_orders", soft_time_limit=240, time_limit=270)  # type: ignore[untyped-decorator]
 def sync_orders(shop_id: str | None = None, lock_held: bool | str = False) -> dict[str, Any]:
@@ -134,10 +173,11 @@ def sync_orders(shop_id: str | None = None, lock_held: bool | str = False) -> di
 
     async def _job(db: AsyncSession) -> dict[str, Any]:
         settings = get_settings()
-        return await platform_sync.sync_orders(
-            db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None,
-            lock_held=lock_held,
-        )  # fmt: skip
+        with shopee_client.time_budget(SYNC_BUDGET_S):  # G3 F-14
+            return await platform_sync.sync_orders(
+                db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None,
+                lock_held=lock_held,
+            )  # fmt: skip
 
     return _run(_job)
 
@@ -161,3 +201,25 @@ def refresh_tokens() -> dict[str, int]:
     """J-12 (30 phút): làm mới token sắp hết hạn; bị từ chối → shop EXPIRED."""
     settings = get_settings()
     return _run(lambda db: platform_sync.refresh_tokens(db, platforms.get_adapter(settings), settings))
+
+
+@app.task(name="platforms.sync_returns", soft_time_limit=240, time_limit=270)  # type: ignore[untyped-decorator]
+def sync_returns(shop_id: str | None = None) -> dict[str, Any]:
+    """J-13 (15 phút / mọi shop CONNECTED; sau khi kết nối): yêu cầu trả → hồ sơ hàng hoàn. Timeout 4 phút."""
+    settings = get_settings()
+
+    async def _job(db: AsyncSession) -> dict[str, Any]:
+        with shopee_client.time_budget(SYNC_BUDGET_S):  # G3 F-14
+            return await platform_sync.sync_returns(
+                db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None
+            )
+
+    return _run(_job)
+
+
+@app.task(  # type: ignore[untyped-decorator]
+    name="reconciliation.run_rules", soft_time_limit=get_settings().recon_run_soft_limit_s
+)
+def run_recon_rules() -> dict[str, Any]:
+    """J-14 (30 phút; sau J-04 / J-06 / J-13 có thay đổi; API-123): đối soát 7 quy tắc (FR-06.02, 06.06)."""
+    return _run(lambda db: reconciliation.run_rules(db, get_settings()))

@@ -1,0 +1,11 @@
+{
+  "_comment": "Đơn giao thất bại 2 kiện (04 §1 SPXTST0000043-1/-2): không phải yêu cầu trả — đơn TO_RETURN, vận chuyển LOGISTICS_DELIVERY_FAILED.",
+  "order_sn": "2410TST00043",
+  "order_status": "TO_RETURN",
+  "logistics_status": "LOGISTICS_DELIVERY_FAILED",
+  "tracking_numbers": ["SPXTST0000043-1", "SPXTST0000043-2"],
+  "items": [
+    {"name": "Áo thun basic", "model_name": "Đen / L", "item_sku": "AT-DEN-L", "amount": 2},
+    {"name": "Tất cổ ngắn", "model_name": "Trắng", "item_sku": "TAT-TRANG", "amount": 1}
+  ]
+}

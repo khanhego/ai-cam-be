@@ -5,6 +5,8 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 CameraRole = Literal["CAM1", "CAM2"]
+StationKind = Literal["PACK", "RETURN", "BOTH"]
+WorkMode = Literal["PACK", "RETURN"]
 
 
 class Roi(BaseModel):
@@ -40,6 +42,10 @@ class StationOut(BaseModel):
     is_active: bool
     account: AccountRef | None
     cameras: list[CameraOut]
+    # Phase 2 (02 §6.2 API-60).
+    kind: StationKind
+    work_mode: WorkMode
+    operator_name: str | None
 
 
 class StationList(BaseModel):
@@ -49,12 +55,14 @@ class StationList(BaseModel):
 class StationCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=40)
     account_user_id: uuid.UUID | None = None
+    kind: StationKind = "PACK"
 
 
 class StationPatchIn(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=40)
     is_active: bool | None = None
     account_user_id: uuid.UUID | None = None
+    kind: StationKind | None = None
 
 
 class CameraIn(BaseModel):

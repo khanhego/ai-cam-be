@@ -61,6 +61,9 @@ class ApprovalItem(BaseModel):
     decided_by: UserBrief | None = None
     decided_at: datetime | None = None
     note: str | None = None
+    # Phase 2 (02 API-20): loại phiên của yêu cầu, người kiểm (phiên RETURN).
+    session_type: Literal["PACK", "RETURN"] | None = None
+    operator_name: str | None = None
 
 
 class DecisionIn(BaseModel):

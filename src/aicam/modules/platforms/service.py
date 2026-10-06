@@ -27,6 +27,7 @@ from aicam.modules.platforms.base import (
     PlatformAdapter,
     PlatformError,
     PlatformOrder,
+    PlatformReturn,
     ShippingStatus,
     ShopCredentials,
 )
@@ -41,6 +42,7 @@ PLATFORM = "SHOPEE"
 STATE_TTL_S = 600  # API-71: state chống CSRF hạn 10 phút
 SYNC_LOCK_TTL_S = 600  # 02a §6: lock Redis `sync:{shop}` TTL 10 phút
 SYNC_TASK = "platforms.sync_orders"
+SYNC_RETURNS_TASK = "platforms.sync_returns"  # J-13
 CALLBACK_PATH = "/api/v1/shops/shopee/callback"
 RESULT_PATH = "/admin/settings/shopee"
 
@@ -79,6 +81,15 @@ class UnconfiguredAdapter:
     async def get_shipping_statuses(self, creds: ShopCredentials | None, refs: Any) -> list[ShippingStatus]:
         return []
 
+    async def list_returns(
+        self, creds: ShopCredentials | None, since: datetime
+    ) -> AsyncIterator[PlatformReturn]:
+        raise PlatformError("Chưa cấu hình Shopee")
+        yield  # pragma: no cover — biến hàm thành async generator
+
+    async def get_return(self, creds: ShopCredentials | None, return_sn: str) -> PlatformReturn | None:
+        return None
+
 
 @lru_cache
 def _mock() -> MockAdapter:
@@ -94,11 +105,18 @@ def _shopee(
     attempts: int,
     backoff_s: float,
     lookback_min: int,
+    returns_page_size: int = 50,
+    returns_window_days: int = 15,
 ) -> ShopeeAdapter:
     client = ShopeeClient(
         partner_id, partner_key, base_url, timeout_s=timeout_s, max_attempts=attempts, backoff_s=backoff_s
     )
-    return ShopeeAdapter(client, lookup_lookback=timedelta(minutes=lookback_min))
+    return ShopeeAdapter(
+        client,
+        lookup_lookback=timedelta(minutes=lookback_min),
+        returns_page_size=returns_page_size,
+        returns_window=timedelta(days=returns_window_days),
+    )
 
 
 def is_configured(settings: Settings) -> bool:
@@ -133,7 +151,8 @@ def get_adapter(settings: Settings) -> PlatformAdapter:
     return _shopee(
         int(settings.shopee_partner_id), settings.shopee_partner_key, settings.shopee_base_url,
         settings.shopee_timeout_s, settings.shopee_max_attempts, settings.shopee_backoff_s,
-        settings.shopee_lookup_lookback_min,
+        settings.shopee_lookup_lookback_min, settings.shopee_returns_page_size,
+        settings.shopee_returns_window_days,
     )  # fmt: skip
 
 
@@ -339,6 +358,7 @@ async def handle_callback(
 
     async def _sync_now() -> None:
         await enqueue_sync(shop_uuid, lock_held=False)
+        await enqueue_sync_returns(shop_uuid)  # J-13 ngay sau khi kết nối (02a §7)
 
     after_commit(session, _sync_now)  # J-04 ngay sau khi kết nối (02a API-72)
     await commit(session)
@@ -379,6 +399,13 @@ async def enqueue_sync(shop_id: uuid.UUID, *, lock_held: bool | str) -> None:
     from aicam.modules.media import jobs  # gửi Celery theo tên task (test thay sender)
 
     await jobs.send(SYNC_TASK, [str(shop_id), lock_held], "sync")
+
+
+async def enqueue_sync_returns(shop_id: uuid.UUID) -> None:
+    """J-13 cho một shop (queue `sync`)."""
+    from aicam.modules.media import jobs
+
+    await jobs.send(SYNC_RETURNS_TASK, [str(shop_id)], "sync")
 
 
 async def request_sync(session: AsyncSession, shop_id: uuid.UUID, settings: Settings) -> None:

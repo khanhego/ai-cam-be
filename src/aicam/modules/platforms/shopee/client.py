@@ -18,7 +18,9 @@ import asyncio
 import hashlib
 import hmac
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 from urllib.parse import urlencode
 
@@ -46,6 +48,19 @@ RETRY_ERRORS = frozenset(
 )
 
 Sleep = Callable[[float], Awaitable[None]]
+
+# G3 F-14: hạn chót (monotonic) của job đang gọi — chờ Retry-After / giãn cách không vượt thời gian còn lại
+# của task Celery (soft_time_limit giết task giữa chừng, cursor không ghi được lỗi).
+_deadline: ContextVar[float | None] = ContextVar("shopee_deadline", default=None)
+
+
+@contextmanager
+def time_budget(seconds: float) -> Iterator[None]:
+    token = _deadline.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        _deadline.reset(token)
 
 
 class ShopeeRequestError(PlatformError):
@@ -176,5 +191,14 @@ class ShopeeClient:
                 else:
                     return data
             if attempt < attempts:
-                await self._sleep(self._delay(attempt, retry_after))
+                delay = self._delay(attempt, retry_after)
+                deadline = _deadline.get()
+                if deadline is not None and time.monotonic() + delay + self.timeout_s > deadline:
+                    log.warning(
+                        "shopee_call", path=path, attempt=attempt, outcome="no_time_left", wait_s=delay
+                    )
+                    raise PlatformError(
+                        f"Shopee lỗi, hết thời gian của lượt đồng bộ (chờ {delay:.0f} giây): {last}"
+                    )
+                await self._sleep(delay)
         raise PlatformError(f"Shopee lỗi sau {attempts} lần thử: {last}")

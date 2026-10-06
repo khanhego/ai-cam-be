@@ -25,6 +25,20 @@ TEST_DATABASE_URL = os.environ.get(
 )
 
 
+async def _reset_schema(url: str) -> None:
+    """Xóa sạch schema để migrate từ đầu. Không dùng `downgrade base`: downgrade 0003 chép dữ liệu Phase 2
+    do test đồng thời commit sang `phase2_archive` (T-120) thay vì bỏ; đường downgrade kiểm ở
+    `test_migration_rollback.py`."""
+    engine = create_async_engine(url, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("DROP SCHEMA IF EXISTS phase2_archive CASCADE"))
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+    finally:
+        await engine.dispose()
+
+
 async def _ensure_database(url: str) -> None:
     target = make_url(url)
     admin = create_async_engine(target.set(database="postgres"), isolation_level="AUTOCOMMIT")
@@ -39,7 +53,7 @@ async def _ensure_database(url: str) -> None:
         await admin.dispose()
 
 
-def _alembic_config() -> Config:
+def alembic_config() -> Config:
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "alembic"))
     return cfg
@@ -50,9 +64,8 @@ def migrated_database_url() -> str:
     asyncio.run(_ensure_database(TEST_DATABASE_URL))
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     get_settings.cache_clear()
-    cfg = _alembic_config()
-    command.downgrade(cfg, "base")
-    command.upgrade(cfg, "head")
+    asyncio.run(_reset_schema(TEST_DATABASE_URL))
+    command.upgrade(alembic_config(), "head")
     return TEST_DATABASE_URL
 
 

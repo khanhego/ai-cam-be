@@ -1,0 +1,14 @@
+{
+  "_comment": "Yêu cầu trả bị hủy trước khi kiện về (04 §1 SPXTST0000045: lần 1 ACCEPTED, test đổi sang CANCELLED bằng set_return_status).",
+  "return_sn": "2410RTTST045",
+  "order_sn": "2410TST00045",
+  "status": "CANCELLED",
+  "needs_logistics": true,
+  "tracking_number": "SPXRTTST000045",
+  "reason": "CHANGE_MIND",
+  "text_reason": "Không muốn trả nữa",
+  "return_seller_due_date_offset_hours": 72,
+  "item": [
+    {"item_id": 9001, "model_id": 90011, "name": "Áo thun basic", "model_name": "Đen / L", "item_sku": "AT-DEN-L", "amount": 2}
+  ]
+}

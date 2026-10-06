@@ -13,20 +13,22 @@ NO_TRACKING_STATUSES = frozenset({"UNPAID", "CANCELLED", "IN_CANCEL", ""})
 
 _ORDER_HINT = {
     "SHIPPED": "HANDED_OVER",
-    "TO_RETURN": "HANDED_OVER",
+    "TO_RETURN": "RETURN_EXPECTED",  # Phase 2 (DEC-259)
     "TO_CONFIRM_RECEIVE": "DELIVERED",
     "COMPLETED": "DELIVERED",
 }
 _LOGISTICS_HINT = {
     "LOGISTICS_PICKUP_DONE": "HANDED_OVER",
-    "LOGISTICS_DELIVERY_FAILED": "HANDED_OVER",  # đã rời kho, giao không thành (hoàn: Phase 2)
+    "LOGISTICS_DELIVERY_FAILED": "RETURN_EXPECTED",  # giao thất bại → hoàn về (DEC-259)
+    "LOGISTICS_COD_REJECTED": "RETURN_EXPECTED",  # boom COD
     "LOGISTICS_LOST": "HANDED_OVER",
     "LOGISTICS_DELIVERY_DONE": "DELIVERED",
 }
-_RANK = {None: 0, "HANDED_OVER": 1, "DELIVERED": 2}
+# DEC-259: tín hiệu hoàn xếp trên DELIVERED (giao thành công rồi mới bị trả vẫn là hoàn).
+_RANK = {None: 0, "HANDED_OVER": 1, "DELIVERED": 2, "RETURN_EXPECTED": 3}
 
 
 def warehouse_hint(order_status: str, logistics_status: str) -> str | None:
-    """Lấy mốc xa nhất giữa trạng thái đơn và trạng thái kiện: HANDED_OVER | DELIVERED | None."""
+    """Mốc xa nhất giữa trạng thái đơn và kiện: HANDED_OVER | DELIVERED | RETURN_EXPECTED | None."""
     a, b = _ORDER_HINT.get(order_status), _LOGISTICS_HINT.get(logistics_status)
     return a if _RANK[a] >= _RANK[b] else b

@@ -1,8 +1,9 @@
-"""API-30 tra cứu kiện, API-31 chi tiết kiện (02 §6.2; FR-07.01..03). Chỉ đọc."""
+"""API-30 tra cứu kiện, API-31 chi tiết kiện (02 §6.2; FR-07.01..03; Phase 2 mở rộng FR-07.01, 07.02,
+FR-02.09, 02.11). Chỉ đọc."""
 
 import uuid
 from datetime import date, datetime, time, timedelta
-from typing import Literal
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
@@ -10,16 +11,31 @@ from sqlalchemy import ColumnElement, and_, any_, exists, func, literal, or_, se
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from aicam.core import clock
 from aicam.core.errors import AppError
 from aicam.core.pagination import Page
-from aicam.modules.media.models import Clip
+from aicam.core.settings import Settings
+from aicam.modules.claims.models import Claim
+from aicam.modules.media import protection
+from aicam.modules.media import snapshots as snapshot_media
+from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.orders.models import Order, OrderItem, Package, Shop, StatusHistory
+from aicam.modules.orders.service import MANUAL_TRANSITIONS
+from aicam.modules.reconciliation.models import ReconAlert
+from aicam.modules.reconciliation.service import RULE_BR
+from aicam.modules.returns import views as return_views
+from aicam.modules.returns.models import OPEN_CASE_STATUSES, ReturnCase, ReturnCasePackage
+from aicam.modules.returns.schemas import ReturnCaseItem
+from aicam.modules.sessions import inspection
 from aicam.modules.sessions.models import PackSession
+from aicam.modules.sessions.schemas import InspectionLineOut, InspectionOut
 from aicam.modules.settings import service as settings_service
 from aicam.modules.stations.models import Station
 from aicam.modules.users.models import User
 
 MAX_RANGE_DAYS = 92
+CORRECTION_WINDOW = timedelta(days=7)  # API-113 (FR-04.11)
+CORRECTORS = ("ADMIN", "SUPERVISOR")
 
 
 # ---------------------------------------------------------------- schema
@@ -28,6 +44,13 @@ MAX_RANGE_DAYS = 92
 class LastSession(BaseModel):
     station_name: str
     ended_at: datetime | None
+
+
+class ReturnCaseBrief(BaseModel):
+    id: uuid.UUID
+    code: str
+    kind: str
+    status: str
 
 
 class PackageItem(BaseModel):
@@ -39,6 +62,8 @@ class PackageItem(BaseModel):
     source: Literal["API", "CSV"] | None
     last_session: LastSession | None
     has_clip: bool
+    is_placeholder: bool  # kiện tạm của hàng hoàn chưa xác định (02 §6.2 API-30, DEC-260) — FE hiện chip
+    return_case: ReturnCaseBrief | None  # 02 §6.2 API-30 mở rộng: hồ sơ hàng hoàn của kiện
 
 
 class ItemDetail(BaseModel):
@@ -58,6 +83,15 @@ class OrderDetail(BaseModel):
     items: list[ItemDetail]
 
 
+class Protection(BaseModel):
+    """02 §6.2 API-31 v0.2 (DEC-245, ADR-009): lý do clip / ảnh không bị retention xóa."""
+
+    reasons: list[Literal["CLAIM", "RETURN_CASE", "HELD"]]
+    claims: list[str]
+    return_cases: list[str]
+    until: datetime | None
+
+
 class ClipDetail(BaseModel):
     id: uuid.UUID
     camera_role: str
@@ -68,6 +102,53 @@ class ClipDetail(BaseModel):
     retention_until: datetime | None
     deleted_at: datetime | None
     flags: list[str]
+    protected_by_claim: bool
+    protection: Protection | None
+
+
+class ClaimRef(BaseModel):
+    id: uuid.UUID
+    code: str
+
+
+class CorrectionBy(BaseModel):
+    id: uuid.UUID | None
+    display_name: str
+
+
+class CorrectionBefore(BaseModel):
+    conclusion: str | None
+    note: str
+    lines: list[InspectionLineOut]
+
+
+class InspectionCorrection(BaseModel):
+    """Một lần sửa kết luận (API-113, 02 §6.3 #4, DEC-261)."""
+
+    at: datetime
+    by: CorrectionBy
+    reason: str
+    before: CorrectionBefore
+
+
+class SessionInspection(InspectionOut):
+    corrections: list[InspectionCorrection]
+    corrected: InspectionCorrection | None  # lần sửa gần nhất (tương thích 02 §6.2 v0.1 `corrected`)
+
+
+class SessionSnapshot(BaseModel):
+    id: uuid.UUID
+    kind: Literal["MANUAL", "PACK_CLOSE"]
+    taken_at: datetime
+    url: str | None  # null khi ảnh đã xóa theo lưu trữ
+    status: Literal["READY", "DELETED"]
+    protection: Protection | None
+
+
+class PackSnapshot(BaseModel):
+    id: uuid.UUID
+    url: str | None
+    status: Literal["READY", "DELETED"]
 
 
 class SessionDetail(BaseModel):
@@ -81,6 +162,32 @@ class SessionDetail(BaseModel):
     cancel_reason: str | None
     note: str | None
     clips: list[ClipDetail]
+    protected_by_claims: list[ClaimRef]
+    # Phase 2 (02 §6.2 API-31 mở rộng).
+    type: Literal["PACK", "RETURN"]
+    operator_name: str | None
+    return_case_id: uuid.UUID | None
+    inspection: SessionInspection | None  # chỉ phiên RETURN
+    can_correct: bool  # API-113: phiên RETURN COMPLETED ≤ 7 ngày, người xem ADMIN / SUPERVISOR
+    snapshots: list[SessionSnapshot]  # ảnh chụp tay (phiên RETURN)
+    pack_snapshot: PackSnapshot | None  # phiên PACK: ảnh Cam 1 lúc đóng gói (J-17)
+
+
+class ReconAlertBrief(BaseModel):
+    id: uuid.UUID
+    rule: str
+    br: str
+    severity: str
+    status: str
+    detected_at: datetime
+    closed_at: datetime | None
+
+
+class PackageClaimBrief(BaseModel):
+    id: uuid.UUID
+    code: str
+    type: str
+    status: str
 
 
 class TimelineItem(BaseModel):
@@ -100,6 +207,12 @@ class PackageDetail(BaseModel):
     order: OrderDetail | None
     sessions: list[SessionDetail]
     timeline: list[TimelineItem]
+    # Phase 2 (02 §6.2 API-31 mở rộng).
+    is_placeholder: bool
+    return_cases: list[ReturnCaseItem]
+    recon_alerts: list[ReconAlertBrief]
+    claims: list[PackageClaimBrief]
+    allowed_status_targets: list[str]  # đích "Điều chỉnh trạng thái" (API-122); rỗng → FE ẩn menu
 
 
 # ---------------------------------------------------------------- API-30
@@ -132,6 +245,7 @@ async def search(
     warehouse_status: str | None = None,
     session_status: str | None = None,
     session_flag: str | None = None,
+    session_type: str | None = None,
     source: str | None = None,
 ) -> Page[PackageItem]:
     """Lọc theo phiên (EXISTS): `session_status` theo ngày kết thúc, `session_flag` theo ngày bắt đầu (khớp
@@ -140,8 +254,18 @@ async def search(
     conditions: list[ColumnElement[bool]] = []
     if q and q.strip():
         code = q.strip().upper()
+        # Phase 2: mã vận đơn chiều về / mã hồ sơ `HH-` của hồ sơ hàng hoàn chứa kiện (02 §6.2 API-30).
+        by_case = exists().where(
+            ReturnCasePackage.package_id == Package.id,
+            ReturnCase.id == ReturnCasePackage.return_case_id,
+            or_(func.upper(ReturnCase.return_tracking_number) == code, func.upper(ReturnCase.code) == code),
+        )
         conditions.append(
-            or_(func.upper(Package.tracking_number) == code, func.upper(Order.platform_order_sn) == code)
+            or_(
+                func.upper(Package.tracking_number) == code,
+                func.upper(Order.platform_order_sn) == code,
+                by_case,
+            )
         )
     if warehouse_status:
         conditions.append(Package.warehouse_status == warehouse_status)
@@ -155,6 +279,8 @@ async def search(
         session_conds.append(PackSession.status == session_status)
     if session_flag:
         session_conds.append(literal(session_flag) == any_(PackSession.flags))
+    if session_type:
+        session_conds.append(PackSession.type == session_type)
     if date_from or date_to:
         when = (
             PackSession.ended_at
@@ -182,6 +308,7 @@ async def search(
     ids = [p.id for p, _ in rows]
     last: dict[uuid.UUID, LastSession] = {}
     with_clip: set[uuid.UUID] = set()
+    cases = await _case_briefs(db, ids)
     if ids:
         latest = (
             await db.execute(
@@ -213,16 +340,214 @@ async def search(
             source=o.source if o else None,
             last_session=last.get(p.id),
             has_clip=p.id in with_clip,
+            is_placeholder=p.is_placeholder,
+            return_case=cases.get(p.id),
         )
         for p, o in rows
     ]
     return Page(items=items, page=page, page_size=page_size, total=total)
 
 
+async def _case_briefs(db: AsyncSession, package_ids: list[uuid.UUID]) -> dict[uuid.UUID, ReturnCaseBrief]:
+    """Hồ sơ hàng hoàn đại diện mỗi kiện: hồ sơ mở trước, rồi hồ sơ mới nhất (bỏ hồ sơ đã gộp / hủy nếu còn
+    hồ sơ khác)."""
+    if not package_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(ReturnCasePackage.package_id, ReturnCase)
+            .join(ReturnCase, ReturnCase.id == ReturnCasePackage.return_case_id)
+            .where(ReturnCasePackage.package_id.in_(package_ids))
+            .order_by(
+                ReturnCasePackage.package_id,
+                ReturnCase.status.in_(OPEN_CASE_STATUSES).desc(),
+                (ReturnCase.status == "CANCELLED").asc(),
+                ReturnCase.created_at.desc(),
+            )
+            .ext(distinct_on(ReturnCasePackage.package_id))
+        )
+    ).all()
+    return {pid: ReturnCaseBrief(id=c.id, code=c.code, kind=c.kind, status=c.status) for pid, c in rows}
+
+
 # ---------------------------------------------------------------- API-31
 
 
-async def detail(db: AsyncSession, package_id: uuid.UUID) -> PackageDetail:
+def _snapshot_protection(info: protection.SessionProtection | None) -> Protection | None:
+    """Ảnh theo bảo vệ của phiên (02 §6.2 API-31 "snapshots[] có cùng protection")."""
+    if info is None or not (info.claims or info.return_cases):
+        return None
+    reasons: list[Literal["CLAIM", "RETURN_CASE", "HELD"]] = []
+    if info.claims:
+        reasons.append("CLAIM")
+    if info.return_cases:
+        reasons.append("RETURN_CASE")
+    forever = bool(info.claims) or info.case_forever
+    return Protection(
+        reasons=reasons,
+        claims=[code for _, code in info.claims],
+        return_cases=list(info.return_cases),
+        until=None if forever else info.case_until,
+    )
+
+
+def _corrections(raw: list[dict[str, Any]] | None) -> list[InspectionCorrection]:
+    out = []
+    for entry in raw or []:
+        by = entry.get("by") or {}
+        before = entry.get("before") or {}
+        out.append(
+            InspectionCorrection(
+                at=datetime.fromisoformat(str(entry["at"]).replace("Z", "+00:00")),
+                by=CorrectionBy(id=by.get("id"), display_name=str(by.get("display_name") or "")),
+                reason=str(entry.get("reason") or ""),
+                before=CorrectionBefore(
+                    conclusion=before.get("conclusion"),
+                    note=str(before.get("note") or ""),
+                    lines=[InspectionLineOut.model_validate(line) for line in before.get("lines") or []],
+                ),
+            )
+        )
+    return out
+
+
+def can_correct(pack: PackSession, role: str) -> bool:
+    """API-113 (FR-04.11): phiên RETURN `COMPLETED`, kết thúc ≤ 7 ngày, người xem ADMIN / SUPERVISOR."""
+    return (
+        role in CORRECTORS
+        and pack.type == "RETURN"
+        and pack.status == "COMPLETED"
+        and pack.ended_at is not None
+        and pack.ended_at >= clock.now() - CORRECTION_WINDOW
+    )
+
+
+async def sessions_out(
+    db: AsyncSession,
+    rows: list[tuple[PackSession, str]],
+    settings: Settings,
+    *,
+    viewer: uuid.UUID,
+    role: str,
+) -> list[SessionDetail]:
+    """`sessions[]` của API-31 (dùng lại cho response API-113): clip + bảo vệ (ADR-009), phiên RETURN có kết
+    luận / lịch sử sửa / ảnh, phiên PACK có ảnh lúc đóng gói. URL ảnh ký theo người xem (10 phút)."""
+    session_ids = [s.id for s, _ in rows]
+    cfg = await settings_service.get(db)
+    clips_by_session: dict[uuid.UUID, list[ClipDetail]] = {sid: [] for sid in session_ids}
+    guarded = await protection.sessions_protection(db, session_ids, clock.now())
+    days = protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)
+    snaps: dict[uuid.UUID, list[Snapshot]] = {sid: [] for sid in session_ids}
+    if session_ids:
+        clips = (
+            await db.scalars(select(Clip).where(Clip.session_id.in_(session_ids)).order_by(Clip.camera_role))
+        ).all()
+        for c in clips:
+            # Clip đã xóa: `retention_until` = ngày bị xóa (FE DEC-76 đọc cho câu "Clip đã bị xóa ngày …");
+            # được bảo vệ vô hạn → null; còn lại theo ADR-009 (DEC-245, DEC-268).
+            info = protection.clip_protection(c, guarded.get(c.session_id), days)
+            clips_by_session[c.session_id].append(
+                ClipDetail(
+                    id=c.id,
+                    camera_role=c.camera_role,
+                    status=c.status,
+                    sha256=c.sha256,
+                    duration_s=float(c.duration_s) if c.duration_s is not None else None,
+                    held=c.held,
+                    retention_until=info.retention_until,
+                    deleted_at=c.deleted_at,
+                    flags=list(c.flags),
+                    protected_by_claim="CLAIM" in info.reasons,
+                    protection=Protection(
+                        reasons=info.reasons,
+                        claims=info.claims,
+                        return_cases=info.return_cases,
+                        until=info.until,
+                    )
+                    if info.reasons
+                    else None,
+                )
+            )
+        for snap in (
+            await db.scalars(
+                select(Snapshot)
+                .where(Snapshot.session_id.in_(session_ids))
+                .order_by(Snapshot.taken_at, Snapshot.id)
+            )
+        ).all():
+            snaps[snap.session_id].append(snap)
+
+    def _url(snap: Snapshot) -> str | None:
+        return snapshot_media.url_for(settings, snap.id, viewer) if snap.status == "READY" else None
+
+    out = []
+    for s, name in rows:
+        manual = [x for x in snaps[s.id] if x.kind == "MANUAL"]
+        pack_close = next((x for x in snaps[s.id] if x.kind == "PACK_CLOSE"), None)
+        inspection_out = None
+        if s.type == "RETURN":
+            base = inspection.inspection_out(s, await inspection.lines_of(db, s.id))
+            history = _corrections(s.inspection_corrections)
+            inspection_out = SessionInspection(
+                **base.model_dump(), corrections=history, corrected=history[-1] if history else None
+            )
+        session_guard = guarded.get(s.id)
+        out.append(
+            SessionDetail(
+                id=s.id,
+                status=s.status,
+                station_name=name,
+                started_at=s.started_at,
+                ended_at=s.ended_at,
+                duration_s=int((s.ended_at - s.started_at).total_seconds()) if s.ended_at else None,
+                flags=list(s.flags),
+                cancel_reason=s.cancel_reason,
+                note=s.note,
+                clips=clips_by_session[s.id],
+                protected_by_claims=[ClaimRef(id=cid, code=code) for cid, code in guarded[s.id].claims],
+                type=s.type,
+                operator_name=s.operator_name,
+                return_case_id=s.return_case_id,
+                inspection=inspection_out,
+                can_correct=can_correct(s, role),
+                snapshots=[
+                    SessionSnapshot(
+                        id=x.id,
+                        kind=x.kind,
+                        taken_at=x.taken_at,
+                        url=_url(x),
+                        status=x.status,
+                        protection=_snapshot_protection(session_guard) if x.status == "READY" else None,
+                    )
+                    for x in manual
+                ],
+                pack_snapshot=PackSnapshot(id=pack_close.id, url=_url(pack_close), status=pack_close.status)
+                if pack_close is not None and s.type == "PACK"
+                else None,
+            )
+        )
+    return out
+
+
+async def session_detail(
+    db: AsyncSession, session_id: uuid.UUID, settings: Settings, *, viewer: uuid.UUID, role: str
+) -> SessionDetail:
+    rows = (
+        await db.execute(
+            select(PackSession, Station.name)
+            .join(Station, Station.id == PackSession.station_id)
+            .where(PackSession.id == session_id)
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    if not rows:
+        raise AppError("NOT_FOUND", "Không tìm thấy phiên.", 404)
+    return (await sessions_out(db, [(s, n) for s, n in rows], settings, viewer=viewer, role=role))[0]
+
+
+async def detail(
+    db: AsyncSession, package_id: uuid.UUID, settings: Settings, *, viewer: uuid.UUID, role: str
+) -> PackageDetail:
     package = await db.get(Package, package_id)
     if package is None:
         raise AppError("NOT_FOUND", "Không tìm thấy kiện hàng.", 404)
@@ -249,7 +574,6 @@ async def detail(db: AsyncSession, package_id: uuid.UUID) -> PackageDetail:
                     for i in items
                 ],
             )
-    cfg = await settings_service.get(db)
     rows = (
         await db.execute(
             select(PackSession, Station.name)
@@ -258,48 +582,7 @@ async def detail(db: AsyncSession, package_id: uuid.UUID) -> PackageDetail:
             .order_by(PackSession.started_at.desc())
         )
     ).all()
-    session_ids = [s.id for s, _ in rows]
-    clips_by_session: dict[uuid.UUID, list[ClipDetail]] = {sid: [] for sid in session_ids}
-    if session_ids:
-        clips = (
-            await db.scalars(select(Clip).where(Clip.session_id.in_(session_ids)).order_by(Clip.camera_role))
-        ).all()
-        for c in clips:
-            # Clip đã xóa: `retention_until` = ngày bị xóa (FE DEC-76 đọc cho câu "Clip đã bị xóa ngày …").
-            if c.status == "DELETED":
-                until = c.deleted_at
-            elif c.held:
-                until = None
-            else:
-                until = c.end_at + timedelta(days=cfg.retention_clip_days)
-            clips_by_session[c.session_id].append(
-                ClipDetail(
-                    id=c.id,
-                    camera_role=c.camera_role,
-                    status=c.status,
-                    sha256=c.sha256,
-                    duration_s=float(c.duration_s) if c.duration_s is not None else None,
-                    held=c.held,
-                    retention_until=until,
-                    deleted_at=c.deleted_at,
-                    flags=list(c.flags),
-                )
-            )
-    sessions = [
-        SessionDetail(
-            id=s.id,
-            status=s.status,
-            station_name=name,
-            started_at=s.started_at,
-            ended_at=s.ended_at,
-            duration_s=int((s.ended_at - s.started_at).total_seconds()) if s.ended_at else None,
-            flags=list(s.flags),
-            cancel_reason=s.cancel_reason,
-            note=s.note,
-            clips=clips_by_session[s.id],
-        )
-        for s, name in rows
-    ]
+    sessions = await sessions_out(db, [(s, n) for s, n in rows], settings, viewer=viewer, role=role)
     history = (
         await db.execute(
             select(StatusHistory, User.display_name)
@@ -318,6 +601,39 @@ async def detail(db: AsyncSession, package_id: uuid.UUID) -> PackageDetail:
         )
         for h, display in history
     ]
+    case_ids = set(
+        (
+            await db.scalars(
+                select(ReturnCasePackage.return_case_id).where(ReturnCasePackage.package_id == package.id)
+            )
+        ).all()
+    )
+    case_ids |= {s.return_case_id for s, _ in rows if s.return_case_id is not None}
+    cases = (
+        list(
+            (
+                await db.scalars(
+                    select(ReturnCase)
+                    .where(ReturnCase.id.in_(case_ids))
+                    .order_by(ReturnCase.created_at.desc())
+                )
+            ).all()
+        )
+        if case_ids
+        else []
+    )
+    alerts = (
+        await db.scalars(
+            select(ReconAlert)
+            .where(ReconAlert.package_id == package.id)
+            .order_by(ReconAlert.detected_at.desc())
+        )
+    ).all()
+    claims = (
+        await db.scalars(
+            select(Claim).where(Claim.package_id == package.id).order_by(Claim.created_at.desc())
+        )
+    ).all()
     return PackageDetail(
         id=package.id,
         tracking_number=package.tracking_number,
@@ -327,4 +643,20 @@ async def detail(db: AsyncSession, package_id: uuid.UUID) -> PackageDetail:
         order=order_out,
         sessions=sessions,
         timeline=timeline,
+        is_placeholder=package.is_placeholder,
+        return_cases=await return_views.items_of(db, cases, settings.tz_display),
+        recon_alerts=[
+            ReconAlertBrief(
+                id=a.id,
+                rule=a.rule,
+                br=RULE_BR[a.rule],
+                severity=a.severity,
+                status=a.status,
+                detected_at=a.detected_at,
+                closed_at=a.closed_at,
+            )
+            for a in alerts
+        ],
+        claims=[PackageClaimBrief(id=c.id, code=c.code, type=c.type, status=c.status) for c in claims],
+        allowed_status_targets=list(MANUAL_TRANSITIONS.get(package.warehouse_status, ())),
     )

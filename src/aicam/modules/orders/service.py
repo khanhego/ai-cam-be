@@ -8,10 +8,14 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
+from aicam.modules.media import jobs
 from aicam.modules.orders.models import Order, OrderItem, Package, StatusHistory
 from aicam.modules.platforms.base import CANCELLED_STATUSES, PlatformItem, PlatformOrder
 
-# 01 §7 v0.3 (DEC-24). Khóa: (từ, tới).
+_RETURN_OPENABLE = ("RETURN_EXPECTED", "RETURN_MISSING", "HANDED_OVER", "DELIVERED", "NEW")
+_RETURN_RECEIVED = ("RETURN_RECEIVED_OK", "RETURN_RECEIVED_ISSUE")
+
+# 01 §7 v0.3 (DEC-24) + Phase 2. Khóa: (từ, tới).
 ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     {
         ("NEW", "PACKING"),  # quét mở phiên
@@ -22,8 +26,40 @@ ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
         ("PACKED", "CANCELLED_AFTER_PACK"),  # sàn hủy sau khi đóng
         ("NEW", "CANCELLED"),  # sàn hủy trước khi đóng
         ("HANDED_OVER", "DELIVERED"),  # sàn báo giao thành công
+        # ---- Phase 2 (02 §5.3 v0.4, 01 §7.1)
+        ("NEW", "HANDED_OVER"),  # điều chỉnh tay (L6)
+        ("CANCELLED_AFTER_PACK", "HANDED_OVER"),  # điều chỉnh tay (DEC-258)
+        ("PACKING", "CANCELLED_AFTER_PACK"),  # đóng phiên khi đơn đã hủy (BR-21)
+        ("HANDED_OVER", "RETURN_EXPECTED"),  # giao thất bại / sàn hoàn về
+        ("DELIVERED", "RETURN_EXPECTED"),  # yêu cầu trả có kiện về
+        ("NEW", "RETURN_EXPECTED"),  # đơn trước khi dùng hệ thống (DEC-254)
+        ("RETURN_EXPECTED", "DELIVERED"),  # sàn hủy yêu cầu / chỉnh tay / khách trả một phần
+        ("RETURN_EXPECTED", "HANDED_OVER"),  # giao lại sau thất bại / khách trả một phần
+        ("RETURN_MISSING", "DELIVERED"),  # chỉnh tay / khách trả một phần
+        ("RETURN_MISSING", "HANDED_OVER"),  # khách trả một phần (DEC-271, R3-3)
+        ("RETURN_EXPECTED", "RETURN_MISSING"),  # BR-12
+        ("RETURN_MISSING", "RETURN_EXPECTED"),  # chỉnh tay gia hạn (DEC-255)
+        *((src, "RETURN_INSPECTING") for src in _RETURN_OPENABLE),  # mở phiên hoàn
+        *(
+            (src, dst) for src in _RETURN_OPENABLE for dst in _RETURN_RECEIVED if src != "NEW"
+        ),  # DEC-249, R2-9
+        ("RETURN_INSPECTING", "RETURN_RECEIVED_OK"),
+        ("RETURN_INSPECTING", "RETURN_RECEIVED_ISSUE"),
+        *(("RETURN_INSPECTING", src) for src in _RETURN_OPENABLE),  # hủy / bỏ dở → trạng thái trước
+        ("RETURN_RECEIVED_OK", "RETURN_RECEIVED_ISSUE"),  # sửa kết luận (API-113)
+        ("RETURN_RECEIVED_ISSUE", "RETURN_RECEIVED_OK"),
     }
 )
+
+# Điều chỉnh tay API-122 (01 §7.1 "Điều chỉnh tay", FR-06.05): từ → các đích được phép.
+MANUAL_TRANSITIONS: dict[str, tuple[str, ...]] = {
+    "NEW": ("HANDED_OVER",),
+    "PACKED": ("HANDED_OVER",),
+    "CANCELLED_AFTER_PACK": ("HANDED_OVER",),
+    "HANDED_OVER": ("DELIVERED",),
+    "RETURN_MISSING": ("RETURN_EXPECTED", "DELIVERED"),
+    "RETURN_EXPECTED": ("DELIVERED",),
+}
 
 
 class InvalidTransition(Exception):
@@ -47,18 +83,20 @@ async def transition(
         return False
     if (package.warehouse_status, to_status) not in ALLOWED_TRANSITIONS:
         raise InvalidTransition(package.warehouse_status, to_status)
+    now = clock.now()
     session.add(
         StatusHistory(
             package_id=package.id,
             source=source,
             from_status=package.warehouse_status,
             to_status=to_status,
-            at=clock.now(),
+            at=now,
             actor_user_id=actor_user_id,
             actor_label=actor_label,
         )
     )
     package.warehouse_status = to_status
+    package.status_changed_at = now  # DEC-225: mốc cho BR-12, BR-14
     return True
 
 
@@ -78,6 +116,16 @@ async def lock_orders(session: AsyncSession, platform_order_sns: Sequence[str]) 
     không khóa chéo nhau."""
     for sn in sorted(set(platform_order_sns)):
         await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"order:{sn}"})
+
+
+async def try_lock_order(session: AsyncSession, platform_order_sn: str) -> bool:
+    """Khóa `order:{sn}` không chờ (G3 SM-F5 / SM-F6): dùng khi đã giữ khóa station / hồ sơ / kiện — đã
+    giữ (cùng transaction, khóa advisory tái nhập) hoặc chưa ai giữ → True; transaction khác đang giữ → False
+    (không chờ → không khóa chéo với đường lấy đơn trước)."""
+    got = await session.scalar(
+        text("SELECT pg_try_advisory_xact_lock(hashtext(:k))"), {"k": f"order:{platform_order_sn}"}
+    )
+    return bool(got)
 
 
 class CsvWriteConflict(Exception):
@@ -104,11 +152,57 @@ async def create_unverified_package(session: AsyncSession, code: str) -> Package
 
 
 async def apply_platform_cancel(session: AsyncSession, package: Package) -> bool:
-    """Sàn hủy đơn: kiện NEW → CANCELLED, PACKED → CANCELLED_AFTER_PACK (EX-P10); trạng thái khác giữ."""
+    """Sàn hủy đơn: kiện NEW → CANCELLED, PACKED → CANCELLED_AFTER_PACK (EX-P10); trạng thái khác giữ.
+
+    Kiện `PACKING` (BR-21): không khóa kiện / phiên trong transaction đồng bộ — sau commit đẩy task
+    `sessions.flag_order_cancelled` (transaction riêng: station → kiện, DEC-266)."""
+    if package.warehouse_status == "PACKING":
+        jobs.enqueue_flag_order_cancelled(session, package.id)
+        return False
     target = {"NEW": "CANCELLED", "PACKED": "CANCELLED_AFTER_PACK"}.get(package.warehouse_status)
     if target is None:
         return False
     return await transition(session, package, target, source="PLATFORM", actor_label="Sàn")
+
+
+def _item_key(sku: str | None, name: str, variation: str | None) -> tuple[str, str, str]:
+    return ((sku or "").strip().upper(), name.strip().lower(), (variation or "").strip().lower())
+
+
+async def sync_items(
+    session: AsyncSession, order_id: uuid.UUID, items: Sequence[PlatformItem], *, with_image: bool
+) -> None:
+    """Ghi dòng đơn giữ nguyên `order_item.id` khi dòng không đổi (sku + tên + phân loại).
+
+    Phase 2: dòng kiểm phiên hoàn (`inspection_line`) và yêu cầu trả (`requested_items`) trỏ `order_item_id`
+    — xóa / tạo lại mọi dòng ở mỗi lần đồng bộ sẽ làm mất liên kết giữa phiên đang mở (DEC-307).
+    """
+    existing = list(
+        (
+            await session.scalars(
+                select(OrderItem).where(OrderItem.order_id == order_id).order_by(OrderItem.id)
+            )
+        ).all()
+    )
+    unused = list(existing)
+    for item in items:
+        key = _item_key(item.sku, item.product_name, item.variation)
+        row = next((r for r in unused if _item_key(r.sku, r.product_name, r.variation) == key), None)
+        if row is None:
+            session.add(
+                OrderItem(
+                    order_id=order_id, sku=item.sku, product_name=item.product_name, variation=item.variation,
+                    quantity=item.quantity, image_url=item.image_url if with_image else None,
+                )
+            )  # fmt: skip
+            continue
+        unused.remove(row)
+        row.quantity = item.quantity
+        row.sku, row.product_name, row.variation = item.sku, item.product_name, item.variation
+        if with_image:
+            row.image_url = item.image_url
+    if unused:
+        await session.execute(delete(OrderItem).where(OrderItem.id.in_([r.id for r in unused])))
 
 
 @dataclass
@@ -164,18 +258,7 @@ async def upsert_platform_order(
     order.raw_payload = data.raw
     await session.flush()
 
-    await session.execute(delete(OrderItem).where(OrderItem.order_id == order.id))
-    for item in data.items:
-        session.add(
-            OrderItem(
-                order_id=order.id,
-                sku=item.sku,
-                product_name=item.product_name,
-                variation=item.variation,
-                quantity=item.quantity,
-                image_url=item.image_url,
-            )
-        )
+    await sync_items(session, order.id, data.items, with_image=True)
 
     packages: list[Package] = []
     for code in data.tracking_numbers:
@@ -190,8 +273,21 @@ async def upsert_platform_order(
         packages.append(package)
     if data.is_cancelled:
         # Đơn hủy trên sàn thường không còn mã vận đơn trong dữ liệu sàn → xét mọi kiện đã gắn đơn (EX-P10).
-        linked = (await session.scalars(select(Package).where(Package.order_id == order.id))).all()
-        for package in {p.id: p for p in [*packages, *linked]}.values():
+        # G3 SM-F4: khóa kiện (theo id) + đọc lại trước khi quyết — quét PACK vừa chuyển NEW → PACKING thì
+        # nhánh PACKING (đánh cờ phiên) chạy, không ghi đè PACKING bằng CANCELLED.
+        ids = sorted({p.id for p in packages} | set(
+            (await session.scalars(select(Package.id).where(Package.order_id == order.id))).all()
+        ))  # fmt: skip
+        locked = (
+            await session.scalars(
+                select(Package)
+                .where(Package.id.in_(ids))
+                .order_by(Package.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).all()
+        for package in locked:
             await apply_platform_cancel(session, package)
     await session.flush()
     return UpsertResult(order=order, created=created, packages=packages)
@@ -261,17 +357,7 @@ async def apply_csv_order(
     order.buyer_note = data.buyer_note
     order.csv_import_id = import_id
     await session.flush()
-    await session.execute(delete(OrderItem).where(OrderItem.order_id == order.id))
-    for item in data.items:
-        session.add(
-            OrderItem(
-                order_id=order.id,
-                sku=item.sku,
-                product_name=item.product_name,
-                variation=item.variation,
-                quantity=item.quantity,
-            )
-        )
+    await sync_items(session, order.id, data.items, with_image=False)
     for code in data.tracking_numbers:
         package = await find_package(session, code, for_update=True)
         if package is not None and package.order_id is not None and package.order_id != order.id:

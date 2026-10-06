@@ -1,0 +1,14 @@
+{
+  "_comment": "Khách trả hàng có kiện về (04 §1 dữ liệu SPXTST0000041). Định dạng theo get_return_detail Shopee v2 — chưa đối chiếu Shopee thật (T-3).",
+  "return_sn": "2410RTTST041",
+  "order_sn": "2410TST00041",
+  "status": "ACCEPTED",
+  "needs_logistics": true,
+  "tracking_number": "SPXRTTST000041",
+  "reason": "ITEM_DAMAGED",
+  "text_reason": "Áo bị rách ở tay",
+  "return_seller_due_date_offset_hours": 72,
+  "item": [
+    {"item_id": 9001, "model_id": 90011, "name": "Áo thun basic", "model_name": "Đen / L", "item_sku": "AT-DEN-L", "amount": 2}
+  ]
+}

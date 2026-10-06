@@ -1,0 +1,14 @@
+{
+  "_comment": "Chỉ hoàn tiền, không có kiện về (04 §1 dữ liệu SPXTST0000044).",
+  "return_sn": "2410RTTST044",
+  "order_sn": "2410TST00044",
+  "status": "REQUESTED",
+  "needs_logistics": false,
+  "tracking_number": "",
+  "reason": "ITEM_MISSING",
+  "text_reason": "Thiếu 1 áo",
+  "return_seller_due_date_offset_hours": 48,
+  "item": [
+    {"item_id": 9001, "model_id": 90011, "name": "Áo thun basic", "model_name": "Đen / L", "item_sku": "AT-DEN-L", "amount": 1}
+  ]
+}

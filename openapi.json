@@ -20,6 +20,97 @@
         "title": "AccountRef",
         "type": "object"
       },
+      "AdjustIn": {
+        "properties": {
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "recon_alert_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recon Alert Id"
+          },
+          "to_status": {
+            "enum": [
+              "NEW",
+              "PACKING",
+              "PACKED",
+              "HANDED_OVER",
+              "DELIVERED",
+              "CANCELLED",
+              "CANCELLED_AFTER_PACK",
+              "RETURN_EXPECTED",
+              "RETURN_INSPECTING",
+              "RETURN_RECEIVED_OK",
+              "RETURN_RECEIVED_ISSUE",
+              "RETURN_MISSING"
+            ],
+            "title": "To Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "to_status",
+          "reason"
+        ],
+        "title": "AdjustIn",
+        "type": "object"
+      },
+      "AdjustOut": {
+        "properties": {
+          "package": {
+            "$ref": "#/components/schemas/AdjustedPackage"
+          },
+          "recon_alert": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReconAlertOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "package",
+          "recon_alert"
+        ],
+        "title": "AdjustOut",
+        "type": "object"
+      },
+      "AdjustedPackage": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "warehouse_status"
+        ],
+        "title": "AdjustedPackage",
+        "type": "object"
+      },
       "AlertOut": {
         "properties": {
           "code": {
@@ -28,7 +119,15 @@
               "ALREADY_PACKED",
               "ALREADY_HANDED_OVER",
               "INVALID_CODE",
-              "PACKED_ELSEWHERE_IN_PROGRESS"
+              "PACKED_ELSEWHERE_IN_PROGRESS",
+              "OPERATOR_REQUIRED",
+              "RETURN_NOT_FOUND",
+              "RETURN_ALREADY_RECEIVED",
+              "RETURN_MULTIPLE_PACKAGES",
+              "NOT_SHIPPED",
+              "RETURN_IN_PROGRESS_ELSEWHERE",
+              "INSPECTION_REQUIRED",
+              "RETURN_CODE_DIFFERENT"
             ],
             "title": "Code",
             "type": "string"
@@ -49,6 +148,42 @@
           "message"
         ],
         "title": "AlertOut",
+        "type": "object"
+      },
+      "AlertPackage": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "platform_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "warehouse_status",
+          "platform_status"
+        ],
+        "title": "AlertPackage",
         "type": "object"
       },
       "ApprovalBrief": {
@@ -223,6 +358,17 @@
             ],
             "title": "Note"
           },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
           "session_id": {
             "anyOf": [
               {
@@ -235,8 +381,23 @@
             ],
             "title": "Session Id"
           },
+          "session_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PACK",
+                  "RETURN"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Type"
+          },
           "station": {
-            "$ref": "#/components/schemas/StationRef"
+            "$ref": "#/components/schemas/aicam__modules__sessions__schemas__StationRef"
           },
           "status": {
             "enum": [
@@ -674,7 +835,8 @@
             "enum": [
               "OUT_OF_STOCK",
               "WRONG_SCAN",
-              "OTHER"
+              "OTHER",
+              "NOT_A_RETURN"
             ],
             "title": "Reason",
             "type": "string"
@@ -684,6 +846,755 @@
           "reason"
         ],
         "title": "CancelIn",
+        "type": "object"
+      },
+      "CaseRef": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code"
+        ],
+        "title": "CaseRef",
+        "type": "object"
+      },
+      "ClaimBrief": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "status"
+        ],
+        "title": "ClaimBrief",
+        "type": "object"
+      },
+      "ClaimCreateIn": {
+        "description": "API-131.",
+        "properties": {
+          "counterparty": {
+            "enum": [
+              "PLATFORM",
+              "CARRIER"
+            ],
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "recon_alert_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recon Alert Id"
+          },
+          "return_case_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Case Id"
+          },
+          "type": {
+            "enum": [
+              "DAMAGED",
+              "MISSING_ITEM",
+              "WRONG_ITEM",
+              "EMPTY_BOX",
+              "OTHER",
+              "BUYER_CLAIM",
+              "LOST_IN_TRANSIT"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "type",
+          "counterparty"
+        ],
+        "title": "ClaimCreateIn",
+        "type": "object"
+      },
+      "ClaimDetail": {
+        "properties": {
+          "allowed_transitions": {
+            "items": {
+              "enum": [
+                "NEW",
+                "SUBMITTED",
+                "WAITING",
+                "WON",
+                "LOST",
+                "CLOSED"
+              ],
+              "type": "string"
+            },
+            "title": "Allowed Transitions",
+            "type": "array"
+          },
+          "close_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Close Reason"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "counterparty": {
+            "enum": [
+              "PLATFORM",
+              "CARRIER"
+            ],
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deadline_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At"
+          },
+          "deadline_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PLATFORM",
+                  "DEFAULT",
+                  "MANUAL"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Source"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceOut"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "enum": [
+                "NO_PACK_CLIP",
+                "PACK_CLIP_DELETED",
+                "RETURN_CLIP_PENDING"
+              ],
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/NoteOut"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimOrder"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "other_sessions": {
+            "items": {
+              "$ref": "#/components/schemas/OtherSession"
+            },
+            "title": "Other Sessions",
+            "type": "array"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "package": {
+            "$ref": "#/components/schemas/ClaimPackage"
+          },
+          "platform_claim_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Claim Ref"
+          },
+          "recovered_amount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovered Amount"
+          },
+          "return_case": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReturnCase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "enum": [
+              "AUTO_RETURN",
+              "MANUAL",
+              "RECON",
+              "LEGACY_HOLD"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "NEW",
+              "SUBMITTED",
+              "WAITING",
+              "WON",
+              "LOST",
+              "CLOSED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "DAMAGED",
+              "MISSING_ITEM",
+              "WRONG_ITEM",
+              "EMPTY_BOX",
+              "OTHER",
+              "BUYER_CLAIM",
+              "LOST_IN_TRANSIT"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "type",
+          "counterparty",
+          "status",
+          "source",
+          "version",
+          "package",
+          "order",
+          "return_case",
+          "owner",
+          "deadline_at",
+          "deadline_source",
+          "platform_claim_ref",
+          "recovered_amount",
+          "close_reason",
+          "created_at",
+          "closed_at",
+          "evidence",
+          "other_sessions",
+          "missing",
+          "notes",
+          "allowed_transitions"
+        ],
+        "title": "ClaimDetail",
+        "type": "object"
+      },
+      "ClaimListItem": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "counterparty": {
+            "enum": [
+              "PLATFORM",
+              "CARRIER"
+            ],
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deadline_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At"
+          },
+          "due_soon": {
+            "title": "Due Soon",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimOrderBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "overdue": {
+            "title": "Overdue",
+            "type": "boolean"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "package": {
+            "$ref": "#/components/schemas/ClaimPackageBrief"
+          },
+          "source": {
+            "enum": [
+              "AUTO_RETURN",
+              "MANUAL",
+              "RECON",
+              "LEGACY_HOLD"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "NEW",
+              "SUBMITTED",
+              "WAITING",
+              "WON",
+              "LOST",
+              "CLOSED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "DAMAGED",
+              "MISSING_ITEM",
+              "WRONG_ITEM",
+              "EMPTY_BOX",
+              "OTHER",
+              "BUYER_CLAIM",
+              "LOST_IN_TRANSIT"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "type",
+          "counterparty",
+          "status",
+          "source",
+          "package",
+          "order",
+          "owner",
+          "deadline_at",
+          "due_soon",
+          "overdue",
+          "created_at"
+        ],
+        "title": "ClaimListItem",
+        "type": "object"
+      },
+      "ClaimOrder": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "platform_order_sn": {
+            "title": "Platform Order Sn",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform_order_sn",
+          "id"
+        ],
+        "title": "ClaimOrder",
+        "type": "object"
+      },
+      "ClaimOrderBrief": {
+        "properties": {
+          "platform_order_sn": {
+            "title": "Platform Order Sn",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform_order_sn"
+        ],
+        "title": "ClaimOrderBrief",
+        "type": "object"
+      },
+      "ClaimPackage": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "warehouse_status"
+        ],
+        "title": "ClaimPackage",
+        "type": "object"
+      },
+      "ClaimPackageBrief": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number"
+        ],
+        "title": "ClaimPackageBrief",
+        "type": "object"
+      },
+      "ClaimPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimListItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "status_counts": {
+            "$ref": "#/components/schemas/StatusCounts"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total",
+          "status_counts"
+        ],
+        "title": "ClaimPage",
+        "type": "object"
+      },
+      "ClaimPatchIn": {
+        "description": "API-133: `version` bắt buộc; trường để null / bỏ = không đổi (02b-admin `ClaimPatch`).",
+        "properties": {
+          "deadline_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At"
+          },
+          "owner_user_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owner User Id"
+          },
+          "platform_claim_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Claim Ref"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "recovered_amount": {
+            "anyOf": [
+              {
+                "maximum": 10000000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovered Amount"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "NEW",
+                  "SUBMITTED",
+                  "WAITING",
+                  "WON",
+                  "LOST",
+                  "CLOSED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "ClaimPatchIn",
+        "type": "object"
+      },
+      "ClaimRef": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code"
+        ],
+        "title": "ClaimRef",
+        "type": "object"
+      },
+      "ClaimReturnCase": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "FAILED_DELIVERY",
+              "BUYER_RETURN",
+              "REFUND_ONLY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "return_tracking_number"
+        ],
+        "title": "ClaimReturnCase",
         "type": "object"
       },
       "ClipDetail": {
@@ -731,6 +1642,20 @@
             "title": "Id",
             "type": "string"
           },
+          "protected_by_claim": {
+            "title": "Protected By Claim",
+            "type": "boolean"
+          },
+          "protection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Protection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "retention_until": {
             "anyOf": [
               {
@@ -768,9 +1693,200 @@
           "held",
           "retention_until",
           "deleted_at",
-          "flags"
+          "flags",
+          "protected_by_claim",
+          "protection"
         ],
         "title": "ClipDetail",
+        "type": "object"
+      },
+      "ClosedSessionOut": {
+        "description": "`closed_session` của API-11 `SESSION_COMPLETED` (02 §6.2, FR-03.14) / WS `SESSION_AUTO_CLOSED`.",
+        "properties": {
+          "claim_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Code"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "package_status": {
+            "title": "Package Status",
+            "type": "string"
+          },
+          "return_case_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Case Status"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "tracking_number",
+          "flags",
+          "conclusion",
+          "claim_code",
+          "package_status"
+        ],
+        "title": "ClosedSessionOut",
+        "type": "object"
+      },
+      "CorrectIn": {
+        "properties": {
+          "conclusion": {
+            "enum": [
+              "OK",
+              "DAMAGED",
+              "MISSING_ITEM",
+              "WRONG_ITEM",
+              "EMPTY_BOX",
+              "OTHER"
+            ],
+            "title": "Conclusion",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineIn"
+            },
+            "maxItems": 200,
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conclusion",
+          "reason"
+        ],
+        "title": "CorrectIn",
+        "type": "object"
+      },
+      "CorrectionBefore": {
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conclusion",
+          "note",
+          "lines"
+        ],
+        "title": "CorrectionBefore",
+        "type": "object"
+      },
+      "CorrectionBy": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "CorrectionBy",
         "type": "object"
       },
       "DailyOut": {
@@ -915,6 +2031,412 @@
           "percent"
         ],
         "title": "DiskOut",
+        "type": "object"
+      },
+      "EvidenceClip": {
+        "properties": {
+          "camera_role": {
+            "enum": [
+              "CAM1",
+              "CAM2"
+            ],
+            "title": "Camera Role",
+            "type": "string"
+          },
+          "deleted_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deleted At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "READY",
+              "FAILED",
+              "DELETED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "camera_role",
+          "status",
+          "sha256",
+          "deleted_at"
+        ],
+        "title": "EvidenceClip",
+        "type": "object"
+      },
+      "EvidenceIn": {
+        "description": "API-134: thay tập bằng chứng; bỏ bằng chứng tự chọn cần `note` 5–500 (02 §6.3 #10).",
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "session_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "snapshot_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 200,
+            "title": "Snapshot Ids",
+            "type": "array"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "EvidenceIn",
+        "type": "object"
+      },
+      "EvidenceOut": {
+        "properties": {
+          "auto": {
+            "title": "Auto",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "SESSION",
+              "SNAPSHOT"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceSession"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "auto"
+        ],
+        "title": "EvidenceOut",
+        "type": "object"
+      },
+      "EvidencePackCreated": {
+        "description": "API-136 — 202.",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "READY",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "progress"
+        ],
+        "title": "EvidencePackCreated",
+        "type": "object"
+      },
+      "EvidencePackOut": {
+        "description": "API-137 / WS-02 `evidence_pack.updated`.",
+        "properties": {
+          "claim_id": {
+            "format": "uuid",
+            "title": "Claim Id",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "files": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackFiles"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "$ref": "#/components/schemas/PackMissing"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "integer"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "RUNNING",
+              "READY",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "claim_id",
+          "status",
+          "progress",
+          "sha256",
+          "size_bytes",
+          "missing",
+          "files",
+          "expires_at"
+        ],
+        "title": "EvidencePackOut",
+        "type": "object"
+      },
+      "EvidenceSession": {
+        "properties": {
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceClip"
+            },
+            "title": "Clips",
+            "type": "array"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "station_name": {
+            "title": "Station Name",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "status",
+          "station_name",
+          "operator_name",
+          "started_at",
+          "ended_at",
+          "flags",
+          "clips"
+        ],
+        "title": "EvidenceSession",
+        "type": "object"
+      },
+      "EvidenceSnapshot": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "MANUAL",
+              "PACK_CLOSE"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "READY",
+              "DELETED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "taken_at": {
+            "format": "date-time",
+            "title": "Taken At",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "taken_at",
+          "url",
+          "status"
+        ],
+        "title": "EvidenceSnapshot",
         "type": "object"
       },
       "ExportCreated": {
@@ -1355,6 +2877,309 @@
         "title": "ImportPreviewOut",
         "type": "object"
       },
+      "InspectionCorrection": {
+        "description": "Một lần sửa kết luận (API-113, 02 §6.3 #4, DEC-261).",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "before": {
+            "$ref": "#/components/schemas/CorrectionBefore"
+          },
+          "by": {
+            "$ref": "#/components/schemas/CorrectionBy"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "by",
+          "reason",
+          "before"
+        ],
+        "title": "InspectionCorrection",
+        "type": "object"
+      },
+      "InspectionIn": {
+        "description": "API-102 — ghi đè toàn bộ (kiểm độ dài / BR-22 ở service để trả `details.fields`).",
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineIn"
+            },
+            "maxItems": 200,
+            "title": "Lines",
+            "type": "array"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "title": "InspectionIn",
+        "type": "object"
+      },
+      "InspectionLineIn": {
+        "properties": {
+          "condition": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "order_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Item Id"
+          },
+          "quantity_received": {
+            "title": "Quantity Received",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_item_id",
+          "quantity_received"
+        ],
+        "title": "InspectionLineIn",
+        "type": "object"
+      },
+      "InspectionLineOut": {
+        "properties": {
+          "condition": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Condition"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "order_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Item Id"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "quantity_received": {
+            "title": "Quantity Received",
+            "type": "integer"
+          },
+          "quantity_requested": {
+            "title": "Quantity Requested",
+            "type": "integer"
+          },
+          "quantity_sent": {
+            "title": "Quantity Sent",
+            "type": "integer"
+          },
+          "variation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variation"
+          }
+        },
+        "required": [
+          "order_item_id",
+          "product_name",
+          "variation",
+          "image_url",
+          "quantity_sent",
+          "quantity_requested",
+          "quantity_received",
+          "condition",
+          "note"
+        ],
+        "title": "InspectionLineOut",
+        "type": "object"
+      },
+      "InspectionOut": {
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "lines_mode": {
+            "enum": [
+              "FULL",
+              "REFERENCE"
+            ],
+            "title": "Lines Mode",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "saved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved At"
+          }
+        },
+        "required": [
+          "conclusion",
+          "note",
+          "saved_at",
+          "lines_mode",
+          "lines"
+        ],
+        "title": "InspectionOut",
+        "type": "object"
+      },
+      "InspectionSavedOut": {
+        "properties": {
+          "inspection": {
+            "$ref": "#/components/schemas/InspectionOut"
+          }
+        },
+        "required": [
+          "inspection"
+        ],
+        "title": "InspectionSavedOut",
+        "type": "object"
+      },
       "ItemDetail": {
         "properties": {
           "image_url": {
@@ -1410,6 +3235,18 @@
             ],
             "title": "Image Url"
           },
+          "order_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Item Id"
+          },
           "product_name": {
             "title": "Product Name",
             "type": "string"
@@ -1463,6 +3300,299 @@
           "ended_at"
         ],
         "title": "LastSession",
+        "type": "object"
+      },
+      "LinkOrderIn": {
+        "description": "API-112.",
+        "properties": {
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id"
+        ],
+        "title": "LinkOrderIn",
+        "type": "object"
+      },
+      "LinkOrderOut": {
+        "description": "API-112: chi tiết hồ sơ đích (như API-111); `merged_into` = hồ sơ đích khi hồ sơ chưa xác định được gộp\nvào hồ sơ mở của đơn; `merged_claims` = hồ sơ khiếu nại gộp do trùng BR-27.",
+        "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimBrief"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "expected_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Since"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "FAILED_DELIVERY",
+              "BUYER_RETURN",
+              "REFUND_ONLY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "merged_claims": {
+            "items": {
+              "$ref": "#/components/schemas/MergedClaimRef"
+            },
+            "title": "Merged Claims",
+            "type": "array"
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaseRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needs_parcel": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Parcel"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnOrderBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "packages": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnPackageBrief"
+            },
+            "title": "Packages",
+            "type": "array"
+          },
+          "platform_return_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Return Sn"
+          },
+          "platform_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reason_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Label"
+          },
+          "reason_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Text"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "reported_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported At"
+          },
+          "requested_items": {
+            "items": {
+              "$ref": "#/components/schemas/RequestedItem"
+            },
+            "title": "Requested Items",
+            "type": "array"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "seller_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Due At"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnSessionBrief"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "source": {
+            "enum": [
+              "PLATFORM",
+              "WAREHOUSE"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "EXPECTED",
+              "INSPECTING",
+              "PARTIALLY_RECEIVED",
+              "RECEIVED_OK",
+              "RECEIVED_ISSUE",
+              "MISSING",
+              "CANCELLED",
+              "NO_PARCEL"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "waiting_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Days"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "order",
+          "packages",
+          "return_tracking_number",
+          "reason_label",
+          "reported_at",
+          "expected_since",
+          "waiting_days",
+          "received_at",
+          "conclusion",
+          "claims",
+          "merged_into",
+          "platform_return_sn",
+          "platform_status",
+          "needs_parcel",
+          "reason",
+          "reason_text",
+          "seller_due_at",
+          "source",
+          "requested_items",
+          "sessions",
+          "merged_claims"
+        ],
+        "title": "LinkOrderOut",
         "type": "object"
       },
       "LiveCamera": {
@@ -1629,7 +3759,7 @@
           "station": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/StationRef"
+                "$ref": "#/components/schemas/aicam__modules__users__schemas__StationRef"
               },
               {
                 "type": "null"
@@ -1649,6 +3779,24 @@
           "permissions"
         ],
         "title": "MeOut",
+        "type": "object"
+      },
+      "MergedClaimRef": {
+        "properties": {
+          "from": {
+            "title": "From",
+            "type": "string"
+          },
+          "into": {
+            "title": "Into",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "into"
+        ],
+        "title": "MergedClaimRef",
         "type": "object"
       },
       "MismatchOut": {
@@ -1676,6 +3824,102 @@
           "actual"
         ],
         "title": "MismatchOut",
+        "type": "object"
+      },
+      "NoteIn": {
+        "description": "API-135 — 1–1000 ký tự (kiểm sau khi strip ở service).",
+        "properties": {
+          "text": {
+            "maxLength": 1000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "NoteIn",
+        "type": "object"
+      },
+      "NoteOut": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "NOTE",
+              "STATUS_CHANGE",
+              "SYSTEM"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "text",
+          "author",
+          "at"
+        ],
+        "title": "NoteOut",
+        "type": "object"
+      },
+      "OpenSummary": {
+        "properties": {
+          "HIGH": {
+            "default": 0,
+            "title": "High",
+            "type": "integer"
+          },
+          "LOW": {
+            "default": 0,
+            "title": "Low",
+            "type": "integer"
+          },
+          "MEDIUM": {
+            "default": 0,
+            "title": "Medium",
+            "type": "integer"
+          }
+        },
+        "title": "OpenSummary",
+        "type": "object"
+      },
+      "OperatorIn": {
+        "description": "API-101 — strip rồi 2–40 ký tự (kiểm ở service để trả `fields.name`).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "OperatorIn",
         "type": "object"
       },
       "OrderBrief": {
@@ -1769,6 +4013,208 @@
         "title": "OrderDetail",
         "type": "object"
       },
+      "OtherSession": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "status",
+          "started_at"
+        ],
+        "title": "OtherSession",
+        "type": "object"
+      },
+      "PackFiles": {
+        "properties": {
+          "zip": {
+            "title": "Zip",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zip"
+        ],
+        "title": "PackFiles",
+        "type": "object"
+      },
+      "PackMissing": {
+        "properties": {
+          "camera_role": {
+            "enum": [
+              "CAM1",
+              "CAM2"
+            ],
+            "title": "Camera Role",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Id"
+          }
+        },
+        "required": [
+          "session_id",
+          "camera_role",
+          "reason"
+        ],
+        "title": "PackMissing",
+        "type": "object"
+      },
+      "PackReference": {
+        "description": "Phiên PACK hiệu lực của kiện (02 API-10 `pack_reference`); null → cờ `NO_PACK_CLIP`.",
+        "properties": {
+          "clips": {
+            "items": {
+              "$ref": "#/components/schemas/PackReferenceClip"
+            },
+            "title": "Clips",
+            "type": "array"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SnapshotRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "station_name": {
+            "title": "Station Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "ended_at",
+          "station_name",
+          "clips",
+          "snapshot"
+        ],
+        "title": "PackReference",
+        "type": "object"
+      },
+      "PackReferenceClip": {
+        "properties": {
+          "camera_role": {
+            "enum": [
+              "CAM1",
+              "CAM2"
+            ],
+            "title": "Camera Role",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "camera_role",
+          "status"
+        ],
+        "title": "PackReferenceClip",
+        "type": "object"
+      },
+      "PackSnapshot": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "READY",
+              "DELETED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "id",
+          "url",
+          "status"
+        ],
+        "title": "PackSnapshot",
+        "type": "object"
+      },
       "PackageBrief": {
         "properties": {
           "id": {
@@ -1807,12 +4253,59 @@
         "title": "PackageBrief",
         "type": "object"
       },
-      "PackageDetail": {
+      "PackageClaimBrief": {
         "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "type",
+          "status"
+        ],
+        "title": "PackageClaimBrief",
+        "type": "object"
+      },
+      "PackageDetail": {
+        "properties": {
+          "allowed_status_targets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Status Targets",
+            "type": "array"
+          },
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/PackageClaimBrief"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "is_placeholder": {
+            "title": "Is Placeholder",
+            "type": "boolean"
           },
           "order": {
             "anyOf": [
@@ -1834,6 +4327,20 @@
               }
             ],
             "title": "Platform Logistics Status"
+          },
+          "recon_alerts": {
+            "items": {
+              "$ref": "#/components/schemas/ReconAlertBrief"
+            },
+            "title": "Recon Alerts",
+            "type": "array"
+          },
+          "return_cases": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnCaseItem"
+            },
+            "title": "Return Cases",
+            "type": "array"
           },
           "sessions": {
             "items": {
@@ -1870,7 +4377,12 @@
           "verified",
           "order",
           "sessions",
-          "timeline"
+          "timeline",
+          "is_placeholder",
+          "return_cases",
+          "recon_alerts",
+          "claims",
+          "allowed_status_targets"
         ],
         "title": "PackageDetail",
         "type": "object"
@@ -1885,6 +4397,10 @@
             "format": "uuid",
             "title": "Id",
             "type": "string"
+          },
+          "is_placeholder": {
+            "title": "Is Placeholder",
+            "type": "boolean"
           },
           "last_session": {
             "anyOf": [
@@ -1918,6 +4434,16 @@
             ],
             "title": "Platform Status"
           },
+          "return_case": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnCaseBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "source": {
             "anyOf": [
               {
@@ -1950,7 +4476,9 @@
           "platform_status",
           "source",
           "last_session",
-          "has_clip"
+          "has_clip",
+          "is_placeholder",
+          "return_case"
         ],
         "title": "PackageItem",
         "type": "object"
@@ -2129,6 +4657,57 @@
         "title": "PlayUrlOut",
         "type": "object"
       },
+      "Protection": {
+        "description": "02 §6.2 API-31 v0.2 (DEC-245, ADR-009): lý do clip / ảnh không bị retention xóa.",
+        "properties": {
+          "claims": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "CLAIM",
+                "RETURN_CASE",
+                "HELD"
+              ],
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "return_cases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Return Cases",
+            "type": "array"
+          },
+          "until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until"
+          }
+        },
+        "required": [
+          "reasons",
+          "claims",
+          "return_cases",
+          "until"
+        ],
+        "title": "Protection",
+        "type": "object"
+      },
       "QueuedOut": {
         "properties": {
           "queued": {
@@ -2199,12 +4778,42 @@
       },
       "RecentSession": {
         "properties": {
+          "claim_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Code"
+          },
           "clips": {
             "items": {
               "$ref": "#/components/schemas/RecentClip"
             },
             "title": "Clips",
             "type": "array"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
           },
           "ended_at": {
             "anyOf": [
@@ -2242,6 +4851,15 @@
           "tracking_number": {
             "title": "Tracking Number",
             "type": "string"
+          },
+          "type": {
+            "default": "PACK",
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
+            "type": "string"
           }
         },
         "required": [
@@ -2254,6 +4872,217 @@
           "clips"
         ],
         "title": "RecentSession",
+        "type": "object"
+      },
+      "ReconAlertBrief": {
+        "properties": {
+          "br": {
+            "title": "Br",
+            "type": "string"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "rule": {
+            "title": "Rule",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "rule",
+          "br",
+          "severity",
+          "status",
+          "detected_at",
+          "closed_at"
+        ],
+        "title": "ReconAlertBrief",
+        "type": "object"
+      },
+      "ReconAlertOut": {
+        "properties": {
+          "allowed_status_targets": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Status Targets",
+            "type": "array"
+          },
+          "br": {
+            "title": "Br",
+            "type": "string"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "package": {
+            "$ref": "#/components/schemas/AlertPackage"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Resolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rule": {
+            "enum": [
+              "SHIPPED_NOT_PACKED",
+              "CANCELLED_AFTER_PACK",
+              "RETURN_OVERDUE",
+              "RETURN_UNANNOUNCED",
+              "PACKED_NOT_HANDED_OVER",
+              "RETURN_DONE_NOT_RECEIVED",
+              "UNVERIFIED_STALE"
+            ],
+            "title": "Rule",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "HIGH",
+              "MEDIUM",
+              "LOW"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "OPEN",
+              "RESOLVED",
+              "AUTO_RESOLVED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "rule",
+          "br",
+          "severity",
+          "status",
+          "package",
+          "context",
+          "detected_at",
+          "closed_at",
+          "resolution",
+          "allowed_status_targets"
+        ],
+        "title": "ReconAlertOut",
+        "type": "object"
+      },
+      "ReconAlertPage": {
+        "description": "API-120: trang cảnh báo + tổng mở theo mức.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReconAlertOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/SummaryOut"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total",
+          "summary"
+        ],
+        "title": "ReconAlertPage",
+        "type": "object"
+      },
+      "ReconOpen": {
+        "properties": {
+          "HIGH": {
+            "default": 0,
+            "title": "High",
+            "type": "integer"
+          },
+          "LOW": {
+            "default": 0,
+            "title": "Low",
+            "type": "integer"
+          },
+          "MEDIUM": {
+            "default": 0,
+            "title": "Medium",
+            "type": "integer"
+          }
+        },
+        "title": "ReconOpen",
         "type": "object"
       },
       "RefreshIn": {
@@ -2271,6 +5100,1110 @@
           "client"
         ],
         "title": "RefreshIn",
+        "type": "object"
+      },
+      "RequestedItem": {
+        "properties": {
+          "order_item_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Item Id"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "variation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variation"
+          }
+        },
+        "required": [
+          "order_item_id",
+          "product_name",
+          "variation",
+          "quantity"
+        ],
+        "title": "RequestedItem",
+        "type": "object"
+      },
+      "Resolution": {
+        "properties": {
+          "action": {
+            "enum": [
+              "RESOLVE",
+              "ADJUST_STATUS",
+              "OPEN_CLAIM"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolvedBy"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "claim_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Id"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "to_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "To Status"
+          }
+        },
+        "required": [
+          "action",
+          "note",
+          "by",
+          "at",
+          "to_status",
+          "claim_id"
+        ],
+        "title": "Resolution",
+        "type": "object"
+      },
+      "ResolveIn": {
+        "properties": {
+          "note": {
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "title": "ResolveIn",
+        "type": "object"
+      },
+      "ResolvedBy": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "ResolvedBy",
+        "type": "object"
+      },
+      "RetentionImpactOut": {
+        "description": "API-82 (cũng là `details.impact` của 409 `RETENTION_REDUCTION_UNCONFIRMED`).",
+        "properties": {
+          "clip_bytes": {
+            "title": "Clip Bytes",
+            "type": "integer"
+          },
+          "clips": {
+            "title": "Clips",
+            "type": "integer"
+          },
+          "next_run_at": {
+            "format": "date-time",
+            "title": "Next Run At",
+            "type": "string"
+          },
+          "protected_clips": {
+            "title": "Protected Clips",
+            "type": "integer"
+          },
+          "raw_bytes": {
+            "title": "Raw Bytes",
+            "type": "integer"
+          },
+          "raw_hours": {
+            "title": "Raw Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "clips",
+          "clip_bytes",
+          "raw_hours",
+          "raw_bytes",
+          "protected_clips",
+          "next_run_at"
+        ],
+        "title": "RetentionImpactOut",
+        "type": "object"
+      },
+      "ReturnCaseBrief": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status"
+        ],
+        "title": "ReturnCaseBrief",
+        "type": "object"
+      },
+      "ReturnCaseDetail": {
+        "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimBrief"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "expected_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Since"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "FAILED_DELIVERY",
+              "BUYER_RETURN",
+              "REFUND_ONLY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaseRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "needs_parcel": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Parcel"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnOrderBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "packages": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnPackageBrief"
+            },
+            "title": "Packages",
+            "type": "array"
+          },
+          "platform_return_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Return Sn"
+          },
+          "platform_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reason_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Label"
+          },
+          "reason_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Text"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "reported_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported At"
+          },
+          "requested_items": {
+            "items": {
+              "$ref": "#/components/schemas/RequestedItem"
+            },
+            "title": "Requested Items",
+            "type": "array"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "seller_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seller Due At"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnSessionBrief"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "source": {
+            "enum": [
+              "PLATFORM",
+              "WAREHOUSE"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "EXPECTED",
+              "INSPECTING",
+              "PARTIALLY_RECEIVED",
+              "RECEIVED_OK",
+              "RECEIVED_ISSUE",
+              "MISSING",
+              "CANCELLED",
+              "NO_PARCEL"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "waiting_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Days"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "order",
+          "packages",
+          "return_tracking_number",
+          "reason_label",
+          "reported_at",
+          "expected_since",
+          "waiting_days",
+          "received_at",
+          "conclusion",
+          "claims",
+          "merged_into",
+          "platform_return_sn",
+          "platform_status",
+          "needs_parcel",
+          "reason",
+          "reason_text",
+          "seller_due_at",
+          "source",
+          "requested_items",
+          "sessions"
+        ],
+        "title": "ReturnCaseDetail",
+        "type": "object"
+      },
+      "ReturnCaseItem": {
+        "properties": {
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimBrief"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "expected_since": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Since"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "FAILED_DELIVERY",
+              "BUYER_RETURN",
+              "REFUND_ONLY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "merged_into": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaseRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnOrderBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "packages": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnPackageBrief"
+            },
+            "title": "Packages",
+            "type": "array"
+          },
+          "reason_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Label"
+          },
+          "received_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Received At"
+          },
+          "reported_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reported At"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "status": {
+            "enum": [
+              "EXPECTED",
+              "INSPECTING",
+              "PARTIALLY_RECEIVED",
+              "RECEIVED_OK",
+              "RECEIVED_ISSUE",
+              "MISSING",
+              "CANCELLED",
+              "NO_PARCEL"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "waiting_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting Days"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "order",
+          "packages",
+          "return_tracking_number",
+          "reason_label",
+          "reported_at",
+          "expected_since",
+          "waiting_days",
+          "received_at",
+          "conclusion",
+          "claims",
+          "merged_into"
+        ],
+        "title": "ReturnCaseItem",
+        "type": "object"
+      },
+      "ReturnCasePage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnCaseItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "tab_counts": {
+            "$ref": "#/components/schemas/TabCounts"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total",
+          "tab_counts"
+        ],
+        "title": "ReturnCasePage",
+        "type": "object"
+      },
+      "ReturnCaseState": {
+        "description": "`session.return_case` của API-10 (phiên RETURN).",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "FAILED_DELIVERY",
+              "BUYER_RETURN",
+              "REFUND_ONLY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "package_count": {
+            "title": "Package Count",
+            "type": "integer"
+          },
+          "platform_return_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Return Sn"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reason_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Label"
+          },
+          "reason_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Text"
+          },
+          "received_count": {
+            "title": "Received Count",
+            "type": "integer"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "platform_return_sn",
+          "return_tracking_number",
+          "reason",
+          "reason_text",
+          "reason_label",
+          "package_count",
+          "received_count"
+        ],
+        "title": "ReturnCaseState",
+        "type": "object"
+      },
+      "ReturnLookupCase": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "return_tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Tracking Number"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "kind",
+          "status",
+          "return_tracking_number"
+        ],
+        "title": "ReturnLookupCase",
+        "type": "object"
+      },
+      "ReturnLookupItem": {
+        "properties": {
+          "blocked_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Reason"
+          },
+          "can_open": {
+            "title": "Can Open",
+            "type": "boolean"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "platform_order_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Order Sn"
+          },
+          "return_case": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnLookupCase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "package_id",
+          "tracking_number",
+          "platform_order_sn",
+          "warehouse_status",
+          "return_case",
+          "can_open",
+          "blocked_reason"
+        ],
+        "title": "ReturnLookupItem",
+        "type": "object"
+      },
+      "ReturnLookupOut": {
+        "description": "API-104 (02 §6.2).",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnLookupItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "platform_checked": {
+            "title": "Platform Checked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "items",
+          "platform_checked"
+        ],
+        "title": "ReturnLookupOut",
+        "type": "object"
+      },
+      "ReturnOrderBrief": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "platform_order_sn": {
+            "title": "Platform Order Sn",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "platform_order_sn"
+        ],
+        "title": "ReturnOrderBrief",
+        "type": "object"
+      },
+      "ReturnPackageBrief": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "warehouse_status": {
+            "title": "Warehouse Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tracking_number",
+          "warehouse_status"
+        ],
+        "title": "ReturnPackageBrief",
+        "type": "object"
+      },
+      "ReturnSessionBrief": {
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "station_name": {
+            "title": "Station Name",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "package_id",
+          "status",
+          "station_name",
+          "operator_name",
+          "started_at",
+          "ended_at",
+          "conclusion"
+        ],
+        "title": "ReturnSessionBrief",
+        "type": "object"
+      },
+      "ReturnSessionIn": {
+        "description": "API-105: đúng một trong `package_id` / `unidentified_code`; `force_new` cần `note` 5–200 (02 §6.4).",
+        "properties": {
+          "client_scan_id": {
+            "format": "uuid",
+            "title": "Client Scan Id",
+            "type": "string"
+          },
+          "force_new": {
+            "default": false,
+            "title": "Force New",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "unidentified_code": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unidentified Code"
+          }
+        },
+        "required": [
+          "client_scan_id"
+        ],
+        "title": "ReturnSessionIn",
         "type": "object"
       },
       "Roi": {
@@ -2330,6 +6263,19 @@
           "message"
         ],
         "title": "RowErrorOut",
+        "type": "object"
+      },
+      "RunOut": {
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "RunOut",
         "type": "object"
       },
       "SampleRow": {
@@ -2420,6 +6366,16 @@
               }
             ]
           },
+          "closed_session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClosedSessionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "outcome": {
             "enum": [
               "SESSION_OPENED",
@@ -2445,6 +6401,10 @@
       },
       "SessionDetail": {
         "properties": {
+          "can_correct": {
+            "title": "Can Correct",
+            "type": "boolean"
+          },
           "cancel_reason": {
             "anyOf": [
               {
@@ -2498,6 +6458,16 @@
             "title": "Id",
             "type": "string"
           },
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionInspection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "note": {
             "anyOf": [
               {
@@ -2508,6 +6478,53 @@
               }
             ],
             "title": "Note"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "pack_snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protected_by_claims": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimRef"
+            },
+            "title": "Protected By Claims",
+            "type": "array"
+          },
+          "return_case_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Case Id"
+          },
+          "snapshots": {
+            "items": {
+              "$ref": "#/components/schemas/SessionSnapshot"
+            },
+            "title": "Snapshots",
+            "type": "array"
           },
           "started_at": {
             "format": "date-time",
@@ -2521,6 +6538,14 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "type": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
+            "type": "string"
           }
         },
         "required": [
@@ -2533,9 +6558,99 @@
           "flags",
           "cancel_reason",
           "note",
-          "clips"
+          "clips",
+          "protected_by_claims",
+          "type",
+          "operator_name",
+          "return_case_id",
+          "inspection",
+          "can_correct",
+          "snapshots",
+          "pack_snapshot"
         ],
         "title": "SessionDetail",
+        "type": "object"
+      },
+      "SessionInspection": {
+        "properties": {
+          "conclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "OK",
+                  "DAMAGED",
+                  "MISSING_ITEM",
+                  "WRONG_ITEM",
+                  "EMPTY_BOX",
+                  "OTHER"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "corrected": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InspectionCorrection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "corrections": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionCorrection"
+            },
+            "title": "Corrections",
+            "type": "array"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionLineOut"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "lines_mode": {
+            "enum": [
+              "FULL",
+              "REFERENCE"
+            ],
+            "title": "Lines Mode",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "saved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Saved At"
+          }
+        },
+        "required": [
+          "conclusion",
+          "note",
+          "saved_at",
+          "lines_mode",
+          "lines",
+          "corrections",
+          "corrected"
+        ],
+        "title": "SessionInspection",
         "type": "object"
       },
       "SessionOut": {
@@ -2557,6 +6672,16 @@
             "title": "Id",
             "type": "string"
           },
+          "inspection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InspectionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mismatch": {
             "anyOf": [
               {
@@ -2567,8 +6692,53 @@
               }
             ]
           },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "pack_reference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PackReference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "package": {
             "$ref": "#/components/schemas/PackageBrief"
+          },
+          "return_case": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReturnCaseState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshots": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SnapshotOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshots"
           },
           "started_at": {
             "format": "date-time",
@@ -2577,6 +6747,15 @@
           },
           "status": {
             "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "default": "PACK",
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
             "type": "string"
           },
           "warn_at": {
@@ -2598,8 +6777,113 @@
         "title": "SessionOut",
         "type": "object"
       },
+      "SessionSnapshot": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "MANUAL",
+              "PACK_CLOSE"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "protection": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Protection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "READY",
+              "DELETED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "taken_at": {
+            "format": "date-time",
+            "title": "Taken At",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "taken_at",
+          "url",
+          "status",
+          "protection"
+        ],
+        "title": "SessionSnapshot",
+        "type": "object"
+      },
       "SettingsIn": {
         "properties": {
+          "claim_deadline_days": {
+            "anyOf": [
+              {
+                "maximum": 90.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Deadline Days"
+          },
+          "claim_due_soon_hours": {
+            "anyOf": [
+              {
+                "maximum": 168.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Due Soon Hours"
+          },
+          "confirm_reduction": {
+            "default": false,
+            "title": "Confirm Reduction",
+            "type": "boolean"
+          },
+          "handover_warn_hours": {
+            "anyOf": [
+              {
+                "maximum": 168.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Handover Warn Hours"
+          },
           "retention_clip_days": {
             "maximum": 365.0,
             "minimum": 1.0,
@@ -2611,6 +6895,45 @@
             "minimum": 1.0,
             "title": "Retention Raw Days",
             "type": "integer"
+          },
+          "return_abandon_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Abandon Minutes"
+          },
+          "return_missing_days": {
+            "anyOf": [
+              {
+                "maximum": 60.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Missing Days"
+          },
+          "return_warn_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Warn Minutes"
           },
           "session_abandon_minutes": {
             "maximum": 1440.0,
@@ -2636,27 +6959,47 @@
       },
       "SettingsOut": {
         "properties": {
+          "claim_deadline_days": {
+            "title": "Claim Deadline Days",
+            "type": "integer"
+          },
+          "claim_due_soon_hours": {
+            "title": "Claim Due Soon Hours",
+            "type": "integer"
+          },
+          "handover_warn_hours": {
+            "title": "Handover Warn Hours",
+            "type": "integer"
+          },
           "retention_clip_days": {
-            "maximum": 365.0,
-            "minimum": 1.0,
             "title": "Retention Clip Days",
             "type": "integer"
           },
+          "retention_clip_min_days": {
+            "title": "Retention Clip Min Days",
+            "type": "integer"
+          },
           "retention_raw_days": {
-            "maximum": 365.0,
-            "minimum": 1.0,
             "title": "Retention Raw Days",
             "type": "integer"
           },
+          "return_abandon_minutes": {
+            "title": "Return Abandon Minutes",
+            "type": "integer"
+          },
+          "return_missing_days": {
+            "title": "Return Missing Days",
+            "type": "integer"
+          },
+          "return_warn_minutes": {
+            "title": "Return Warn Minutes",
+            "type": "integer"
+          },
           "session_abandon_minutes": {
-            "maximum": 1440.0,
-            "minimum": 1.0,
             "title": "Session Abandon Minutes",
             "type": "integer"
           },
           "session_warn_minutes": {
-            "maximum": 1440.0,
-            "minimum": 1.0,
             "title": "Session Warn Minutes",
             "type": "integer"
           },
@@ -2671,6 +7014,13 @@
           "retention_clip_days",
           "session_warn_minutes",
           "session_abandon_minutes",
+          "return_warn_minutes",
+          "return_abandon_minutes",
+          "return_missing_days",
+          "handover_warn_hours",
+          "claim_deadline_days",
+          "claim_due_soon_hours",
+          "retention_clip_min_days",
           "updated_at"
         ],
         "title": "SettingsOut",
@@ -2772,6 +7122,117 @@
         "title": "ShopOut",
         "type": "object"
       },
+      "SnapshotCreated": {
+        "properties": {
+          "camera_role": {
+            "const": "CAM1",
+            "title": "Camera Role",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "MANUAL",
+              "PACK_CLOSE"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "taken_at": {
+            "format": "date-time",
+            "title": "Taken At",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "camera_role",
+          "taken_at",
+          "sha256",
+          "url"
+        ],
+        "title": "SnapshotCreated",
+        "type": "object"
+      },
+      "SnapshotCreatedOut": {
+        "description": "API-103 (02 §6.2) — 201.",
+        "properties": {
+          "snapshot": {
+            "$ref": "#/components/schemas/SnapshotCreated"
+          }
+        },
+        "required": [
+          "snapshot"
+        ],
+        "title": "SnapshotCreatedOut",
+        "type": "object"
+      },
+      "SnapshotOut": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "MANUAL",
+              "PACK_CLOSE"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "taken_at": {
+            "format": "date-time",
+            "title": "Taken At",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "taken_at",
+          "url"
+        ],
+        "title": "SnapshotOut",
+        "type": "object"
+      },
+      "SnapshotRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "url"
+        ],
+        "title": "SnapshotRef",
+        "type": "object"
+      },
       "StateOnlyOut": {
         "properties": {
           "state": {
@@ -2797,6 +7258,16 @@
               }
             ],
             "title": "Account User Id"
+          },
+          "kind": {
+            "default": "PACK",
+            "enum": [
+              "PACK",
+              "RETURN",
+              "BOTH"
+            ],
+            "title": "Kind",
+            "type": "string"
           },
           "name": {
             "maxLength": 40,
@@ -2841,6 +7312,17 @@
             "title": "Name",
             "type": "string"
           },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
           "state": {
             "title": "State",
             "type": "string"
@@ -2855,6 +7337,10 @@
               }
             ],
             "title": "Tracking Number"
+          },
+          "work_mode": {
+            "title": "Work Mode",
+            "type": "string"
           }
         },
         "required": [
@@ -2863,7 +7349,9 @@
           "state",
           "cameras",
           "last_scan_at",
-          "tracking_number"
+          "tracking_number",
+          "work_mode",
+          "operator_name"
         ],
         "title": "StationDaily",
         "type": "object"
@@ -2912,8 +7400,36 @@
             "title": "Is Active",
             "type": "boolean"
           },
+          "kind": {
+            "enum": [
+              "PACK",
+              "RETURN",
+              "BOTH"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "name": {
             "title": "Name",
+            "type": "string"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "work_mode": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Work Mode",
             "type": "string"
           }
         },
@@ -2922,7 +7438,10 @@
           "name",
           "is_active",
           "account",
-          "cameras"
+          "cameras",
+          "kind",
+          "work_mode",
+          "operator_name"
         ],
         "title": "StationOut",
         "type": "object"
@@ -2952,6 +7471,22 @@
             ],
             "title": "Is Active"
           },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PACK",
+                  "RETURN",
+                  "BOTH"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
           "name": {
             "anyOf": [
               {
@@ -2967,25 +7502,6 @@
           }
         },
         "title": "StationPatchIn",
-        "type": "object"
-      },
-      "StationRef": {
-        "properties": {
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "name"
-        ],
-        "title": "StationRef",
         "type": "object"
       },
       "StationStateOut": {
@@ -3027,16 +7543,27 @@
               "READY",
               "PACKING",
               "MISMATCH",
-              "WAITING_APPROVAL"
+              "WAITING_APPROVAL",
+              "INSPECTING"
             ],
             "title": "State",
             "type": "string"
           },
           "station": {
-            "$ref": "#/components/schemas/StationRef"
+            "$ref": "#/components/schemas/StationStateRef"
           },
           "today_count": {
             "title": "Today Count",
+            "type": "integer"
+          },
+          "today_return_count": {
+            "default": 0,
+            "title": "Today Return Count",
+            "type": "integer"
+          },
+          "today_return_issue_count": {
+            "default": 0,
+            "title": "Today Return Issue Count",
             "type": "integer"
           },
           "tray": {
@@ -3054,6 +7581,105 @@
           "server_time"
         ],
         "title": "StationStateOut",
+        "type": "object"
+      },
+      "StationStateRef": {
+        "description": "Khối `station` của API-10 / WS `station.state` (Phase 2, 02 §6.2).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "PACK",
+              "RETURN",
+              "BOTH"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "work_mode": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Work Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "work_mode",
+          "operator_name"
+        ],
+        "title": "StationStateRef",
+        "type": "object"
+      },
+      "StatusCounts": {
+        "properties": {
+          "CLOSED": {
+            "default": 0,
+            "title": "Closed",
+            "type": "integer"
+          },
+          "LOST": {
+            "default": 0,
+            "title": "Lost",
+            "type": "integer"
+          },
+          "NEW": {
+            "default": 0,
+            "title": "New",
+            "type": "integer"
+          },
+          "SUBMITTED": {
+            "default": 0,
+            "title": "Submitted",
+            "type": "integer"
+          },
+          "WAITING": {
+            "default": 0,
+            "title": "Waiting",
+            "type": "integer"
+          },
+          "WON": {
+            "default": 0,
+            "title": "Won",
+            "type": "integer"
+          }
+        },
+        "title": "StatusCounts",
+        "type": "object"
+      },
+      "SummaryOut": {
+        "properties": {
+          "open": {
+            "$ref": "#/components/schemas/OpenSummary"
+          }
+        },
+        "required": [
+          "open"
+        ],
+        "title": "SummaryOut",
         "type": "object"
       },
       "SyncHealth": {
@@ -3094,6 +7720,37 @@
           "last_error"
         ],
         "title": "SyncHealth",
+        "type": "object"
+      },
+      "TabCounts": {
+        "properties": {
+          "EXPECTED": {
+            "default": 0,
+            "title": "Expected",
+            "type": "integer"
+          },
+          "MISSING": {
+            "default": 0,
+            "title": "Missing",
+            "type": "integer"
+          },
+          "NO_PARCEL": {
+            "default": 0,
+            "title": "No Parcel",
+            "type": "integer"
+          },
+          "RECEIVED": {
+            "default": 0,
+            "title": "Received",
+            "type": "integer"
+          },
+          "UNIDENTIFIED": {
+            "default": 0,
+            "title": "Unidentified",
+            "type": "integer"
+          }
+        },
+        "title": "TabCounts",
         "type": "object"
       },
       "TimelineItem": {
@@ -3294,7 +7951,7 @@
           "station": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/StationRef"
+                "$ref": "#/components/schemas/aicam__modules__users__schemas__StationRef"
               },
               {
                 "type": "null"
@@ -3341,7 +7998,7 @@
           "station": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/StationRef"
+                "$ref": "#/components/schemas/aicam__modules__users__schemas__StationRef"
               },
               {
                 "type": "null"
@@ -3462,6 +8119,24 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WorkModeIn": {
+        "description": "API-100.",
+        "properties": {
+          "work_mode": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Work Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_mode"
+        ],
+        "title": "WorkModeIn",
+        "type": "object"
+      },
       "aicam__modules__imports__schemas__Counts": {
         "properties": {
           "error": {
@@ -3494,6 +8169,10 @@
             "title": "Abandoned",
             "type": "integer"
           },
+          "cam2_unverified": {
+            "title": "Cam2 Unverified",
+            "type": "integer"
+          },
           "cancelled": {
             "title": "Cancelled",
             "type": "integer"
@@ -3502,8 +8181,20 @@
             "title": "Cancelled After Pack",
             "type": "integer"
           },
+          "claims_due_soon": {
+            "title": "Claims Due Soon",
+            "type": "integer"
+          },
+          "claims_open": {
+            "title": "Claims Open",
+            "type": "integer"
+          },
           "had_mismatch": {
             "title": "Had Mismatch",
+            "type": "integer"
+          },
+          "label_on_tray": {
+            "title": "Label On Tray",
             "type": "integer"
           },
           "packed": {
@@ -3513,6 +8204,29 @@
           "packed_not_handed_over": {
             "title": "Packed Not Handed Over",
             "type": "integer"
+          },
+          "recon_open": {
+            "$ref": "#/components/schemas/ReconOpen"
+          },
+          "returns_expected": {
+            "title": "Returns Expected",
+            "type": "integer"
+          },
+          "returns_missing": {
+            "title": "Returns Missing",
+            "type": "integer"
+          },
+          "returns_received": {
+            "title": "Returns Received",
+            "type": "integer"
+          },
+          "returns_received_issue": {
+            "title": "Returns Received Issue",
+            "type": "integer"
+          },
+          "returns_unidentified": {
+            "title": "Returns Unidentified",
+            "type": "integer"
           }
         },
         "required": [
@@ -3521,9 +8235,76 @@
           "abandoned",
           "cancelled",
           "packed_not_handed_over",
-          "cancelled_after_pack"
+          "cancelled_after_pack",
+          "returns_received",
+          "returns_received_issue",
+          "returns_unidentified",
+          "returns_expected",
+          "returns_missing",
+          "recon_open",
+          "claims_open",
+          "claims_due_soon",
+          "label_on_tray",
+          "cam2_unverified"
         ],
         "title": "Counts",
+        "type": "object"
+      },
+      "aicam__modules__sessions__schemas__StationRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "StationRef",
+        "type": "object"
+      },
+      "aicam__modules__users__schemas__StationRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "PACK",
+              "RETURN",
+              "BOTH"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "work_mode": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Work Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "work_mode"
+        ],
+        "title": "StationRef",
         "type": "object"
       }
     }
@@ -4094,9 +8875,477 @@
         ]
       }
     },
+    "/api/v1/claims": {
+      "get": {
+        "description": "API-130: danh sách hồ sơ (D16).",
+        "operationId": "list_claims_api_v1_claims_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "NEW",
+                    "SUBMITTED",
+                    "WAITING",
+                    "WON",
+                    "LOST",
+                    "CLOSED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "DAMAGED",
+                    "MISSING_ITEM",
+                    "WRONG_ITEM",
+                    "EMPTY_BOX",
+                    "OTHER",
+                    "BUYER_CLAIM",
+                    "LOST_IN_TRANSIT"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "in": "query",
+            "name": "counterparty",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "PLATFORM",
+                    "CARRIER"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Counterparty"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner"
+            }
+          },
+          {
+            "in": "query",
+            "name": "due",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "soon",
+                    "overdue"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Due"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Claims",
+        "tags": [
+          "claims"
+        ]
+      },
+      "post": {
+        "description": "API-131: tạo hồ sơ thủ công (FR-08.01).",
+        "operationId": "create_claim_api_v1_claims_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Claim",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
+    "/api/v1/claims/{claim_id}": {
+      "get": {
+        "description": "API-132: chi tiết hồ sơ (D17).",
+        "operationId": "claim_detail_api_v1_claims__claim_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Claim Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claim Detail",
+        "tags": [
+          "claims"
+        ]
+      },
+      "patch": {
+        "description": "API-133: đổi trạng thái / phụ trách / mã sàn / số tiền / hạn (FR-08.02, 08.03).",
+        "operationId": "patch_claim_api_v1_claims__claim_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Claim Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimPatchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Patch Claim",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
+    "/api/v1/claims/{claim_id}/evidence": {
+      "put": {
+        "description": "API-134: đặt danh sách bằng chứng (FR-08.06).",
+        "operationId": "set_evidence_api_v1_claims__claim_id__evidence_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Claim Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvidenceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Evidence",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
+    "/api/v1/claims/{claim_id}/evidence-packs": {
+      "post": {
+        "description": "API-136: tạo gói bằng chứng zip (nền, J-16) — FR-08.05.",
+        "operationId": "create_evidence_pack_api_v1_claims__claim_id__evidence_packs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Claim Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidencePackCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Evidence Pack",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
+    "/api/v1/claims/{claim_id}/notes": {
+      "post": {
+        "description": "API-135: thêm ghi chú (hồ sơ đã đóng vẫn thêm được).",
+        "operationId": "add_note_api_v1_claims__claim_id__notes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "claim_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Claim Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Note",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
     "/api/v1/clips/{clip_id}/hold": {
       "put": {
-        "description": "API-42: giữ / bỏ giữ clip (FR-02.09).",
+        "description": "API-42: giữ / bỏ giữ clip — chỉ ADMIN, deprecated (DEC-209, ADR-009: bảo vệ theo hồ sơ khiếu nại).",
         "operationId": "hold_api_v1_clips__clip_id__hold_put",
         "parameters": [
           {
@@ -4189,6 +9438,50 @@
         "summary": "Play Url",
         "tags": [
           "media"
+        ]
+      }
+    },
+    "/api/v1/evidence-packs/{pack_id}": {
+      "get": {
+        "description": "API-137: trạng thái gói + link tải ký HMAC (người tạo hoặc ADMIN).",
+        "operationId": "get_evidence_pack_api_v1_evidence_packs__pack_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pack_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pack Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvidencePackOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Evidence Pack",
+        "tags": [
+          "claims"
         ]
       }
     },
@@ -4537,6 +9830,72 @@
         ]
       }
     },
+    "/api/v1/media/evidence-packs/{pack_id}/pack.zip": {
+      "get": {
+        "description": "API-138: tải zip bằng chữ ký `pack:` (không cần Bearer); audit `DOWNLOAD_CLAIM_PACK`.",
+        "operationId": "evidence_pack_zip_api_v1_media_evidence_packs__pack_id__pack_zip_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pack_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Pack Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "uid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Uid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exp",
+            "required": true,
+            "schema": {
+              "title": "Exp",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sig",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "title": "Sig",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Evidence Pack Zip",
+        "tags": [
+          "claims"
+        ]
+      }
+    },
     "/api/v1/media/exports/{export_id}/{file}": {
       "get": {
         "description": "API-45: tải `video.mp4` / `info.json` bằng chữ ký.",
@@ -4607,6 +9966,72 @@
           }
         },
         "summary": "Export Media",
+        "tags": [
+          "media"
+        ]
+      }
+    },
+    "/api/v1/media/snapshots/{snapshot_id}": {
+      "get": {
+        "description": "API-106: ảnh JPEG bằng chữ ký `snapshot:` (FR-04.04, 02.11).",
+        "operationId": "snapshot_media_api_v1_media_snapshots__snapshot_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "snapshot_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Snapshot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "uid",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Uid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "exp",
+            "required": true,
+            "schema": {
+              "title": "Exp",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sig",
+            "required": true,
+            "schema": {
+              "maxLength": 128,
+              "title": "Sig",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Snapshot Media",
         "tags": [
           "media"
         ]
@@ -4699,7 +10124,12 @@
                     "HANDED_OVER",
                     "DELIVERED",
                     "CANCELLED",
-                    "CANCELLED_AFTER_PACK"
+                    "CANCELLED_AFTER_PACK",
+                    "RETURN_EXPECTED",
+                    "RETURN_INSPECTING",
+                    "RETURN_RECEIVED_OK",
+                    "RETURN_RECEIVED_ISSUE",
+                    "RETURN_MISSING"
                   ],
                   "type": "string"
                 },
@@ -4749,7 +10179,13 @@
                     "VIDEO_INCOMPLETE",
                     "REPACK",
                     "HAD_MISMATCH",
-                    "CLOSED_BY_SUPERVISOR"
+                    "CLOSED_BY_SUPERVISOR",
+                    "AUTO_CLOSED",
+                    "ORDER_CANCELLED",
+                    "NO_PACK_CLIP",
+                    "UNANNOUNCED",
+                    "UNIDENTIFIED",
+                    "INSPECTION_CORRECTED"
                   ],
                   "type": "string"
                 },
@@ -4758,6 +10194,26 @@
                 }
               ],
               "title": "Session Flag"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session_type",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "PACK",
+                    "RETURN"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Type"
             }
           },
           {
@@ -4834,7 +10290,7 @@
     },
     "/api/v1/packages/{package_id}": {
       "get": {
-        "description": "API-31: chi tiết kiện, phiên, clip, dòng thời gian (FR-07.02).",
+        "description": "API-31: chi tiết kiện, phiên (+ phiên hoàn: kết luận, ảnh), clip (+ `protection` — ADR-009), hồ sơ hàng\nhoàn / cảnh báo / hồ sơ khiếu nại, dòng thời gian (FR-07.02, FR-02.09, 02.11).",
         "operationId": "package_detail_api_v1_packages__package_id__get",
         "parameters": [
           {
@@ -4873,6 +10329,311 @@
         "summary": "Package Detail",
         "tags": [
           "packages"
+        ]
+      }
+    },
+    "/api/v1/packages/{package_id}/warehouse-status": {
+      "post": {
+        "description": "API-122: điều chỉnh trạng thái kho thủ công (FR-06.05).",
+        "operationId": "adjust_warehouse_status_api_v1_packages__package_id__warehouse_status_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "package_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Package Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjustIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdjustOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Adjust Warehouse Status",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
+    "/api/v1/recon-alerts": {
+      "get": {
+        "description": "API-120: danh sách cảnh báo lệch + tổng mở theo mức (FR-06.03, D15).",
+        "operationId": "list_alerts_api_v1_recon_alerts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "OPEN",
+                    "RESOLVED",
+                    "AUTO_RESOLVED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "HIGH",
+                    "MEDIUM",
+                    "LOW"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "rule",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHIPPED_NOT_PACKED",
+                    "CANCELLED_AFTER_PACK",
+                    "RETURN_OVERDUE",
+                    "RETURN_UNANNOUNCED",
+                    "PACKED_NOT_HANDED_OVER",
+                    "RETURN_DONE_NOT_RECEIVED",
+                    "UNVERIFIED_STALE"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rule"
+            }
+          },
+          {
+            "in": "query",
+            "name": "package_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Package Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconAlertPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Alerts",
+        "tags": [
+          "reconciliation"
+        ]
+      }
+    },
+    "/api/v1/recon-alerts/{alert_id}/resolve": {
+      "post": {
+        "description": "API-121: đánh dấu đã xử lý (FR-06.03).",
+        "operationId": "resolve_alert_api_v1_recon_alerts__alert_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "alert_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Alert Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconAlertOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Alert",
+        "tags": [
+          "reconciliation"
+        ]
+      }
+    },
+    "/api/v1/recon/run": {
+      "post": {
+        "description": "API-123: chạy đối soát ngay (FR-06.02) — chỉ đẩy J-14; J-14 đang chạy → 409 `RECON_IN_PROGRESS`.",
+        "operationId": "run_now_api_v1_recon_run_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Now",
+        "tags": [
+          "reconciliation"
         ]
       }
     },
@@ -4924,6 +10685,253 @@
         "summary": "Daily",
         "tags": [
           "reports"
+        ]
+      }
+    },
+    "/api/v1/returns": {
+      "get": {
+        "description": "API-110: danh sách hồ sơ hàng hoàn (D14).",
+        "operationId": "list_returns_api_v1_returns_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tab",
+            "required": false,
+            "schema": {
+              "default": "EXPECTED",
+              "enum": [
+                "EXPECTED",
+                "MISSING",
+                "RECEIVED",
+                "NO_PARCEL",
+                "UNIDENTIFIED",
+                "ALL"
+              ],
+              "title": "Tab",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "FAILED_DELIVERY",
+                    "BUYER_RETURN",
+                    "REFUND_ONLY",
+                    "UNANNOUNCED",
+                    "UNIDENTIFIED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReturnCasePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Returns",
+        "tags": [
+          "returns"
+        ]
+      }
+    },
+    "/api/v1/returns/{case_id}": {
+      "get": {
+        "description": "API-111: chi tiết hồ sơ hàng hoàn.",
+        "operationId": "return_detail_api_v1_returns__case_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReturnCaseDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Return Detail",
+        "tags": [
+          "returns"
+        ]
+      }
+    },
+    "/api/v1/returns/{case_id}/link-order": {
+      "post": {
+        "description": "API-112: gắn đơn cho hồ sơ chưa xác định (FR-04.13, UC-13).",
+        "operationId": "link_order_api_v1_returns__case_id__link_order_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "case_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Case Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkOrderIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkOrderOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Link Order",
+        "tags": [
+          "returns"
         ]
       }
     },
@@ -5025,9 +11033,63 @@
         ]
       }
     },
+    "/api/v1/sessions/{session_id}/inspection": {
+      "put": {
+        "description": "API-113: sửa kết luận phiên hoàn đã đóng ≤ 7 ngày (FR-04.11) → phiên như API-31 `sessions[]`.",
+        "operationId": "correct_inspection_api_v1_sessions__session_id__inspection_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Correct Inspection",
+        "tags": [
+          "packages"
+        ]
+      }
+    },
     "/api/v1/settings": {
       "get": {
-        "description": "API-80 GET: retention, ngưỡng phiên.",
+        "description": "API-80 GET: retention (+ sàn chỉ đọc), ngưỡng phiên đóng gói / phiên hoàn / đối soát / hồ sơ.",
         "operationId": "get_settings_api_api_v1_settings_get",
         "responses": {
           "200": {
@@ -5047,7 +11109,7 @@
         ]
       },
       "put": {
-        "description": "API-80 PUT (FR-02.06, BR-16).",
+        "description": "API-80 PUT (FR-02.06, 02.10, BR-16, BR-25): sàn retention, xác nhận khi giảm.",
         "operationId": "put_settings_api_v1_settings_put",
         "requestBody": {
           "content": {
@@ -5082,6 +11144,62 @@
           }
         },
         "summary": "Put Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/v1/settings/retention-impact": {
+      "get": {
+        "description": "API-82 (FR-02.10): lần dọn kế tiếp sẽ xóa bao nhiêu nếu đổi retention.",
+        "operationId": "retention_impact_api_v1_settings_retention_impact_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "retention_raw_days",
+            "required": true,
+            "schema": {
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Retention Raw Days",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retention_clip_days",
+            "required": true,
+            "schema": {
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Retention Clip Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionImpactOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retention Impact",
         "tags": [
           "settings"
         ]
@@ -5336,6 +11454,135 @@
         ]
       }
     },
+    "/api/v1/station/operator": {
+      "put": {
+        "description": "API-101: tên người kiểm hàng hoàn — FR-04.10, BR-28.",
+        "operationId": "set_operator_api_v1_station_operator_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateOnlyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Operator",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/return-lookup": {
+      "get": {
+        "description": "API-104: tìm kiện hoàn thủ công (FR-04.07).",
+        "operationId": "return_lookup_api_api_v1_station_return_lookup_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "default": "",
+              "maxLength": 64,
+              "title": "Q",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReturnLookupOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Return Lookup Api",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/return-sessions": {
+      "post": {
+        "description": "API-105: mở phiên hoàn từ kết quả tìm / mở phiên chưa xác định (FR-04.07, 04.13).",
+        "operationId": "open_return_session_api_v1_station_return_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReturnSessionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open Return Session",
+        "tags": [
+          "station"
+        ]
+      }
+    },
     "/api/v1/station/scan": {
       "post": {
         "operationId": "scan_api_v1_station_scan_post",
@@ -5451,6 +11698,104 @@
         ]
       }
     },
+    "/api/v1/station/sessions/{session_id}/inspection": {
+      "put": {
+        "description": "API-102: lưu kết luận + dòng kiểm phiên hoàn (FR-04.03, 04.09; BR-22).",
+        "operationId": "save_inspection_api_v1_station_sessions__session_id__inspection_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InspectionSavedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Save Inspection",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/sessions/{session_id}/snapshots": {
+      "post": {
+        "description": "API-103: chụp ảnh Cam 1 (server lấy khung từ relay) cho phiên hoàn đang mở (FR-04.04).",
+        "operationId": "take_snapshot_api_v1_station_sessions__session_id__snapshots_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotCreatedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Take Snapshot",
+        "tags": [
+          "station"
+        ]
+      }
+    },
     "/api/v1/station/state": {
       "get": {
         "operationId": "station_state_api_v1_station_state_get",
@@ -5467,6 +11812,48 @@
           }
         },
         "summary": "Station State",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/work-mode": {
+      "put": {
+        "description": "API-100: đổi chế độ bàn (station loại \"Cả hai\") — FR-01.07.",
+        "operationId": "set_work_mode_api_v1_station_work_mode_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkModeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateOnlyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Work Mode",
         "tags": [
           "station"
         ]
