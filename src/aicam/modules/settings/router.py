@@ -1,8 +1,8 @@
-"""API-80, API-81 — 02 §6.2."""
+"""API-80, API-81, API-82 — 02 §6.2."""
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core.db import get_session
@@ -10,7 +10,7 @@ from aicam.core.deps import Principal, require_roles
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.reports.service import disk_usage
 from aicam.modules.settings import service
-from aicam.modules.settings.schemas import HealthOut, SettingsIn, SettingsOut
+from aicam.modules.settings.schemas import HealthOut, RetentionImpactOut, SettingsIn, SettingsOut
 from aicam.modules.stations.mediamtx import MediaMTX
 from aicam.modules.stations.router import get_mediamtx
 
@@ -21,16 +21,32 @@ AdminOnly = Annotated[Principal, Depends(require_roles("ADMIN"))]
 router = APIRouter(tags=["settings"])
 
 
+AppSettings = Annotated[Settings, Depends(get_settings)]
+RetentionDays = Annotated[int, Query(ge=1, le=365)]
+
+
 @router.get("/settings", response_model=SettingsOut)
-async def get_settings_api(_: Manager, db: DbSession) -> SettingsOut:
-    """API-80 GET: retention, ngưỡng phiên."""
-    return service.to_out(await service.get(db))
+async def get_settings_api(_: Manager, db: DbSession, settings: AppSettings) -> SettingsOut:
+    """API-80 GET: retention (+ sàn chỉ đọc), ngưỡng phiên đóng gói / phiên hoàn / đối soát / hồ sơ."""
+    return service.to_out(await service.get(db), settings)
 
 
 @router.put("/settings", response_model=SettingsOut)
-async def put_settings(body: SettingsIn, p: AdminOnly, db: DbSession) -> SettingsOut:
-    """API-80 PUT (FR-02.06, BR-16)."""
-    return await service.update(db, body, p)
+async def put_settings(body: SettingsIn, p: AdminOnly, db: DbSession, settings: AppSettings) -> SettingsOut:
+    """API-80 PUT (FR-02.06, 02.10, BR-16, BR-25): sàn retention, xác nhận khi giảm."""
+    return await service.update(db, body, p, settings)
+
+
+@router.get("/settings/retention-impact", response_model=RetentionImpactOut)
+async def retention_impact(
+    _: AdminOnly,
+    db: DbSession,
+    settings: AppSettings,
+    retention_raw_days: RetentionDays,
+    retention_clip_days: RetentionDays,
+) -> RetentionImpactOut:
+    """API-82 (FR-02.10): lần dọn kế tiếp sẽ xóa bao nhiêu nếu đổi retention."""
+    return await service.retention_impact(db, retention_raw_days, retention_clip_days, settings)
 
 
 @router.get("/system/health", response_model=HealthOut)

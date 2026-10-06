@@ -12,11 +12,14 @@ from aicam.core.db import commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.redis import get_redis
+from aicam.core.settings import Settings
 from aicam.modules.settings.models import Setting
 from aicam.modules.settings.schemas import (
+    THRESHOLD_FIELDS,
     CameraHealth,
     DiskOut,
     HealthOut,
+    RetentionImpactOut,
     SettingsIn,
     SettingsOut,
     SyncHealth,
@@ -25,6 +28,7 @@ from aicam.modules.settings.schemas import (
 log = structlog.get_logger()
 
 FIELDS = ("retention_raw_days", "retention_clip_days", "session_warn_minutes", "session_abandon_minutes")
+ALL_FIELDS = (*FIELDS, *THRESHOLD_FIELDS)
 
 
 async def get(session: AsyncSession) -> Setting:
@@ -36,30 +40,91 @@ async def get(session: AsyncSession) -> Setting:
     return row
 
 
-def to_out(row: Setting) -> SettingsOut:
-    return SettingsOut(**{f: getattr(row, f) for f in FIELDS}, updated_at=row.updated_at)
+def to_out(row: Setting, settings: Settings) -> SettingsOut:
+    return SettingsOut(
+        **{f: getattr(row, f) for f in ALL_FIELDS},
+        retention_clip_min_days=settings.retention_clip_min_days,
+        updated_at=row.updated_at,
+    )
 
 
-async def update(session: AsyncSession, data: SettingsIn, p: Principal) -> SettingsOut:
-    """API-80 PUT: ràng buộc chéo theo 02 (clip ≥ thô; bỏ dở > cảnh báo). Áp ngay cho J-02, J-07 (DEC-30)."""
-    fields: dict[str, str] = {}
-    if data.retention_clip_days < data.retention_raw_days:
-        fields["retention_clip_days"] = "Số ngày giữ clip phải lớn hơn hoặc bằng video thô."
-    if data.session_abandon_minutes <= data.session_warn_minutes:
-        fields["session_abandon_minutes"] = "Thời gian bỏ dở phải lớn hơn thời gian cảnh báo."
-    if fields:
-        raise AppError("VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": fields})
-    row = await session.scalar(select(Setting).where(Setting.id == 1).with_for_update())
+async def retention_impact(
+    session: AsyncSession, raw_days: int, clip_days: int, settings: Settings
+) -> RetentionImpactOut:
+    """API-82 (FR-02.10): số clip / giờ video thô lần dọn kế tiếp sẽ xóa nếu đổi retention."""
+    from aicam.modules.media import service as media  # media → settings: import muộn tránh vòng
+
+    return RetentionImpactOut(**await media.retention_impact(session, raw_days, clip_days, settings))
+
+
+async def update(session: AsyncSession, data: SettingsIn, p: Principal, settings: Settings) -> SettingsOut:
+    """API-80 PUT (02 §6.2, 02a §4): 4 trường Phase 1 bắt buộc + 6 ngưỡng tùy chọn (thiếu = giữ cũ).
+
+    Khóa dòng setting → ràng buộc chéo (clip ≥ thô; bỏ dở > cảnh báo, cả phiên hoàn) → 422 `VALIDATION_ERROR`;
+    clip < sàn `RETENTION_CLIP_MIN_DAYS` → 422 `RETENTION_BELOW_MINIMUM` (`details.min`); giảm số ngày giữ
+    clip / video thô mà chưa `confirm_reduction` → 409 `RETENTION_REDUCTION_UNCONFIRMED` (`details.impact`
+    như API-82); đã xác nhận → lưu + audit `RETENTION_REDUCED` (cũ, mới, impact). Áp ngay cho J-02, J-07,
+    J-14 (DEC-30)."""
+    row = await session.scalar(
+        select(Setting).where(Setting.id == 1).with_for_update().execution_options(populate_existing=True)
+    )
     if row is None:
         row = await get(session)
-    before = {f: getattr(row, f) for f in FIELDS}
-    for f in FIELDS:
-        setattr(row, f, getattr(data, f))
+    after: dict[str, int] = {f: getattr(data, f) for f in FIELDS}
+    for f in THRESHOLD_FIELDS:
+        value = getattr(data, f)
+        after[f] = value if value is not None else getattr(row, f)
+    fields: dict[str, str] = {}
+    if after["retention_clip_days"] < after["retention_raw_days"]:
+        fields["retention_clip_days"] = "Số ngày giữ clip phải lớn hơn hoặc bằng video thô."
+    if after["session_abandon_minutes"] <= after["session_warn_minutes"]:
+        fields["session_abandon_minutes"] = "Thời gian bỏ dở phải lớn hơn thời gian cảnh báo."
+    if after["return_abandon_minutes"] <= after["return_warn_minutes"]:
+        fields["return_abandon_minutes"] = "Thời gian tự đóng phải lớn hơn thời gian cảnh báo."
+    if fields:
+        raise AppError("VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": fields})
+    minimum = settings.retention_clip_min_days
+    if after["retention_clip_days"] < minimum:
+        message = f"Số ngày giữ clip không được thấp hơn {minimum}."
+        raise AppError(
+            "RETENTION_BELOW_MINIMUM",
+            message,
+            422,
+            {"min": minimum, "fields": {"retention_clip_days": message}},
+        )
+    before = {f: getattr(row, f) for f in ALL_FIELDS}
+    reduced = (
+        after["retention_clip_days"] < row.retention_clip_days
+        or after["retention_raw_days"] < row.retention_raw_days
+    )
+    impact: RetentionImpactOut | None = None
+    if reduced:
+        impact = await retention_impact(
+            session, after["retention_raw_days"], after["retention_clip_days"], settings
+        )
+        if not data.confirm_reduction:
+            raise AppError(
+                "RETENTION_REDUCTION_UNCONFIRMED",
+                "Giảm thời gian lưu cần xác nhận.",
+                409,
+                {"impact": impact.model_dump(mode="json")},
+            )
+    for f, value in after.items():
+        setattr(row, f, value)
     audit.record(session, "SETTINGS_UPDATE", user_id=p.user_id, object_type="SETTING", object_id="1", ip=p.ip,
-                 data={"before": before, "after": data.model_dump()})  # fmt: skip
+                 data={"before": before, "after": after})  # fmt: skip
+    if impact is not None:
+        audit.record(
+            session, "RETENTION_REDUCED", user_id=p.user_id, object_type="SETTING", object_id="1", ip=p.ip,
+            data={
+                "before": {k: before[k] for k in ("retention_raw_days", "retention_clip_days")},
+                "after": {k: after[k] for k in ("retention_raw_days", "retention_clip_days")},
+                "impact": impact.model_dump(mode="json"),
+            },
+        )  # fmt: skip
     await session.flush()
     await session.refresh(row)
-    out = to_out(row)
+    out = to_out(row, settings)
     await commit(session)
     return out
 

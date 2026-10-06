@@ -4945,6 +4945,46 @@
         "title": "ResolvedBy",
         "type": "object"
       },
+      "RetentionImpactOut": {
+        "description": "API-82 (cũng là `details.impact` của 409 `RETENTION_REDUCTION_UNCONFIRMED`).",
+        "properties": {
+          "clip_bytes": {
+            "title": "Clip Bytes",
+            "type": "integer"
+          },
+          "clips": {
+            "title": "Clips",
+            "type": "integer"
+          },
+          "next_run_at": {
+            "format": "date-time",
+            "title": "Next Run At",
+            "type": "string"
+          },
+          "protected_clips": {
+            "title": "Protected Clips",
+            "type": "integer"
+          },
+          "raw_bytes": {
+            "title": "Raw Bytes",
+            "type": "integer"
+          },
+          "raw_hours": {
+            "title": "Raw Hours",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "clips",
+          "clip_bytes",
+          "raw_hours",
+          "raw_bytes",
+          "protected_clips",
+          "next_run_at"
+        ],
+        "title": "RetentionImpactOut",
+        "type": "object"
+      },
       "ReturnCaseDetail": {
         "properties": {
           "claims": {
@@ -6248,6 +6288,50 @@
       },
       "SettingsIn": {
         "properties": {
+          "claim_deadline_days": {
+            "anyOf": [
+              {
+                "maximum": 90.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Deadline Days"
+          },
+          "claim_due_soon_hours": {
+            "anyOf": [
+              {
+                "maximum": 168.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Due Soon Hours"
+          },
+          "confirm_reduction": {
+            "default": false,
+            "title": "Confirm Reduction",
+            "type": "boolean"
+          },
+          "handover_warn_hours": {
+            "anyOf": [
+              {
+                "maximum": 168.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Handover Warn Hours"
+          },
           "retention_clip_days": {
             "maximum": 365.0,
             "minimum": 1.0,
@@ -6259,6 +6343,45 @@
             "minimum": 1.0,
             "title": "Retention Raw Days",
             "type": "integer"
+          },
+          "return_abandon_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Abandon Minutes"
+          },
+          "return_missing_days": {
+            "anyOf": [
+              {
+                "maximum": 60.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Missing Days"
+          },
+          "return_warn_minutes": {
+            "anyOf": [
+              {
+                "maximum": 1440.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Warn Minutes"
           },
           "session_abandon_minutes": {
             "maximum": 1440.0,
@@ -6284,27 +6407,47 @@
       },
       "SettingsOut": {
         "properties": {
+          "claim_deadline_days": {
+            "title": "Claim Deadline Days",
+            "type": "integer"
+          },
+          "claim_due_soon_hours": {
+            "title": "Claim Due Soon Hours",
+            "type": "integer"
+          },
+          "handover_warn_hours": {
+            "title": "Handover Warn Hours",
+            "type": "integer"
+          },
           "retention_clip_days": {
-            "maximum": 365.0,
-            "minimum": 1.0,
             "title": "Retention Clip Days",
             "type": "integer"
           },
+          "retention_clip_min_days": {
+            "title": "Retention Clip Min Days",
+            "type": "integer"
+          },
           "retention_raw_days": {
-            "maximum": 365.0,
-            "minimum": 1.0,
             "title": "Retention Raw Days",
             "type": "integer"
           },
+          "return_abandon_minutes": {
+            "title": "Return Abandon Minutes",
+            "type": "integer"
+          },
+          "return_missing_days": {
+            "title": "Return Missing Days",
+            "type": "integer"
+          },
+          "return_warn_minutes": {
+            "title": "Return Warn Minutes",
+            "type": "integer"
+          },
           "session_abandon_minutes": {
-            "maximum": 1440.0,
-            "minimum": 1.0,
             "title": "Session Abandon Minutes",
             "type": "integer"
           },
           "session_warn_minutes": {
-            "maximum": 1440.0,
-            "minimum": 1.0,
             "title": "Session Warn Minutes",
             "type": "integer"
           },
@@ -6319,6 +6462,13 @@
           "retention_clip_days",
           "session_warn_minutes",
           "session_abandon_minutes",
+          "return_warn_minutes",
+          "return_abandon_minutes",
+          "return_missing_days",
+          "handover_warn_hours",
+          "claim_deadline_days",
+          "claim_due_soon_hours",
+          "retention_clip_min_days",
           "updated_at"
         ],
         "title": "SettingsOut",
@@ -10247,7 +10397,7 @@
     },
     "/api/v1/settings": {
       "get": {
-        "description": "API-80 GET: retention, ngưỡng phiên.",
+        "description": "API-80 GET: retention (+ sàn chỉ đọc), ngưỡng phiên đóng gói / phiên hoàn / đối soát / hồ sơ.",
         "operationId": "get_settings_api_api_v1_settings_get",
         "responses": {
           "200": {
@@ -10267,7 +10417,7 @@
         ]
       },
       "put": {
-        "description": "API-80 PUT (FR-02.06, BR-16).",
+        "description": "API-80 PUT (FR-02.06, 02.10, BR-16, BR-25): sàn retention, xác nhận khi giảm.",
         "operationId": "put_settings_api_v1_settings_put",
         "requestBody": {
           "content": {
@@ -10302,6 +10452,62 @@
           }
         },
         "summary": "Put Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/v1/settings/retention-impact": {
+      "get": {
+        "description": "API-82 (FR-02.10): lần dọn kế tiếp sẽ xóa bao nhiêu nếu đổi retention.",
+        "operationId": "retention_impact_api_v1_settings_retention_impact_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "retention_raw_days",
+            "required": true,
+            "schema": {
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Retention Raw Days",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "retention_clip_days",
+            "required": true,
+            "schema": {
+              "maximum": 365,
+              "minimum": 1,
+              "title": "Retention Clip Days",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RetentionImpactOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retention Impact",
         "tags": [
           "settings"
         ]

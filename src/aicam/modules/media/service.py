@@ -8,13 +8,14 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import structlog
-from sqlalchemy import Select, delete, func, select
+from sqlalchemy import Select, delete, func, literal, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -854,3 +855,73 @@ async def _expire_snapshots(db: AsyncSession, settings: Settings, now: datetime,
                 log.exception("retention_snapshot_unlink_failed", snapshot_id=str(snapshot_id))
     await db.commit()
     return removed
+
+
+# ---------------------------------------------------------------- API-82 (FR-02.10)
+
+J02_HOUR_UTC = 19  # beat `j02-enforce-retention`: 02:00 giờ VN = 19:00 UTC (celery_app)
+IMPACT_TIMEOUT_MS = 5000  # 02a §8: truy vấn đếm có `statement_timeout` 5 giây
+
+
+def next_retention_run(now: datetime) -> datetime:
+    """Lần J-02 kế tiếp (crontab 19:00 UTC mỗi ngày)."""
+    run = now.astimezone(UTC).replace(hour=J02_HOUR_UTC, minute=0, second=0, microsecond=0)
+    return run if run > now else run + timedelta(days=1)
+
+
+async def retention_impact(
+    db: AsyncSession, raw_days: int, clip_days_setting: int, settings: Settings
+) -> dict[str, Any]:
+    """API-82: lần J-02 kế tiếp sẽ xóa gì nếu retention = (`raw_days`, `clip_days_setting`) — tính theo giờ
+    hiện tại, cùng điều kiện J-02: clip `READY` quá max(số ngày, sàn), không `held`, phiên không được bảo vệ
+    theo hồ sơ (ADR-009 — `protected_sessions_sql`); video thô (`video_segment`) kết thúc trước mốc, trừ
+    đoạn của phiên có clip FAILED / PENDING còn trong hạn giữ clip (G3-F7). `protected_clips` = clip quá hạn
+    nhưng được giữ."""
+    await db.execute(text(f"SET LOCAL statement_timeout = {IMPACT_TIMEOUT_MS}"))
+    now = clock.now()
+    days = protection.clip_days(clip_days_setting, settings.retention_clip_min_days)
+    clip_cutoff = now - timedelta(days=days)
+    raw_cutoff = now - timedelta(days=raw_days)
+    deletable = retention_clip_query(clip_cutoff, now)
+    clips, clip_bytes = (
+        await db.execute(
+            select(func.count(), func.coalesce(func.sum(Clip.size_bytes), 0)).where(Clip.id.in_(deletable))
+        )
+    ).one()
+    expired = int(
+        await db.scalar(select(func.count()).where(Clip.status == "READY", Clip.end_at < clip_cutoff)) or 0
+    )
+    pad = timedelta(seconds=settings.clip_padding_s)
+    kept = (
+        select(literal(1))
+        .select_from(Clip)
+        .join(PackSession, PackSession.id == Clip.session_id)
+        .join(Camera, (Camera.station_id == PackSession.station_id) & (Camera.role == Clip.camera_role))
+        .where(
+            Camera.id == VideoSegment.camera_id,
+            Clip.status.in_(("FAILED", "PENDING")),
+            PackSession.ended_at.is_not(None),
+            PackSession.ended_at >= clip_cutoff,
+            VideoSegment.start_at >= PackSession.started_at - pad - _SEGMENT_MAX,
+            VideoSegment.start_at <= PackSession.ended_at + pad,
+        )
+        .exists()
+    )
+    raw_seconds, raw_bytes = (
+        await db.execute(
+            select(
+                func.coalesce(
+                    func.sum(func.extract("epoch", VideoSegment.end_at - VideoSegment.start_at)), 0
+                ),
+                func.coalesce(func.sum(VideoSegment.size_bytes), 0),
+            ).where(VideoSegment.end_at < raw_cutoff, ~kept)
+        )
+    ).one()
+    return {
+        "clips": int(clips),
+        "clip_bytes": int(clip_bytes or 0),
+        "raw_hours": round(float(raw_seconds) / 3600),
+        "raw_bytes": int(raw_bytes),
+        "protected_clips": max(0, expired - int(clips)),
+        "next_run_at": next_retention_run(now),
+    }

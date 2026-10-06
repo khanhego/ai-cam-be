@@ -178,6 +178,24 @@ RETURN_CASE_ENUMS = {
     ),
 }
 
+# API-80 (02 §6.2 mở rộng): 6 ngưỡng mới + sàn retention chỉ đọc.
+SETTINGS_THRESHOLDS = (
+    "return_warn_minutes",
+    "return_abandon_minutes",
+    "return_missing_days",
+    "handover_warn_hours",
+    "claim_deadline_days",
+    "claim_due_soon_hours",
+)
+SETTINGS_FIELDS = (
+    "retention_raw_days",
+    "retention_clip_days",
+    "session_warn_minutes",
+    "session_abandon_minutes",
+    *SETTINGS_THRESHOLDS,
+    "retention_clip_min_days",
+    "updated_at",
+)
 # Item cảnh báo lệch (02 §6.2 API-120) — dùng lại trong API-121 / 122.
 RECON_ALERT_ITEM = (
     "id",
@@ -1054,25 +1072,28 @@ CONTRACT: tuple[Api, ...] = (
     Api("API-71", "POST", "/shops/shopee/auth-url", 200, ("url",)),
     Api("API-72", "GET", "/shops/shopee/callback", 302),
     Api("API-73", "POST", "/shops/{shop_id}/sync", 202, ("queued",)),
-    Api(
-        "API-80 get",
-        "GET",
-        "/settings",
-        200,
-        ("retention_raw_days", "retention_clip_days", "session_warn_minutes", "session_abandon_minutes"),
-    ),
+    Api("API-80 get", "GET", "/settings", 200, SETTINGS_FIELDS),
     Api(
         "API-80 put",
         "PUT",
         "/settings",
         200,
-        ("retention_raw_days", "retention_clip_days", "session_warn_minutes", "session_abandon_minutes"),
+        SETTINGS_FIELDS,
         request_fields=(
             "retention_raw_days",
             "retention_clip_days",
             "session_warn_minutes",
             "session_abandon_minutes",
+            *SETTINGS_THRESHOLDS,
+            "confirm_reduction",
         ),
+    ),
+    Api(
+        "API-82",
+        "GET",
+        "/settings/retention-impact",
+        200,
+        ("clips", "clip_bytes", "raw_hours", "raw_bytes", "protected_clips", "next_run_at"),
     ),
     Api(
         "API-81",
