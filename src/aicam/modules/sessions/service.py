@@ -39,8 +39,8 @@ from aicam.modules.sessions.schemas import (
     RecentSession,
     ScanOut,
     SessionOut,
-    StationRef,
     StationStateOut,
+    StationStateRef,
     TrayOut,
 )
 from aicam.modules.sessions.tray import Tray, read_tray
@@ -168,7 +168,13 @@ async def build_state(session: AsyncSession, station: Station, settings: Setting
     else:
         state = "READY"
     return StationStateOut(
-        station=StationRef(id=station.id, name=station.name),
+        station=StationStateRef(
+            id=station.id,
+            name=station.name,
+            kind=station.kind,
+            work_mode=station.work_mode,
+            operator_name=station.operator_name,
+        ),
         state=state,
         cameras=cameras,
         tray=TrayOut(codes=list(tray.codes), match=tray.match, updated_at=tray.updated_at),

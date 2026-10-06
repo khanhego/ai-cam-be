@@ -15,6 +15,26 @@ class StationRef(BaseModel):
     name: str
 
 
+class StationStateRef(StationRef):
+    """Khối `station` của API-10 / WS `station.state` (Phase 2, 02 §6.2)."""
+
+    kind: Literal["PACK", "RETURN", "BOTH"]
+    work_mode: Literal["PACK", "RETURN"]
+    operator_name: str | None
+
+
+class WorkModeIn(BaseModel):
+    """API-100."""
+
+    work_mode: Literal["PACK", "RETURN"]
+
+
+class OperatorIn(BaseModel):
+    """API-101 — strip rồi 2–40 ký tự (kiểm ở service để trả `fields.name`)."""
+
+    name: str = Field(max_length=200)
+
+
 class CameraState(BaseModel):
     role: Literal["CAM1", "CAM2"]
     status: Literal["ONLINE", "OFFLINE"]
@@ -71,7 +91,7 @@ class ApprovalBrief(BaseModel):
 
 
 class StationStateOut(BaseModel):
-    station: StationRef
+    station: StationStateRef
     state: StationStateName
     cameras: list[CameraState]
     tray: TrayOut

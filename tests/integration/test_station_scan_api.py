@@ -91,7 +91,14 @@ async def test_initial_state_is_ready(api: AsyncClient, station: tuple[dict[str,
 
     assert res.status_code == 200
     body = res.json()
-    assert body["station"] == {"id": str(station_id), "name": "TST Station 01"}
+    # Phase 2 (02 API-10): thêm `kind`, `work_mode`, `operator_name` — chỉ thêm trường.
+    assert body["station"] == {
+        "id": str(station_id),
+        "name": "TST Station 01",
+        "kind": "PACK",
+        "work_mode": "PACK",
+        "operator_name": None,
+    }
     assert body["state"] == "READY"
     assert body["session"] is None
     assert body["tray"]["match"] == "UNAVAILABLE"

@@ -1,4 +1,4 @@
-"""API-10, API-11 — 02 §6.2."""
+"""API-10, API-11, API-100, API-101 — 02 §6.2."""
 
 import uuid
 from typing import Annotated
@@ -11,8 +11,17 @@ from aicam.core.deps import Principal, require_roles
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.platforms.base import PlatformAdapter
 from aicam.modules.platforms.router import get_platform_adapter
-from aicam.modules.sessions import service
-from aicam.modules.sessions.schemas import CancelIn, RecentOut, ScanIn, ScanOut, StateOnlyOut, StationStateOut
+from aicam.modules.sessions import service, station_config
+from aicam.modules.sessions.schemas import (
+    CancelIn,
+    OperatorIn,
+    RecentOut,
+    ScanIn,
+    ScanOut,
+    StateOnlyOut,
+    StationStateOut,
+    WorkModeIn,
+)
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
 AppSettings = Annotated[Settings, Depends(get_settings)]
@@ -57,3 +66,27 @@ async def cancel_session(
 async def recent_sessions(p: StationOnly, db: DbSession, settings: AppSettings) -> RecentOut:
     station = await service.require_station(db, p.station_id, p.user_id)
     return await service.recent(db, station, settings)
+
+
+@router.put("/work-mode", response_model=StateOnlyOut)
+async def set_work_mode(
+    body: WorkModeIn, p: StationOnly, db: DbSession, settings: AppSettings
+) -> StateOnlyOut:
+    """API-100: đổi chế độ bàn (station loại "Cả hai") — FR-01.07."""
+    station = await service.require_station(db, p.station_id, p.user_id)
+    state = await station_config.set_work_mode(
+        db, station, body.work_mode, actor=p.user_id, ip=p.ip, settings=settings
+    )
+    return StateOnlyOut(state=state)
+
+
+@router.put("/operator", response_model=StateOnlyOut)
+async def set_operator(
+    body: OperatorIn, p: StationOnly, db: DbSession, settings: AppSettings
+) -> StateOnlyOut:
+    """API-101: tên người kiểm hàng hoàn — FR-04.10, BR-28."""
+    station = await service.require_station(db, p.station_id, p.user_id)
+    state = await station_config.set_operator(
+        db, station, body.name, actor=p.user_id, ip=p.ip, settings=settings
+    )
+    return StateOnlyOut(state=state)

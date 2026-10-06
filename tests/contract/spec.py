@@ -27,6 +27,9 @@ def _e(*values: str) -> frozenset[str]:
 STATE_FIELDS = (
     "station.id",
     "station.name",
+    "station.kind",
+    "station.work_mode",
+    "station.operator_name",
     "state",
     "cameras[].role",
     "cameras[].status",
@@ -59,6 +62,8 @@ STATE_FIELDS = (
     "server_time",
 )
 STATE_ENUMS = {
+    "station.kind": _e("PACK", "RETURN", "BOTH"),
+    "station.work_mode": _e("PACK", "RETURN"),
     "state": _e("READY", "PACKING", "MISMATCH", "WAITING_APPROVAL"),
     "tray.match": _e("MATCH", "NOT_SEEN", "DIFFERENT", "MULTIPLE", "UNAVAILABLE"),
     "cameras[].role": _e("CAM1", "CAM2"),
@@ -127,6 +132,9 @@ STATION_ITEM = (
     "cameras[].rtsp_url_masked",
     "cameras[].status",
     "cameras[].roi",
+    "kind",
+    "work_mode",
+    "operator_name",
 )
 USER_ITEM = (
     "id",
@@ -177,7 +185,17 @@ CONTRACT: tuple[Api, ...] = (
         "GET",
         "/me",
         200,
-        ("id", "username", "display_name", "role", "station.id", "station.name", "permissions"),
+        (
+            "id",
+            "username",
+            "display_name",
+            "role",
+            "station.id",
+            "station.name",
+            "station.kind",
+            "station.work_mode",
+            "permissions",
+        ),
     ),
     Api("API-10", "GET", "/station/state", 200, STATE_FIELDS, STATE_ENUMS),
     Api(
@@ -350,6 +368,17 @@ CONTRACT: tuple[Api, ...] = (
         ),
     ),
     Api(
+        "API-100",
+        "PUT",
+        "/station/work-mode",
+        200,
+        _prefixed("state", STATE_FIELDS),
+        request_fields=("work_mode",),
+    ),
+    Api(
+        "API-101", "PUT", "/station/operator", 200, _prefixed("state", STATE_FIELDS), request_fields=("name",)
+    ),
+    Api(
         "API-122",
         "POST",
         "/packages/{package_id}/warehouse-status",
@@ -472,14 +501,22 @@ CONTRACT: tuple[Api, ...] = (
     Api("API-54", "GET", "/imports/{import_id}/file", 200),
     Api("API-60 list", "GET", "/stations", 200, _prefixed("items[]", STATION_ITEM)),
     Api("API-60 get", "GET", "/stations/{station_id}", 200, STATION_ITEM),
-    Api("API-60 create", "POST", "/stations", 201, STATION_ITEM, request_fields=("name", "account_user_id")),
+    Api(
+        "API-60 create",
+        "POST",
+        "/stations",
+        201,
+        STATION_ITEM,
+        {"kind": _e("PACK", "RETURN", "BOTH")},
+        request_fields=("name", "account_user_id", "kind"),
+    ),
     Api(
         "API-60 patch",
         "PATCH",
         "/stations/{station_id}",
         200,
         STATION_ITEM,
-        request_fields=("name", "is_active", "account_user_id"),
+        request_fields=("name", "is_active", "account_user_id", "kind"),
     ),
     Api(
         "API-61",

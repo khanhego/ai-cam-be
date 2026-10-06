@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from urllib.parse import urlsplit
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +18,8 @@ from aicam.core.errors import AppError
 from aicam.core.redis import get_redis
 from aicam.core.security import Cipher
 from aicam.core.settings import Settings
+from aicam.modules.approvals.queries import pending_for_station
+from aicam.modules.sessions.models import ACTIVE_STATUSES, PackSession
 from aicam.modules.stations.mediamtx import MediaMTX, MediaMTXError, mask, mediamtx_path, with_credentials
 from aicam.modules.stations.models import Camera, Station
 from aicam.modules.stations.probe import CameraUnreachable, grab_frame, onvif_clock_offset_ms
@@ -79,6 +81,9 @@ async def station_out(session: AsyncSession, station: Station) -> StationOut:
         is_active=station.is_active,
         account=account,
         cameras=[camera_out(c) for c in await cameras_of(session, station.id)],
+        kind=station.kind,
+        work_mode=station.work_mode,
+        operator_name=station.operator_name,
     )
 
 
@@ -134,17 +139,53 @@ async def _flush_or_conflict(session: AsyncSession) -> None:
         raise AppError("NAME_TAKEN", "Tên station đã tồn tại.", 409) from exc
 
 
+async def lock_station(session: AsyncSession, station_id: uuid.UUID) -> None:
+    """Cùng khóa advisory với `sessions.lock_station` (DEC-11): đổi cấu hình bàn tuần tự với quét."""
+    await session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:k))"), {"k": f"station:{station_id}"})
+
+
+async def is_busy(session: AsyncSession, station_id: uuid.UUID) -> bool:
+    """Có phiên đang hoạt động hoặc yêu cầu duyệt đang chờ (API-60 `kind`, API-100, API-101)."""
+    active = await session.scalar(
+        select(PackSession.id)
+        .where(PackSession.station_id == station_id, PackSession.status.in_(ACTIVE_STATUSES))
+        .limit(1)
+    )
+    return active is not None or await pending_for_station(session, station_id) is not None
+
+
+def default_work_mode(kind: str, current: str | None = None) -> str:
+    """02 API-60: đổi sang PACK / RETURN → `work_mode = kind`; sang BOTH giữ chế độ đang chạy."""
+    if kind != "BOTH":
+        return kind
+    return current or "PACK"
+
+
+async def clear_operator(session: AsyncSession, account_user_id: uuid.UUID) -> bool:
+    """BR-28 (02 §6.3 #17): station đăng xuất (API-03) / bị thu hồi phiên (API-91) → xóa tên người kiểm."""
+    station = await get_station_by_account(session, account_user_id)
+    if station is None or station.operator_name is None:
+        return False
+    station.operator_name = None
+    return True
+
+
 async def create_station(
     session: AsyncSession, data: StationCreateIn, actor: uuid.UUID, ip: str | None
 ) -> StationOut:
     await _check_name(session, data.name)
     if data.account_user_id:
         await _check_account(session, data.account_user_id)
-    station = Station(name=data.name.strip(), account_user_id=data.account_user_id)
+    station = Station(
+        name=data.name.strip(),
+        account_user_id=data.account_user_id,
+        kind=data.kind,
+        work_mode=default_work_mode(data.kind),
+    )
     session.add(station)
     await _flush_or_conflict(session)
     audit.record(session, "STATION_UPDATE", user_id=actor, object_type="STATION", object_id=station.id, ip=ip,
-                 data={"op": "create", "name": station.name})  # fmt: skip
+                 data={"op": "create", "name": station.name, "kind": station.kind})  # fmt: skip
     out = await station_out(session, station)
     await commit(session)
     return out
@@ -152,9 +193,20 @@ async def create_station(
 
 async def patch_station(
     session: AsyncSession, station_id: uuid.UUID, data: StationPatchIn, actor: uuid.UUID, ip: str | None
-) -> StationOut:
+) -> tuple[StationOut, bool]:
+    """Trả (station, đổi chế độ) — người gọi đẩy `station.state` khi chế độ đổi."""
     station = await _require_station(session, station_id)
     changes = data.model_dump(exclude_unset=True)
+    mode_changed = False
+    if data.kind is not None and data.kind != station.kind:
+        await lock_station(session, station.id)
+        if await is_busy(session, station.id):
+            raise AppError(
+                "STATION_BUSY", "Station đang có phiên hoặc yêu cầu duyệt. Đổi loại sau khi xong.", 409
+            )
+        new_mode = default_work_mode(data.kind, station.work_mode)
+        mode_changed = new_mode != station.work_mode
+        station.kind, station.work_mode = data.kind, new_mode
     if data.name is not None:
         await _check_name(session, data.name, exclude=station.id)
         station.name = data.name.strip()
@@ -169,7 +221,7 @@ async def patch_station(
                  data={k: str(v) for k, v in changes.items()})  # fmt: skip
     out = await station_out(session, station)
     await commit(session)
-    return out
+    return out, mode_changed
 
 
 async def set_camera(

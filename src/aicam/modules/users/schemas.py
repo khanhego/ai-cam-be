@@ -11,6 +11,9 @@ Client = Literal["STATION", "DASHBOARD"]
 class StationRef(BaseModel):
     id: uuid.UUID
     name: str
+    # Phase 2 (02 §6.1 API-04): loại bàn và chế độ đang chạy — station chọn S1 hay R1 ngay sau đăng nhập.
+    kind: Literal["PACK", "RETURN", "BOTH"]
+    work_mode: Literal["PACK", "RETURN"]
 
 
 class UserOut(BaseModel):

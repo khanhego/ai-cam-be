@@ -365,7 +365,7 @@
             "title": "Session Id"
           },
           "station": {
-            "$ref": "#/components/schemas/StationRef"
+            "$ref": "#/components/schemas/aicam__modules__sessions__schemas__StationRef"
           },
           "status": {
             "enum": [
@@ -1758,7 +1758,7 @@
           "station": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/StationRef"
+                "$ref": "#/components/schemas/aicam__modules__users__schemas__StationRef"
               },
               {
                 "type": "null"
@@ -1805,6 +1805,21 @@
           "actual"
         ],
         "title": "MismatchOut",
+        "type": "object"
+      },
+      "OperatorIn": {
+        "description": "API-101 — strip rồi 2–40 ký tự (kiểm ở service để trả `fields.name`).",
+        "properties": {
+          "name": {
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "OperatorIn",
         "type": "object"
       },
       "OrderBrief": {
@@ -3126,6 +3141,16 @@
             ],
             "title": "Account User Id"
           },
+          "kind": {
+            "default": "PACK",
+            "enum": [
+              "PACK",
+              "RETURN",
+              "BOTH"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "name": {
             "maxLength": 40,
             "minLength": 1,
@@ -3240,8 +3265,36 @@
             "title": "Is Active",
             "type": "boolean"
           },
+          "kind": {
+            "enum": [
+              "PACK",
+              "RETURN",
+              "BOTH"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
           "name": {
             "title": "Name",
+            "type": "string"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "work_mode": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Work Mode",
             "type": "string"
           }
         },
@@ -3250,7 +3303,10 @@
           "name",
           "is_active",
           "account",
-          "cameras"
+          "cameras",
+          "kind",
+          "work_mode",
+          "operator_name"
         ],
         "title": "StationOut",
         "type": "object"
@@ -3280,6 +3336,22 @@
             ],
             "title": "Is Active"
           },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PACK",
+                  "RETURN",
+                  "BOTH"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
           "name": {
             "anyOf": [
               {
@@ -3295,25 +3367,6 @@
           }
         },
         "title": "StationPatchIn",
-        "type": "object"
-      },
-      "StationRef": {
-        "properties": {
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "name"
-        ],
-        "title": "StationRef",
         "type": "object"
       },
       "StationStateOut": {
@@ -3361,7 +3414,7 @@
             "type": "string"
           },
           "station": {
-            "$ref": "#/components/schemas/StationRef"
+            "$ref": "#/components/schemas/StationStateRef"
           },
           "today_count": {
             "title": "Today Count",
@@ -3382,6 +3435,57 @@
           "server_time"
         ],
         "title": "StationStateOut",
+        "type": "object"
+      },
+      "StationStateRef": {
+        "description": "Khối `station` của API-10 / WS `station.state` (Phase 2, 02 §6.2).",
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "PACK",
+              "RETURN",
+              "BOTH"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "work_mode": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Work Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "work_mode",
+          "operator_name"
+        ],
+        "title": "StationStateRef",
         "type": "object"
       },
       "SyncHealth": {
@@ -3622,7 +3726,7 @@
           "station": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/StationRef"
+                "$ref": "#/components/schemas/aicam__modules__users__schemas__StationRef"
               },
               {
                 "type": "null"
@@ -3669,7 +3773,7 @@
           "station": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/StationRef"
+                "$ref": "#/components/schemas/aicam__modules__users__schemas__StationRef"
               },
               {
                 "type": "null"
@@ -3790,6 +3894,24 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "WorkModeIn": {
+        "description": "API-100.",
+        "properties": {
+          "work_mode": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Work Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_mode"
+        ],
+        "title": "WorkModeIn",
+        "type": "object"
+      },
       "aicam__modules__imports__schemas__Counts": {
         "properties": {
           "error": {
@@ -3852,6 +3974,63 @@
           "cancelled_after_pack"
         ],
         "title": "Counts",
+        "type": "object"
+      },
+      "aicam__modules__sessions__schemas__StationRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "StationRef",
+        "type": "object"
+      },
+      "aicam__modules__users__schemas__StationRef": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "PACK",
+              "RETURN",
+              "BOTH"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "work_mode": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Work Mode",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "work_mode"
+        ],
+        "title": "StationRef",
         "type": "object"
       }
     }
@@ -5729,6 +5908,48 @@
         ]
       }
     },
+    "/api/v1/station/operator": {
+      "put": {
+        "description": "API-101: tên người kiểm hàng hoàn — FR-04.10, BR-28.",
+        "operationId": "set_operator_api_v1_station_operator_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateOnlyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Operator",
+        "tags": [
+          "station"
+        ]
+      }
+    },
     "/api/v1/station/scan": {
       "post": {
         "operationId": "scan_api_v1_station_scan_post",
@@ -5860,6 +6081,48 @@
           }
         },
         "summary": "Station State",
+        "tags": [
+          "station"
+        ]
+      }
+    },
+    "/api/v1/station/work-mode": {
+      "put": {
+        "description": "API-100: đổi chế độ bàn (station loại \"Cả hai\") — FR-01.07.",
+        "operationId": "set_work_mode_api_v1_station_work_mode_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkModeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateOnlyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Work Mode",
         "tags": [
           "station"
         ]
