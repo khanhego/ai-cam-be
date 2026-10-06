@@ -270,15 +270,15 @@ async def auto_evidence(
 ) -> int:
     """FR-08.06: phiên PACK hiệu lực của kiện + phiên mở hoàn + ảnh (bằng chứng tự chọn, `auto = true`).
 
-    `prior` (BR-39, L11 — khi tạo hồ sơ): thêm mọi phiên mở hoàn **trước** đã hủy / bỏ dở có clip của kiện /
-    hồ sơ hàng hoàn (`evidence_rules.prior_return_sessions`)."""
+    `prior` (BR-39, L11 — khi tạo hồ sơ): thêm **mọi** phiên mở hoàn đã hủy / bỏ dở có clip của kiện /
+    hồ sơ hàng hoàn (`evidence_rules.interrupted_return_sessions`)."""
     sessions: list[PackSession] = []
     pack = await effective_pack_session(session, package_id)
     if pack is not None:
         sessions.append(pack)
     if prior:
         sessions.extend(
-            await evidence_rules.prior_return_sessions(session, claim.package_id, claim.return_case_id)
+            await evidence_rules.interrupted_return_sessions(session, claim.package_id, claim.return_case_id)
         )
     sessions.extend(return_sessions)
     sessions = list({s.id: s for s in sessions}.values())

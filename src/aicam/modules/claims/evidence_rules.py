@@ -78,10 +78,11 @@ def is_prior_return(s: PackSession, latest_completed_start: datetime | None) -> 
     )
 
 
-async def prior_return_sessions(
+async def interrupted_return_sessions(
     db: AsyncSession, package_id: uuid.UUID, case_id: uuid.UUID | None
 ) -> list[PackSession]:
-    """Phiên mở hoàn trước có clip của kiện / hồ sơ hàng hoàn, sớm trước (BR-39)."""
+    """BR-39: **mọi** phiên mở hoàn `CANCELLED` / `ABANDONED` có clip (≠ `DELETED`) của kiện / hồ sơ hàng
+    hoàn, sớm trước — bằng chứng tự chọn khi tạo hồ sơ (`auto_evidence(prior=True)`, 0006 bước 4b)."""
     candidates = (
         await db.scalars(
             select(PackSession)
@@ -96,8 +97,18 @@ async def prior_return_sessions(
     if not candidates:
         return []
     with_clip = await live_clip_sessions(db, [s.id for s in candidates])
+    return [s for s in candidates if s.id in with_clip]
+
+
+async def prior_return_sessions(
+    db: AsyncSession, package_id: uuid.UUID, case_id: uuid.UUID | None
+) -> list[PackSession]:
+    """API-132 `prior_return_sessions[]` (Alert D17): phiên hủy / bỏ dở có clip bắt đầu **trước** phiên hoàn
+    tất mới nhất (hoặc chưa có phiên hoàn tất) — `prior_return`."""
     latest = await latest_completed_return_start(db, package_id, case_id)
-    return [s for s in candidates if s.id in with_clip and is_prior_return(s, latest)]
+    return [
+        s for s in await interrupted_return_sessions(db, package_id, case_id) if is_prior_return(s, latest)
+    ]
 
 
 def primary_session(

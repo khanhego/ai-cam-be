@@ -97,9 +97,9 @@ async def test_abandoned_prior_session_is_evidence_and_primary(
     ]
 
 
-async def test_prior_session_without_live_clip_is_skipped(db: AsyncSession) -> None:
-    """Phiên trước không có clip / clip đã `DELETED` → không thêm; phiên hủy bắt đầu SAU phiên hoàn tất mới
-    nhất không phải "phiên trước"."""
+async def test_prior_session_without_live_clip_is_skipped(db: AsyncSession, test_settings: Settings) -> None:
+    """Phiên hủy / bỏ dở không có clip / clip đã `DELETED` → không thêm. BR-39 "mọi phiên": phiên bỏ dở bắt
+    đầu SAU phiên hoàn tất vẫn vào bằng chứng nhưng không phải "phiên trước" (`prior_return = false`)."""
     station, package, case, pack = await _setup(db)
     no_clip = await _return(db, station, package, case, T0, "ABANDONED", clip_status=None)
     deleted = await _return(db, station, package, case, T0 + timedelta(minutes=5), "CANCELLED",
@@ -113,8 +113,12 @@ async def test_prior_session_without_live_clip_is_skipped(db: AsyncSession) -> N
 
     assert created is not None
     evidence = await _evidence(db, created.claim.id)
-    assert evidence == {pack.id, done.id}
-    assert not {no_clip.id, deleted.id, later.id} & evidence
+    assert evidence == {pack.id, done.id, later.id}
+    assert not {no_clip.id, deleted.id} & evidence
+    detail = await claim_views.claim_detail(db, created.claim.id, uuid.uuid4(), test_settings)
+    flags = {e.session.id: (e.primary, e.prior_return) for e in detail.evidence if e.session}
+    assert flags == {pack.id: (False, False), done.id: (True, False), later.id: (False, False)}
+    assert detail.prior_return_sessions == []
 
 
 async def test_manual_claim_includes_prior_sessions(db: AsyncSession, test_settings: Settings) -> None:
