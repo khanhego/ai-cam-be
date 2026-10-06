@@ -1,3 +1,4 @@
+# ruff: noqa: E501 — chuỗi tiếng Việt dài trong docstring / dữ liệu test
 """Đồng thời Phase 2 trên Postgres thật (02a §6, §11 "Đồng thời"; DEC-266, DEC-303 d).
 
 Dữ liệu commit thật, dọn bằng TRUNCATE CASCADE sau test (như `test_scan_concurrency.py`).
@@ -415,3 +416,54 @@ async def test_claim_from_alert_vs_manual_resolve(committed: AsyncEngine, test_s
     await asyncio.sleep(0)
     async with committed.begin() as conn:
         await conn.execute(text("TRUNCATE recon_alert, claim CASCADE"))
+
+
+async def test_close_with_pending_merge_while_order_locked(
+    committed: AsyncEngine, test_settings: Settings
+) -> None:
+    """SM-F5: đóng phiên chưa xác định có đơn chờ gộp trong lúc J-13 / J-04 giữ `order:{sn}` → không chờ khóa
+    (không khóa chéo), phiên đóng xong, hồ sơ vẫn chờ gộp (lượt đồng bộ sau gộp)."""
+    from aicam.modules.returns.models import ReturnCase
+
+    async with sessionmaker()() as db:
+        order, _ = await make_order(db, 33)
+        await db.commit()
+        order_id, sn = order.id, order.platform_order_sn
+    headers = await _station("pm", mode="RETURN")
+    code = "SPXVN0000000333"
+    async with _client(test_settings) as client:
+        res = await client.post("/api/v1/station/return-sessions", headers=headers,
+                                json={"client_scan_id": str(uuid.uuid4()), "unidentified_code": code})  # fmt: skip
+        session = res.json()["state"]["session"]
+        lines = [{"order_item_id": x["order_item_id"], "quantity_received": x["quantity_received"],
+                  "condition": "OK", "note": None} for x in session["inspection"]["lines"]]  # fmt: skip
+        saved = await client.put(f"/api/v1/station/sessions/{session['id']}/inspection", headers=headers,
+                                 json={"conclusion": "OK", "note": "", "lines": lines})  # fmt: skip
+        assert saved.status_code == 200, saved.text
+        case_id = uuid.UUID(session["return_case"]["id"])
+        async with sessionmaker()() as db:
+            await db.execute(text("UPDATE return_case SET pending_merge_order_id = :o WHERE id = :c"),
+                             {"o": order_id, "c": case_id})  # fmt: skip
+            await db.commit()
+        # Đơn chờ gộp được gắn SAU bước khóa ngoài station (J-13 vừa thấy mã) và J-13 vẫn đang giữ đơn: đóng phiên
+        # (người gọi đã giữ station + hồ sơ) không chờ khóa đơn — để chờ gộp.
+        from aicam.modules.sessions import return_scan
+        from aicam.modules.sessions.models import PackSession as PS
+
+        async with sessionmaker()() as holder:
+            await orders.lock_orders(holder, [sn])  # J-13 đang xử lý đơn
+            async with sessionmaker()() as db:
+                pack = await db.get(PS, uuid.UUID(session["id"]))
+                case = await db.get(ReturnCase, case_id)
+                assert pack is not None
+                assert case is not None
+                closed = await asyncio.wait_for(
+                    return_scan.close_return_session(db, pack, case, code=code, actor_label="TST"), timeout=5
+                )
+                await db.commit()
+            await holder.rollback()
+    assert closed.conclusion == "OK"
+    async with sessionmaker()() as db:
+        case = await db.get(ReturnCase, case_id)
+        assert case is not None
+        assert (case.order_id, case.pending_merge_order_id) == (None, order_id)
