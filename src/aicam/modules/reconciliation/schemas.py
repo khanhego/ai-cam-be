@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 Rule = Literal[
     "SHIPPED_NOT_PACKED",
@@ -75,7 +75,7 @@ class ReconAlertPage(BaseModel):
 
 
 class ResolveIn(BaseModel):
-    note: str = Field(max_length=500)
+    note: str  # 1–500 ký tự kiểm ở service (G3 C-05)
 
 
 class RunOut(BaseModel):

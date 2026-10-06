@@ -441,23 +441,27 @@ async def create_manual(session: AsyncSession, data: ClaimCreateIn, p: Principal
     deadline, deadline_source = _deadline(case, cfg.claim_deadline_days)
     source = "RECON" if alert is not None else "MANUAL"
     try:
-        claim = await _insert_claim(
-            session,
-            Claim(
-                package_id=package.id,
-                order_id=package.order_id,
-                return_case_id=case.id if case else None,
-                type=data.type,
-                counterparty=data.counterparty,
-                status="NEW",
-                source=source,
-                deadline_at=deadline,
-                deadline_source=deadline_source,
-                created_by=p.user_id,
-                version=1,
-            ),
-        )
+        async with session.begin_nested():  # savepoint: đọc lại hồ sơ đã có sau lỗi unique (G3 C-04)
+            claim = await _insert_claim(
+                session,
+                Claim(
+                    package_id=package.id,
+                    order_id=package.order_id,
+                    return_case_id=case.id if case else None,
+                    type=data.type,
+                    counterparty=data.counterparty,
+                    status="NEW",
+                    source=source,
+                    deadline_at=deadline,
+                    deadline_source=deadline_source,
+                    created_by=p.user_id,
+                    version=1,
+                ),
+            )
     except IntegrityError as exc:  # lưới an toàn của partial unique BR-27 (advisory lock đã tuần tự hóa)
+        found = await find_open(session, package.id, data.type)
+        if found is not None:
+            raise _claim_exists(found) from exc  # kèm details {claim_id, code} như nhánh thường (G3 C-04)
         raise AppError("CLAIM_EXISTS", "Kiện này đã có hồ sơ cùng loại đang mở.", 409) from exc
     await auto_evidence(
         session,
@@ -526,9 +530,11 @@ async def patch(session: AsyncSession, claim: Claim, data: ClaimPatchIn, p: Prin
     if claim.status == "CLOSED":
         raise AppError("CLAIM_CLOSED", "Hồ sơ đã đóng, chỉ thêm được ghi chú.", 409)
     reason = (data.reason or "").strip() or None
-    if reason is not None and len(reason) < 5:
+    if reason is not None and not 5 <= len(reason) <= 500:
         raise _validation("reason", "Nhập lý do 5–500 ký tự")
     ref = (data.platform_claim_ref or "").strip() or None
+    if ref is not None and len(ref) > 64:
+        raise _validation("platform_claim_ref", "Mã khiếu nại bên sàn tối đa 64 ký tự")
     before = _snapshot(claim)
     notes: list[str] = []
 

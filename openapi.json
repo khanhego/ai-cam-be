@@ -23,8 +23,6 @@
       "AdjustIn": {
         "properties": {
           "reason": {
-            "maxLength": 500,
-            "minLength": 5,
             "title": "Reason",
             "type": "string"
           },
@@ -1474,8 +1472,6 @@
           "platform_claim_ref": {
             "anyOf": [
               {
-                "maxLength": 64,
-                "minLength": 1,
                 "type": "string"
               },
               {
@@ -1487,7 +1483,6 @@
           "reason": {
             "anyOf": [
               {
-                "maxLength": 500,
                 "type": "string"
               },
               {
@@ -1815,7 +1810,6 @@
           "note": {
             "anyOf": [
               {
-                "maxLength": 2000,
                 "type": "string"
               },
               {
@@ -1825,7 +1819,6 @@
             "title": "Note"
           },
           "reason": {
-            "maxLength": 2000,
             "title": "Reason",
             "type": "string"
           }
@@ -3919,7 +3912,6 @@
         "description": "API-101 — strip rồi 2–40 ký tự (kiểm ở service để trả `fields.name`).",
         "properties": {
           "name": {
-            "maxLength": 200,
             "title": "Name",
             "type": "string"
           }
@@ -5235,7 +5227,6 @@
       "ResolveIn": {
         "properties": {
           "note": {
-            "maxLength": 500,
             "title": "Note",
             "type": "string"
           }

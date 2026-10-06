@@ -7,7 +7,7 @@ Kiểm lại trạng thái và phiên hoạt động **sau** khi khóa kiện.
 import uuid
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +26,7 @@ WarehouseStatus = Literal[WAREHOUSE_STATUSES]  # type: ignore[valid-type]
 
 class AdjustIn(BaseModel):
     to_status: WarehouseStatus
-    reason: str = Field(min_length=5, max_length=500)
+    reason: str  # 5–500 ký tự kiểm ở service → `details.fields.reason` tiếng Việt (G3 C-05)
     recon_alert_id: uuid.UUID | None = None
 
 
@@ -55,7 +55,7 @@ async def adjust_status(
     tz: str,
 ) -> AdjustOut:
     reason = data.reason.strip()
-    if len(reason) < 5:
+    if not 5 <= len(reason) <= 500:
         raise AppError(
             "VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": {"reason": "Nhập lý do 5–500 ký tự"}}
         )

@@ -170,11 +170,11 @@ class ClaimPatchIn(BaseModel):
 
     version: int = Field(ge=1)
     status: ClaimStatus | None = None
-    platform_claim_ref: str | None = Field(default=None, min_length=1, max_length=64)
+    platform_claim_ref: str | None = None  # ≤ 64 ký tự kiểm ở service (G3 C-05)
     owner_user_id: uuid.UUID | None = None
     deadline_at: datetime | None = None
     recovered_amount: int | None = Field(default=None, ge=0, le=10_000_000_000)
-    reason: str | None = Field(default=None, max_length=500)
+    reason: str | None = None  # 5–500 ký tự kiểm ở service
 
 
 class EvidenceIn(BaseModel):

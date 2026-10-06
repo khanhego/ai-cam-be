@@ -33,9 +33,9 @@ CORRECTED_FLAG = "INSPECTION_CORRECTED"
 
 class CorrectIn(BaseModel):
     conclusion: Conclusion
-    note: str | None = Field(default=None, max_length=2000)
+    note: str | None = None  # ≤ 2000 ký tự kiểm ở service (G3 C-05)
     lines: list[InspectionLineIn] = Field(default_factory=list, max_length=200)
-    reason: str = Field(max_length=2000)
+    reason: str  # 5–500 ký tự kiểm ở service
 
 
 def _invalid(field: str, message: str) -> AppError:
@@ -94,6 +94,8 @@ async def correct(
         inspection.LineInput(i.order_item_id, i.quantity_received, i.condition, i.note) for i in data.lines
     ]
     note = data.note.strip() if data.note else None
+    if note is not None and len(note) > 2000:
+        raise _invalid("note", "Ghi chú tối đa 2000 ký tự")
     inspection.validate(
         lines_mode=pack.inspection_lines_mode or "FULL", conclusion=data.conclusion, note=note,
         current=current, lines=lines,

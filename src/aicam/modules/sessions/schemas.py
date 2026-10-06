@@ -33,7 +33,7 @@ class WorkModeIn(BaseModel):
 class OperatorIn(BaseModel):
     """API-101 — strip rồi 2–40 ký tự (kiểm ở service để trả `fields.name`)."""
 
-    name: str = Field(max_length=200)
+    name: str  # 2–40 ký tự sau strip kiểm ở service (G3 C-05)
 
 
 class CameraState(BaseModel):
