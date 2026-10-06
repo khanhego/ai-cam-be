@@ -249,7 +249,11 @@ def test_downgrade_then_upgrade_round_trip(mig_db: None) -> None:
     }
     assert {k for k, (held, _, _) in clips.items() if held} == protected
     assert clips[_clip("E", "CAM1")][0] is False  # hồ sơ đóng 200 ngày trước: hết bảo vệ
-    assert clips[_clip("A", "CAM2")][1:] == upgraded[_clip("A", "CAM2")][1:]  # giữ nguyên người / giờ giữ cũ
+    # Cờ giữ do downgrade đặt đứng tên người dùng hệ thống (G3 M-F5); người / giờ giữ cũ nằm ở archive.
+    assert {str(clips[k][1]) for k in protected} == {"00000000-0000-7000-8000-00000000a1c0"}
+    prev = run(f"SELECT prev_held_by::text, prev_held_at FROM phase2_archive.downgrade_held_clips "
+               f"WHERE clip_id = '{_clip('A', 'CAM2')}'")  # fmt: skip
+    assert tuple(prev[0]) == tuple(upgraded[_clip("A", "CAM2")][1:])
     assert clips[_clip("C", "CAM1")][2] is not None
     assert {str(r[0]) for r in run("SELECT clip_id FROM phase2_archive.downgrade_held_clips")} == protected
     assert {str(r[0]) for r in run("SELECT id FROM phase2_archive.legacy_claims")} == set(legacy)

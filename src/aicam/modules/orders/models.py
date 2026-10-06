@@ -130,3 +130,10 @@ Index(
     func.upper(Order.platform_order_sn).label("order_sn_upper"),
     postgresql_ops={"order_sn_upper": "text_pattern_ops"},
 )
+# J-14 BR-20 `unverified_stale` (G3 R7, DEC-345, migration 0005): kiện chưa xác minh theo lúc tạo — chỉ phần
+# nhỏ chưa xác minh, không quét cả bảng kiện mỗi 30 phút.
+Index(
+    "ix_package_unverified_created_at",
+    Package.created_at,
+    postgresql_where=text("verified IS false AND is_placeholder IS false"),
+)

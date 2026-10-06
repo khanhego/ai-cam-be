@@ -19,7 +19,7 @@ from sqlalchemy import Select, delete, func, literal, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aicam.core import audit, clock
+from aicam.core import audit, clock, schema_guard
 from aicam.core.db import after_commit, commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
@@ -740,6 +740,11 @@ async def enforce_retention(db: AsyncSession, settings: Settings) -> dict[str, i
     chứng thì bỏ qua) → `DELETED` + audit `DELETE_CLIP` (actor hệ thống) → commit → **rồi** xóa file (G3-F8).
     Xóa file lỗi → lượt sau dọn lại các clip `DELETED` còn file.
     """
+    if not await schema_guard.matches(
+        db
+    ):  # G3 M-F1: image lệch schema (vd. cờ `held` đã đổi nghĩa) → không xóa
+        await db.rollback()
+        return {"skipped_schema_mismatch": 1}
     cfg = await settings_service.get(db)
     now = clock.now()
     days = protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)

@@ -7,6 +7,7 @@ import signal
 from typing import Any
 
 import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại giữa module phân giải được
+from aicam.core import schema_guard
 from aicam.core.db import dispose_engine, init_engine
 from aicam.core.logging import configure_logging
 from aicam.core.redis import close_redis, init_redis
@@ -21,6 +22,7 @@ from aicam.realtime.bus import Bus
 async def main() -> None:
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_json)
+    await schema_guard.enforce(settings, "vision")  # G3 M-F1
     init_engine(settings.database_url)
     redis = init_redis(settings.redis_url)
     stop = asyncio.Event()

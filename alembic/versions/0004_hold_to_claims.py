@@ -55,6 +55,11 @@ CLAIM_COLUMNS = (
 EVIDENCE_COLUMNS = "id, claim_id, kind, session_id, snapshot_id, auto, added_by, added_at"
 NOTE_COLUMNS = "id, claim_id, kind, text, author_user_id, at"
 PACK_COLUMNS = "id, claim_id, status, progress, path, sha256, size_bytes, missing, error, created_by, created_at, expires_at"
+# Người dùng hệ thống đứng tên cờ giữ do downgrade đặt (G3 M-F5, DEC-338): UI Phase 1 hiện "Giữ bởi <tên>" thay vì
+# trống. Không đăng nhập được (`is_active = false`, hash không hợp lệ); upgrade lại xóa khi không còn tham chiếu.
+SYSTEM_HOLDER_ID = "00000000-0000-7000-8000-00000000a1c0"
+SYSTEM_HOLDER_NAME = "Hệ thống (bảo vệ bằng chứng Phase 2)"
+ALLOW_ACTIVE_ENV = "AICAM_MIGRATE_ALLOW_ACTIVE_CONNECTIONS"
 
 # Phiên được bảo vệ theo ADR-009 (cùng điều kiện `media.protection.protected_sessions_sql`, viết lại bằng SQL:
 # migration không import code nghiệp vụ). `:floor` = RETENTION_CLIP_MIN_DAYS.
@@ -208,6 +213,8 @@ def _migrate_held(bind: sa.Connection) -> list[uuid.UUID]:
             "ORDER BY s.package_id, c.held_at NULLS LAST, c.id"
         )
     ).all()
+    if rows:
+        _guard_no_other_clients(bind)
     by_package: dict[uuid.UUID, list[Any]] = defaultdict(list)
     for row in rows:
         by_package[row.package_id].append(row)
@@ -314,11 +321,90 @@ def _check_subset(bind: sa.Connection, held_before: list[uuid.UUID]) -> None:
         )
 
 
+def _guard_no_other_clients(bind: sa.Connection) -> None:
+    """G3 M-F1 (c), DEC-336: bước 3 bỏ cờ `held` — J-02 của image Phase 1 còn chạy (worker / beat chưa dừng) chỉ biết
+    cờ này → xóa clip vừa chuyển thành bằng chứng `LEGACY_HOLD`. Còn kết nối khác vào DB → dừng (cả transaction
+    lùi). Ops chắc chắn không còn tiến trình ứng dụng (vd. psql để xem) thì đặt AICAM_MIGRATE_ALLOW_ACTIVE_CONNECTIONS=1."""
+    if os.environ.get(ALLOW_ACTIVE_ENV) == "1":
+        return
+    others = (
+        bind.execute(
+            sa.text(
+                "SELECT coalesce(nullif(application_name, ''), '?') || ' (' || coalesce(host(client_addr), 'local') "
+                "|| ')' FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() "
+                "AND backend_type = 'client backend' ORDER BY 1"
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if others:
+        raise RuntimeError(
+            f"0004: còn {len(others)} kết nối khác vào DB ({', '.join(others[:5])}) trong khi có clip đang giữ cần "
+            "chuyển thành hồ sơ LEGACY_HOLD — J-02 của bản cũ có thể xóa chúng. Dừng mọi service "
+            "(`dc stop api vision worker worker-sync worker-export beat`, docs/ops.md §7.1) rồi chạy lại; không có gì "
+            f"bị thay đổi. Chắc chắn không còn tiến trình ứng dụng thì đặt {ALLOW_ACTIVE_ENV}=1."
+        )
+
+
+def _report_deleted_evidence(bind: sa.Connection) -> int:
+    """Nâng cấp lại sau downgrade (G3 M-F5): hồ sơ chưa đóng có clip bằng chứng bị xóa trong lúc chạy bản cũ → log
+    cảnh báo + audit `EVIDENCE_CLIP_DELETED_DURING_ROLLBACK` từng hồ sơ để CSKH biết bằng chứng nào đã mất."""
+    if not _exists(bind, "meta"):
+        return 0
+    rows = bind.execute(
+        sa.text(
+            "SELECT cl.id, cl.code, array_agg(DISTINCT c.id::text) AS clip_ids FROM claim cl "
+            "JOIN claim_evidence ce ON ce.claim_id = cl.id AND ce.kind = 'SESSION' "
+            "JOIN clip c ON c.session_id = ce.session_id "
+            "WHERE cl.status <> 'CLOSED' AND c.status = 'DELETED' AND c.deleted_at >= ("
+            f"  SELECT (value #>> '{{}}')::timestamptz FROM {ARCHIVE}.meta WHERE key = 'downgraded_at') "
+            "GROUP BY cl.id, cl.code ORDER BY cl.code"
+        )
+    ).all()
+    for row in rows:
+        bind.execute(
+            sa.text(
+                "INSERT INTO audit_log (user_id, action, object_type, object_id, at, data) VALUES (NULL, "
+                "'EVIDENCE_CLIP_DELETED_DURING_ROLLBACK', 'CLAIM', :id, now(), CAST(:data AS jsonb))"
+            ),
+            {"id": str(row.id), "data": json.dumps({"code": row.code, "clip_ids": sorted(row.clip_ids)})},
+        )
+    if rows:
+        log.warning(
+            "0004: %s hồ sơ có clip bằng chứng bị xóa khi chạy bản cũ: %s",
+            len(rows),
+            ", ".join(r.code for r in rows),
+        )
+    return len(rows)
+
+
+def _drop_system_holder(bind: sa.Connection) -> None:
+    bind.execute(
+        sa.text("UPDATE clip SET held_by = NULL WHERE held_by = CAST(:u AS uuid) AND NOT held"),
+        {"u": SYSTEM_HOLDER_ID},
+    )
+    left = bind.execute(
+        sa.text("SELECT count(*) FROM clip WHERE held_by = CAST(:u AS uuid)"), {"u": SYSTEM_HOLDER_ID}
+    ).scalar()
+    if left:
+        log.warning("0004: %s clip vẫn đứng tên người dùng hệ thống giữ — giữ lại người dùng này", left)
+        return
+    with bind.begin_nested() as sp:
+        try:
+            bind.execute(sa.text('DELETE FROM "user" WHERE id = CAST(:u AS uuid)'), {"u": SYSTEM_HOLDER_ID})
+        except sa.exc.IntegrityError:
+            sp.rollback()
+            log.warning("0004: người dùng hệ thống giữ clip còn được tham chiếu — giữ lại")
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     restored, released = _restore_from_archive(bind)
     if restored or released:
         log.info("0004: khôi phục %s hồ sơ LEGACY_HOLD, trả %s cờ giữ do downgrade đặt", restored, released)
+    _report_deleted_evidence(bind)
+    _drop_system_holder(bind)
     held_before = _migrate_held(bind)
     _check_subset(bind, held_before)
     op.execute(f"DROP SCHEMA IF EXISTS {ARCHIVE} CASCADE")
@@ -344,19 +430,27 @@ def downgrade() -> None:
         f"INSERT INTO {ARCHIVE}.downgrade_preheld_clips SELECT id, held_by, held_at FROM clip "
         "WHERE held AND status <> 'DELETED' ON CONFLICT (clip_id) DO NOTHING"
     )
-    # 1. Mọi clip đang được bảo vệ theo ADR-009 → `held = true` (code cũ chỉ biết cờ giữ).
+    # 1. Mọi clip đang được bảo vệ theo ADR-009 → `held = true` (code cũ chỉ biết cờ giữ), đứng tên người dùng hệ
+    #    thống để UI cũ hiện lý do (G3 M-F5); người / giờ giữ cũ lưu ở `downgrade_held_clips`, upgrade trả lại.
+    bind.execute(
+        sa.text(
+            'INSERT INTO "user" (id, username, display_name, role, password_hash, is_active) VALUES '
+            "(CAST(:u AS uuid), 'system_phase2_hold', :name, 'SUPERVISOR', '!', false) ON CONFLICT (id) DO NOTHING"
+        ),
+        {"u": SYSTEM_HOLDER_ID, "name": SYSTEM_HOLDER_NAME},
+    )
     held = bind.execute(
         sa.text(
             f"WITH target AS ("
             f"  SELECT c.id, c.held_by, c.held_at FROM clip c "
             f"  WHERE NOT c.held AND c.status <> 'DELETED' AND c.session_id IN ({PROTECTED_SESSIONS_SQL})"
             f"), upd AS ("
-            f"  UPDATE clip c SET held = true, held_at = COALESCE(c.held_at, now()) FROM target t "
+            f"  UPDATE clip c SET held = true, held_by = CAST(:holder AS uuid), held_at = now() FROM target t "
             f"  WHERE c.id = t.id RETURNING c.id, t.held_by AS prev_by, t.held_at AS prev_at, c.held_by, c.held_at"
             f") INSERT INTO {ARCHIVE}.downgrade_held_clips "
             f"SELECT id, prev_by, prev_at, held_by, held_at FROM upd ON CONFLICT (clip_id) DO NOTHING"
         ),
-        {"floor": _floor()},
+        {"floor": _floor(), "holder": SYSTEM_HOLDER_ID},
     ).rowcount
     # 2. Hồ sơ LEGACY_HOLD + bằng chứng + ghi chú → archive rồi xóa (DEC-270). Hồ sơ khác giữ nguyên.
     for table, source, columns, where in (

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại giữa module phân giải được
 from aicam import __version__
+from aicam.core import schema_guard
 from aicam.core.db import dispose_engine, init_engine
 from aicam.core.errors import install_error_handlers
 from aicam.core.limits import BodySizeLimitMiddleware
@@ -41,6 +42,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         # Engine và Redis kết nối lười: app vẫn khởi động khi DB chưa sẵn sàng (/healthz luôn trả lời).
+        await schema_guard.enforce(
+            settings, "api"
+        )  # G3 M-F1: schema lệch image → thoát (staging / production)
         init_engine(settings.database_url)
         redis = init_redis(settings.redis_url)
         bus = Bus()

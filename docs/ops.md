@@ -147,14 +147,43 @@ Làm nên lúc ngoài giờ đóng gói: api khởi động lại vài giây, st
 Phase 2 thêm 3 migration: **0003** (bảng / cột mới, chỉ thêm), **0004** (clip đang "Giữ" → hồ sơ khiếu nại
 "Chuyển từ cờ giữ" — `LEGACY_HOLD`) và **0005** (index tìm kiện hoàn theo tiền tố). Thời gian: đo trên máy dev với
 1 triệu kiện, 0003 chạy ~34 giây và **khóa bảng kiện suốt thời gian đó** (một transaction; đọc / ghi kiện chờ) —
-nâng cấp ngoài giờ đóng gói, dừng `api` / worker trước nếu kho rất lớn; 0005 ~1,3 giây. Từ Phase 2, clip được giữ theo **hồ sơ** (ADR-009) thay cho cờ giữ từng clip.
+nâng cấp ngoài giờ đóng gói; 0005 ~1,3 giây (index tạo không `CONCURRENTLY` — mọi service đã dừng). Từ Phase 2, clip được giữ theo **hồ sơ** (ADR-009) thay cho cờ giữ từng clip.
 
-**Nâng cấp** (như mục 7, thêm):
+**Nâng cấp** — khác mục 7: **dừng mọi service ứng dụng trước khi migrate** (như phần lùi). Lý do: 0004 bỏ cờ
+"Giữ" của clip đã chuyển thành hồ sơ `LEGACY_HOLD`; J-02 của image Phase 1 (02:00 giờ VN) nếu còn chạy chỉ biết cờ
+này → xóa đúng các clip bằng chứng đó. 0004 tự từ chối khi còn kết nối khác vào DB và có clip đang giữ (log
+`0004: còn N kết nối khác…`); từ Phase 2, api / worker / beat / vision so phiên bản schema với image lúc khởi động
+và **thoát** (log `schema_version_mismatch`, mã 78) nếu lệch, J-02 kiểm lại ngay trước khi xóa.
 
-1. Sao lưu DB (`pg-backup.sh once`) **và** chụp snapshot volume video (NAS / RAID) — bằng chứng không nằm trong `pg_dump`.
-2. Sàn giữ clip: `RETENTION_CLIP_MIN_DAYS` (mặc định 60, đặt trong `docker/.env`). 0003 nâng `retention_clip_days` dưới sàn lên sàn + audit `RETENTION_RAISED_TO_MINIMUM`.
-3. `dc up -d --build` → kiểm `dc logs migrate`: dòng `0004: N clip giữ → M hồ sơ LEGACY_HOLD` và `held_before=… protected_after=…` (tập sau ≥ tập trước — giữ theo phiên, cả Cam 1 + Cam 2). `migrate` lỗi → không có gì thay đổi (một transaction), `api` không lên: giữ nguyên image cũ, gửi log cho BE.
-4. Admin xem **Hồ sơ khiếu nại** lọc nguồn "Chuyển từ cờ giữ" (hạn = lúc nâng cấp + 30 ngày) — đóng hồ sơ không còn cần.
+```sh
+dc exec backup /bin/sh /pg-backup.sh once                  # 1. sao lưu DB + snapshot volume video (NAS / RAID)
+git -C ../ai-cam-be pull && git -C ../ai-cam-fe pull         # 2. mã Phase 2 (BE + FE cùng lúc)
+(cd ../ai-cam-fe && pnpm install --frozen-lockfile && pnpm build)
+dc stop api vision worker worker-sync worker-export beat   # 3. BẮT BUỘC: không còn tiến trình Phase 1 nào
+dc build migrate && dc run --rm migrate alembic current    # 4. image mới; phải in 0002 (Phase 1)
+dc run --rm migrate alembic upgrade head                   # 5. 0003 → 0004 → 0005 (một transaction)
+dc run --rm migrate alembic current                        #    phải in 0005 (head)
+dc exec postgres psql -U aicam -d aicam -c 'VACUUM ANALYZE package'   # 6. dọn bloat backfill 0003, cập nhật thống kê
+dc up -d                                                   # 7. mọi service image mới
+dc ps                                                      # 8. api healthy; worker, worker-sync, worker-export, beat, vision Up
+```
+
+1. Sàn giữ clip: `RETENTION_CLIP_MIN_DAYS` (mặc định 60, đặt trong `docker/.env`). 0003 nâng `retention_clip_days`
+   dưới sàn lên sàn + audit `RETENTION_RAISED_TO_MINIMUM`.
+2. Log bước 5: `0004: N clip giữ → M hồ sơ LEGACY_HOLD` và `held_before=… protected_after=…` (tập sau ≥ tập trước —
+   giữ theo phiên, cả Cam 1 + Cam 2). Lỗi → không có gì thay đổi (một transaction): `lock_timeout` 5 giây (còn
+   tiến trình giữ khóa bảng kiện) → làm lại bước 3; lỗi khác → giữ image cũ (`AICAM_IMAGE=<tag Phase 1> dc up -d`),
+   gửi log cho BE.
+3. **Đối soát và hàng hoàn chạy ngay khi beat lên**: J-14 (đối soát, 30 phút) và J-13 (yêu cầu trả hàng Shopee, 15
+   phút). Muốn bật dần: đặt `RECON_ENABLED=false` (tắt J-14) trong `docker/.env` trước bước 7. J-13 với Shopee thật
+   **tắt mặc định** (`SHOPEE_RETURNS_ENABLED=false`) tới khi API `returns` được xác nhận với tài khoản partner (T-3);
+   bật bằng `SHOPEE_RETURNS_ENABLED=true` + `dc up -d`.
+4. Lượt J-13 đầu của mỗi shop (chưa có mốc hàng hoàn) lùi `SHOPEE_RETURNS_INITIAL_DAYS` ngày (mặc định 15 — shop
+   kết nối từ Phase 1 có yêu cầu trả đang chạy từ trước nâng cấp). Cần lùi xa hơn: đặt biến này (tối đa 60) trước
+   lượt đầu; đã chạy rồi thì xóa mốc của shop: `dc exec postgres psql -U aicam -d aicam -c "UPDATE shop SET
+   last_return_cursor = NULL"` — lượt kế lùi lại từ đầu (idempotent theo mã yêu cầu trả). Cảnh báo / mốc quá hạn
+   chỉ tính cho kiện vào hàng hoàn **sau** lúc nâng cấp (`recon_start_at`).
+5. Admin xem **Hồ sơ khiếu nại** lọc nguồn "Chuyển từ cờ giữ" (hạn = lúc nâng cấp + 30 ngày) — đóng hồ sơ không còn cần.
 
 **Lùi về Phase 1** — chỉ khi không sửa tiến được (ưu tiên forward-fix). Thứ tự bắt buộc: **downgrade bằng image mới
 trước, đổi image sau**. Downgrade không xóa dữ liệu Phase 2: chép sang schema `phase2_archive` (hồ sơ hàng hoàn,
@@ -162,12 +191,14 @@ phiên nhận hàng hoàn + clip / sự kiện / bản xuất / yêu cầu duy�
 bằng chứng + ghi chú + gói bằng chứng, cảnh báo đối soát, lịch sử trạng thái hoàn, cột Phase 2 của station / cài đặt
 / phiên / kiện, số thứ tự mã HH- / KN- / TAM-). Kiện đang ở trạng thái hoàn hiện lại trạng thái cuối trước đó (không
 có → "Đã giao"). Clip đang được bảo vệ theo hồ sơ được đặt cờ **Giữ** để J-02 của image cũ không xóa. File video,
-ảnh, gói zip **giữ nguyên trên đĩa**.
+ảnh, gói zip **giữ nguyên trên đĩa**. Cờ Giữ do downgrade đặt đứng tên "Hệ thống (bảo vệ bằng chứng Phase 2)" (người
+dùng không đăng nhập được). Kiện tạm `TAM-` còn phiên đóng gói (hiếm) giữ lại với trạng thái "Đã hủy".
 
 ```sh
 dc exec backup /bin/sh /pg-backup.sh once                  # 1. sao lưu (bắt buộc) + snapshot volume video
 # 2. Hoàn tất / hủy mọi phiên nhận hàng hoàn đang mở ở station (downgrade từ chối nếu còn — không đổi gì).
-#    Phiên hoàn có clip "Không cắt được": bấm Thử lại (API-46) trước — image cũ không giữ video thô cho chúng.
+#    Phiên hoàn có clip "Không cắt được" / đang cắt: bấm Thử lại (API-46), chờ READY — downgrade TỪ CHỐI nếu còn
+#    (image cũ không giữ video thô cho chúng); chấp nhận mất: AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS=1 (dc run -e).
 dc stop api vision worker worker-sync worker-export beat   # 3. dừng dịch vụ (không để job ghi giữa chừng)
 dc run --rm migrate alembic downgrade 0002                 # 4. bằng IMAGE MỚI (0005, 0004 rồi 0003, một transaction)
 dc run --rm migrate alembic current                        #    phải in 0002
@@ -187,7 +218,9 @@ image cũ đã đổi trạng thái thì giữ trạng thái mới — log `ki�
 có); 0004 trả cờ giữ do downgrade đặt (clip Admin đã giữ trước khi lùi vẫn giữ), khôi phục hồ sơ "Chuyển từ cờ giữ"
 cũ, chỉ tạo hồ sơ mới cho clip được giữ thêm trong lúc chạy Phase 1, rồi drop `phase2_archive`. Mã HH- / KN- / TAM-
 mới không trùng mã cũ. Kiểm log migrate: `0003: khôi phục từ phase2_archive {…}` (số dòng = lúc chép) và
-`0004: khôi phục …`.
+`0004: khôi phục …`. Hồ sơ có clip bằng chứng bị xóa trong lúc chạy Phase 1 → log `0004: N hồ sơ có clip bằng chứng
+bị xóa…` + audit `EVIDENCE_CLIP_DELETED_DURING_ROLLBACK` (báo CSKH). Mã `TAM-` bị kiện khác dùng trong lúc chạy
+Phase 1 → 0003 dừng với danh sách mã (đổi mã kiện kia rồi chạy lại).
 
 ## 8. Xem log, giám sát
 

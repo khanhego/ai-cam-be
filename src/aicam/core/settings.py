@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -12,7 +13,10 @@ _DEV_SECRET_PREFIX = "dev-only-"  # noqa: S105 — tiền tố nhận diện sec
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_env: str = "dev"  # dev | test | staging | production
+    app_env: Literal["dev", "test", "staging", "production"] = "dev"  # G3 F-12: giá trị lạ → lỗi khởi động
+    # G3 M-F1 (DEC-336): schema DB lệch head của image → thoát (None = thoát ở staging / production;
+    # dev / test chỉ log).
+    schema_check_strict: bool | None = None
     log_level: str = "INFO"
     log_json: bool = True
     tz_display: str = "Asia/Ho_Chi_Minh"
@@ -91,6 +95,10 @@ class Settings(BaseSettings):
     # Phase 2 J-13 (02a §9) — chờ T-3 xác nhận giới hạn thật của `returns.get_return_list`.
     shopee_returns_page_size: int = 50
     shopee_returns_window_days: int = 15
+    # G3 F-11 (DEC-342): J-13 tắt riêng tới khi T-3 xác nhận API `returns` thật (adapter mock luôn chạy).
+    shopee_returns_enabled: bool = False
+    # G3 F-10: lượt J-13 đầu (shop chưa có cursor) lùi N ngày — shop kết nối từ Phase 1 cần lùi xa hơn 3 ngày.
+    shopee_returns_initial_days: int = 15
 
     @property
     def is_production(self) -> bool:

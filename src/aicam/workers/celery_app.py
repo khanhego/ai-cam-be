@@ -5,8 +5,9 @@ from typing import Any
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import after_setup_logger, after_setup_task_logger
+from celery.signals import after_setup_logger, after_setup_task_logger, beat_init, worker_init
 
+from aicam.core import schema_guard
 from aicam.core.logging import install_stdlib_redaction
 from aicam.core.settings import get_settings
 
@@ -53,3 +54,13 @@ def _redact_logs(logger: logging.Logger | None = None, **_: Any) -> None:
 
 after_setup_logger.connect(_redact_logs, weak=False)
 after_setup_task_logger.connect(_redact_logs, weak=False)
+
+
+def _check_schema(sender: Any = None, **_: Any) -> None:
+    """G3 M-F1 (DEC-336): worker / beat thoát khi schema DB lệch head của image (staging / production)."""
+    component = "beat" if sender is not None and type(sender).__name__ == "Service" else "worker"
+    schema_guard.enforce_blocking(get_settings(), component)
+
+
+worker_init.connect(_check_schema, weak=False)
+beat_init.connect(_check_schema, weak=False)

@@ -446,3 +446,132 @@ def test_old_image_refuses_new_database(mig_db: None, tmp_path: Path) -> None:
     with pytest.raises(CommandError, match="0005"):
         command.upgrade(old, "head")
     assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+
+
+# ---------------------------------------------------------------- G3 Phase 2 (M-F1, M-F4, M-F5, M-F7, M-F9)
+
+SYSTEM_HOLDER = "00000000-0000-7000-8000-00000000a1c0"
+
+
+class _OtherConnection:
+    """Một kết nối khác vào DB migrate (như worker / beat của image cũ còn chạy) — giữ mở trong thread riêng."""
+
+    def __init__(self, application_name: str) -> None:
+        import threading
+
+        self._ready, self._stop = threading.Event(), threading.Event()
+        self._thread = threading.Thread(target=lambda: asyncio.run(self._hold(application_name)), daemon=True)
+
+    async def _hold(self, name: str) -> None:
+        engine = create_async_engine(MIG_URL, connect_args={"server_settings": {"application_name": name}})
+        try:
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+                self._ready.set()
+                await asyncio.to_thread(self._stop.wait, 30)
+        finally:
+            await engine.dispose()
+
+    def __enter__(self) -> "_OtherConnection":
+        self._thread.start()
+        assert self._ready.wait(10)
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self._stop.set()
+        self._thread.join(10)
+
+
+def test_upgrade_0004_refuses_with_other_connections(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """M-F1 (c): còn kết nối khác (worker Phase 1) khi có clip giữ cần chuyển → dừng, DB vẫn ở 0002."""
+    cfg = alembic_config()
+    seed_phase1()  # P4 có clip đang giữ
+    with _OtherConnection("celery-worker-phase1"), pytest.raises(RuntimeError, match="celery-worker-phase1"):
+        command.upgrade(cfg, "head")
+    assert run("SELECT version_num FROM alembic_version") == [("0002",)]
+    assert run("SELECT count(*) FROM clip WHERE held") == [(1,)]
+    monkeypatch.setenv("AICAM_MIGRATE_ALLOW_ACTIVE_CONNECTIONS", "1")
+    with _OtherConnection("psql"):
+        command.upgrade(cfg, "head")
+    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+
+
+def test_downgrade_refuses_uncut_return_clip(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """M-F4: clip phiên RETURN còn PENDING / FAILED → từ chối (code cũ không giữ video thô); env cho phép."""
+    cfg = alembic_config()
+    seed_phase1()
+    command.upgrade(cfg, "head")
+    seed_phase2()
+    run(f"UPDATE clip SET status = 'FAILED' WHERE id = '{_clip_id(R2, 'CAM1')}'")
+    before = dump()
+    with pytest.raises(RuntimeError, match="1 clip phiên nhận hàng hoàn chưa cắt được"):
+        command.downgrade(cfg, "0002")
+    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+    assert dump() == before
+    monkeypatch.setenv("AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS", "1")
+    command.downgrade(cfg, "0002")
+    assert run("SELECT status FROM phase2_archive.return_clip WHERE status = 'FAILED'") == [("FAILED",)]
+
+
+def test_downgrade_holds_in_system_name_and_reports_deleted_evidence(mig_db: None) -> None:
+    """M-F5: cờ giữ do downgrade đặt đứng tên người dùng hệ thống (UI cũ hiện lý do); lên lại trả người / giờ giữ cũ,
+    xóa người dùng hệ thống; hồ sơ có clip bằng chứng bị xóa khi chạy bản cũ → audit + log."""
+    cfg = alembic_config()
+    seed_phase1()
+    command.upgrade(cfg, "head")
+    seed_phase2()
+    before = dump()
+    command.downgrade(cfg, "0002")
+
+    holders = run("SELECT DISTINCT held_by::text FROM clip WHERE held AND id IN "
+                  "(SELECT clip_id FROM phase2_archive.downgrade_held_clips)")  # fmt: skip
+    assert holders == [(SYSTEM_HOLDER,)]
+    assert run(f"SELECT display_name, is_active FROM \"user\" WHERE id = '{SYSTEM_HOLDER}'") == [
+        ("Hệ thống (bảo vệ bằng chứng Phase 2)", False)
+    ]
+    # Bản cũ (sai) xóa một clip bằng chứng của hồ sơ C1 (phiên PACK S1).
+    run(f"UPDATE clip SET status = 'DELETED', deleted_at = now() WHERE id = '{_clip_id(S[1], 'CAM2')}'")
+
+    command.upgrade(cfg, "head")
+
+    assert run(f"SELECT count(*) FROM \"user\" WHERE id = '{SYSTEM_HOLDER}'") == [(0,)]
+    assert run("SELECT count(*) FROM clip WHERE held_by = :u", {"u": SYSTEM_HOLDER}) == [(0,)]
+    audit = run(
+        "SELECT object_id, data->>'code' FROM audit_log WHERE action = 'EVIDENCE_CLIP_DELETED_DURING_ROLLBACK'"
+    )
+    assert audit == [(C1, run(f"SELECT code FROM claim WHERE id = '{C1}'")[0][0])]
+    after = dump()
+    assert after["user"] == before["user"]
+    assert after["claim"] == before["claim"]
+
+
+def test_restore_refuses_duplicate_placeholder_code(mig_db: None) -> None:
+    """M-F7: mã `TAM-` của kiện tạm đã bị kiện khác dùng khi chạy bản cũ → lỗi rõ, không nửa chừng."""
+    cfg = alembic_config()
+    seed_phase1()
+    command.upgrade(cfg, "head")
+    seed_phase2()
+    code = run(f"SELECT tracking_number FROM package WHERE id = '{PT}'")[0][0]
+    command.downgrade(cfg, "0002")
+    run(f"INSERT INTO package (id, tracking_number, warehouse_status) VALUES ('{i(0x5FE)}', '{code}', 'NEW')")
+    with pytest.raises(RuntimeError, match=f"kiện tạm.*{code}"):
+        command.upgrade(cfg, "head")
+    assert run("SELECT version_num FROM alembic_version") == [("0002",)]
+
+
+def test_placeholder_with_pack_session_kept_cancelled(mig_db: None) -> None:
+    """M-F9: kiện tạm còn phiên PACK sau khi lùi → giữ lại với `CANCELLED` (không `DELIVERED` giả); lên lại trả
+    trạng thái hoàn."""
+    cfg = alembic_config()
+    seed_phase1()
+    command.upgrade(cfg, "head")
+    seed_phase2()
+    run(
+        "INSERT INTO session (id, package_id, station_id, status, started_at, ended_at, open_code) VALUES "
+        f"('{i(0x6FF)}', '{PT}', '{ST1}', 'CANCELLED', now() - interval '1 hour', now(), 'TAM')"
+    )
+    before = run(f"SELECT warehouse_status FROM package WHERE id = '{PT}'")
+    command.downgrade(cfg, "0002")
+    assert run(f"SELECT warehouse_status FROM package WHERE id = '{PT}'") == [("CANCELLED",)]
+    command.upgrade(cfg, "head")
+    assert run(f"SELECT warehouse_status FROM package WHERE id = '{PT}'") == before

@@ -47,10 +47,6 @@ class ReturnCase(UUIDPk, Base):
         Index(None, "order_id"),
         Index(None, "status", "expected_since"),
         Index("ix_return_case_return_tracking_upper", text("upper(return_tracking_number)")),
-        Index(
-            "ix_return_case_return_tracking_upper_pattern",
-            text("upper(return_tracking_number) text_pattern_ops"),
-        ),
         Index("ix_return_case_signal_keys", "signal_keys", postgresql_using="gin"),
         enum_check("kind", RETURN_KINDS),
         enum_check("status", RETURN_CASE_STATUSES),

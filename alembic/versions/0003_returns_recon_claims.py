@@ -1,10 +1,14 @@
 # ruff: noqa: S608 — SQL ghép từ hằng của migration (tên bảng / cột), không có input ngoài
 """returns_recon_claims — schema Phase 2 (02a §3, T-101)
 
-Chỉ thêm (tương thích ngược — code Phase 1 vẫn chạy): 3 sequence, 9 bảng mới, cột mới nullable / có default,
-CHECK mở rộng bằng `ADD CONSTRAINT … NOT VALID` + `VALIDATE CONSTRAINT` (RB-23; tập cũ ⊂ tập mới).
-Backfill `package.created_at` / `status_changed_at` theo lô 5.000 dòng (DEC-225); `setting.recon_start_at = now()`
-(DEC-228); `retention_clip_days` < `RETENTION_CLIP_MIN_DAYS` → nâng lên sàn + audit (DEC-257).
+Chỉ thêm (tương thích ngược về schema): 3 sequence, 9 bảng mới, cột mới nullable / có default, CHECK mở rộng
+(tập cũ ⊂ tập mới) bằng `ADD CONSTRAINT … CHECK` thường — cả migration là MỘT transaction giữ ACCESS EXCLUSIVE
+trên `package` tới commit nên `NOT VALID` + `VALIDATE` không rút ngắn khóa (G3 M-F2, DEC-337). `lock_timeout` 5
+giây: còn tiến trình khác giữ khóa bảng → lỗi ngay thay vì chặn hàng đợi khóa (ops: dừng mọi service trước khi
+migrate — docs/ops.md §7.1). Backfill `package.created_at` / `status_changed_at` theo lô 5.000 dòng (DEC-225),
+index `(warehouse_status, status_changed_at)` tạo SAU backfill (không cập nhật index từng dòng, ít bloat — ops chạy
+`VACUUM ANALYZE package` sau nâng cấp); `setting.recon_start_at = now()` (DEC-228); `retention_clip_days` <
+`RETENTION_CLIP_MIN_DAYS` → nâng lên sàn + audit (DEC-257).
 
 Downgrade (T-120, DEC-252, DEC-270, DEC-331): **không xóa dữ liệu Phase 2** — chép sang schema `phase2_archive`
 (9 bảng mới; phiên RETURN + `session_event` / `clip` / `approval_request` / `export` của chúng; kiện tạm; dòng
@@ -152,8 +156,7 @@ def _retention_min_days() -> int:
 
 def _add_check(table: str, name: str, expr: str) -> None:
     op.execute(f'ALTER TABLE "{table}" DROP CONSTRAINT IF EXISTS {name}')
-    op.execute(f'ALTER TABLE "{table}" ADD CONSTRAINT {name} CHECK ({expr}) NOT VALID')
-    op.execute(f'ALTER TABLE "{table}" VALIDATE CONSTRAINT {name}')
+    op.execute(f'ALTER TABLE "{table}" ADD CONSTRAINT {name} CHECK ({expr})')
 
 
 def _backfill_packages() -> int:
@@ -214,7 +217,12 @@ def _raise_retention_to_minimum() -> None:
     )
 
 
+LOCK_TIMEOUT = "5s"
+
+
 def upgrade() -> None:
+    # Chờ khóa tối đa 5 giây (service chưa dừng → lỗi rõ, cả migration lùi) — G3 M-F2.
+    op.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
     for name in SEQUENCES:
         op.execute(f"CREATE SEQUENCE IF NOT EXISTS {name} START WITH 1 INCREMENT BY 1 NO CYCLE")
 
@@ -649,12 +657,6 @@ def upgrade() -> None:
     op.add_column(
         "package", sa.Column("is_placeholder", sa.Boolean(), server_default="false", nullable=False)
     )
-    op.create_index(
-        op.f("ix_package_warehouse_status_status_changed_at"),
-        "package",
-        ["warehouse_status", "status_changed_at"],
-        unique=False,
-    )
     op.add_column("session", sa.Column("return_case_id", sa.UUID(), nullable=True))
     op.add_column("session", sa.Column("operator_name", sa.Text(), nullable=True))
     op.add_column("session", sa.Column("inspection_conclusion", sa.Text(), nullable=True))
@@ -709,6 +711,13 @@ def upgrade() -> None:
         _add_check(table, name, expr)
 
     _backfill_packages()
+    # Sau backfill (G3 M-F2): UPDATE từng dòng không phải cập nhật index này.
+    op.create_index(
+        op.f("ix_package_warehouse_status_status_changed_at"),
+        "package",
+        ["warehouse_status", "status_changed_at"],
+        unique=False,
+    )
     op.execute("UPDATE setting SET recon_start_at = now() WHERE id = 1")
     _raise_retention_to_minimum()
     _restore_phase2(op.get_bind())
@@ -743,8 +752,15 @@ def _copy_back(bind: sa.Connection, archived: str, target: str, on_conflict: str
     return int(result.rowcount or 0)
 
 
+ALLOW_UNCUT_ENV = "AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS"
+
+
 def _guard_no_active_return_session(bind: sa.Connection) -> None:
-    """Phiên RETURN đang mở không chuyển được sang code cũ (không có màn / job cho nó) → dừng, không đổi gì."""
+    """Phiên RETURN đang mở không chuyển được sang code cũ (không có màn / job cho nó) → dừng, không đổi gì.
+
+    Clip `PENDING` / `FAILED` của phiên RETURN: code cũ không giữ video thô cho chúng → J-02 cũ xóa video thô là
+    mất bằng chứng chưa cắt → từ chối (G3 M-F4, DEC-338) trừ khi ops đặt `AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS=1`
+    (chấp nhận mất)."""
     n = _scalar(
         bind,
         "SELECT count(*) FROM session WHERE type = 'RETURN' AND status IN ('OPEN', 'MISMATCH', 'WAITING_APPROVAL')",
@@ -753,6 +769,17 @@ def _guard_no_active_return_session(bind: sa.Connection) -> None:
         raise RuntimeError(
             f"Không downgrade 0003: còn {n} phiên nhận hàng hoàn đang mở — hoàn tất / hủy ở station (hoặc chờ J-07 "
             "tự đóng) rồi chạy lại; không có gì bị thay đổi. Xem docs/ops.md mục Rollback Phase 2."
+        )
+    uncut = _scalar(
+        bind,
+        "SELECT count(*) FROM clip c JOIN session s ON s.id = c.session_id "
+        "WHERE s.type = 'RETURN' AND c.status IN ('PENDING', 'FAILED')",
+    )
+    if uncut and os.environ.get(ALLOW_UNCUT_ENV) != "1":
+        raise RuntimeError(
+            f"Không downgrade 0003: {uncut} clip phiên nhận hàng hoàn chưa cắt được (PENDING / FAILED) — code cũ "
+            "không giữ video thô cho chúng. Bấm Thử lại (API-46) và chờ READY rồi chạy lại; chấp nhận mất thì đặt "
+            f"{ALLOW_UNCUT_ENV}=1. Không có gì bị thay đổi. Xem docs/ops.md mục Rollback Phase 2."
         )
 
 
@@ -772,7 +799,7 @@ def _archive_phase2(bind: sa.Connection) -> dict[str, int]:
         sa.text(
             f"UPDATE {ARCHIVE}.package_cols a SET downgraded_to = coalesce(("
             "  SELECT h.to_status FROM status_history h WHERE h.package_id = a.id AND left(h.to_status, 7) <> 'RETURN_'"
-            "  ORDER BY h.at DESC, h.id DESC LIMIT 1), 'DELIVERED') "
+            "  ORDER BY h.at DESC, h.id DESC LIMIT 1), CASE WHEN a.is_placeholder THEN 'CANCELLED' ELSE 'DELIVERED' END) "
             "WHERE left(a.warehouse_status, 7) = 'RETURN_'"
         )
     )
@@ -799,12 +826,12 @@ def _archive_phase2(bind: sa.Connection) -> dict[str, int]:
     unfinished = _scalar(
         bind, f"SELECT count(*) FROM {ARCHIVE}.return_clip WHERE status IN ('PENDING', 'FAILED')"
     )
-    if unfinished:
-        # Code cũ chỉ giữ video thô cho clip lỗi của phiên PACK (G3-F7): cắt lại (API-46) trước khi lùi nếu cần.
+    if unfinished:  # chỉ tới đây khi ops đặt AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS=1
         log.warning(
-            "0003 downgrade: %s clip phiên hoàn chưa cắt được (PENDING / FAILED) — video thô của chúng theo "
-            "retention thô của code cũ",
+            "0003 downgrade: %s clip phiên hoàn chưa cắt được (PENDING / FAILED) — ops chấp nhận mất video thô "
+            "của chúng (%s=1)",
             unfinished,
+            ALLOW_UNCUT_ENV,
         )
     return counts
 
@@ -824,6 +851,41 @@ def _remove_archived_rows(bind: sa.Connection) -> None:
         f"DELETE FROM package p WHERE p.id IN (SELECT id FROM {ARCHIVE}.placeholder_package) "
         "AND NOT EXISTS (SELECT 1 FROM session s WHERE s.package_id = p.id)"
     )
+    # Kiện tạm còn phiên không phải RETURN (hiếm — chỉnh tay API-122): giữ lại, trạng thái `CANCELLED` (không vào
+    # luồng đóng gói / bàn giao của code cũ; mã `TAM-` tự nói là kiện tạm) thay vì `DELIVERED` giả (G3 M-F9, DEC-338).
+    kept = (
+        bind.execute(
+            sa.text(
+                f"SELECT tracking_number FROM package WHERE id IN (SELECT id FROM {ARCHIVE}.placeholder_package)"
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if kept:
+        log.warning(
+            "0003 downgrade: giữ %s kiện tạm còn phiên đóng gói (CANCELLED): %s", len(kept), ", ".join(kept)
+        )
+
+
+def _guard_placeholder_codes(bind: sa.Connection) -> None:
+    """Mã `TAM-` của kiện tạm trong archive đã bị kiện khác (id khác) dùng khi chạy code cũ → dừng với lỗi rõ thay
+    vì vi phạm unique giữa chừng (G3 M-F7)."""
+    dup = (
+        bind.execute(
+            sa.text(
+                f"SELECT a.tracking_number FROM {ARCHIVE}.placeholder_package a JOIN package p "
+                "ON upper(p.tracking_number) = upper(a.tracking_number) AND p.id <> a.id"
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if dup:
+        raise RuntimeError(
+            f"0003: không khôi phục được {len(dup)} kiện tạm vì mã đã bị kiện khác dùng khi chạy bản cũ: "
+            f"{', '.join(sorted(dup)[:10])} — đổi mã kiện kia (hoặc xóa nếu nhập nhầm) rồi chạy lại."
+        )
 
 
 def _restore_phase2(bind: sa.Connection) -> None:
@@ -831,8 +893,9 @@ def _restore_phase2(bind: sa.Connection) -> None:
     if _scalar(bind, f"SELECT to_regclass('{ARCHIVE}.meta')") is None:
         return
     restored: dict[str, int] = {}
+    _guard_placeholder_codes(bind)
     restored["placeholder_package"] = _copy_back(
-        bind, "placeholder_package", "package", "ON CONFLICT DO NOTHING"
+        bind, "placeholder_package", "package", "ON CONFLICT (id) DO NOTHING"
     )
     # Kiện: code cũ chưa đổi trạng thái từ lúc downgrade → trả trạng thái hoàn + mốc; đã đổi → giữ trạng thái mới.
     changed = bind.execute(
@@ -857,7 +920,7 @@ def _restore_phase2(bind: sa.Connection) -> None:
             changed,
         )
     restored["return_status_history"] = _copy_back(
-        bind, "return_status_history", "status_history", "ON CONFLICT DO NOTHING"
+        bind, "return_status_history", "status_history", "ON CONFLICT (id) DO NOTHING"
     )
     order = (
         ("return_case", "return_case"),
