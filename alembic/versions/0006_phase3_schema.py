@@ -798,12 +798,13 @@ def _backfill_claim_times(bind: sa.Connection) -> dict[str, int]:
 
 def _excluded_session_sql(alias: str) -> str:
     """Vị từ "phiên bị loại khỏi bằng chứng tự chọn" (BR-39 v0.4, DEC-514, 515, 521) — hằng trong migration,
-    cùng luật `sessions.queries.excluded_return_sql`: lý do hiệu lực (`cancel_cause` của Supervisor, không thì
-    `cancel_reason` của station) ∈ lý do loại, hoặc đã đánh dấu quét nhầm."""
+    cùng luật `sessions.queries.excluded_return_sql` (v0.5 — DEC-529): lý do hiệu lực (`cancel_cause` của
+    Supervisor, không thì `cancel_reason` của station) ∈ lý do loại mà chưa xác nhận "Là phiên hoàn thật", hoặc
+    đã đánh dấu quét nhầm."""
     reasons = ", ".join(f"'{r}'" for r in EXCLUDED_CANCEL_REASONS)
     return (
-        f"(COALESCE({alias}.cancel_cause, {alias}.cancel_reason, '') IN ({reasons}) "
-        f"OR {alias}.wrong_scan_at IS NOT NULL)"
+        f"((COALESCE({alias}.cancel_cause, {alias}.cancel_reason, '') IN ({reasons}) "
+        f"AND {alias}.review_confirmed_at IS NULL) OR {alias}.wrong_scan_at IS NOT NULL)"
     )
 
 
@@ -819,6 +820,14 @@ def _archive_exists(bind: sa.Connection) -> bool:
     return _scalar(bind, f"SELECT to_regclass('{ARCHIVE}.meta')") is not None
 
 
+def _restore_session_cols(bind: sa.Connection) -> int:
+    """Bước 3b (v0.4, DEC-528) — chỉ khi nâng cấp lại: trả `cancel_cause`, `wrong_scan_*`, `review_confirmed_*`
+    vào `session` **trước** 4b để 4b thấy đúng lý do hiệu lực, đánh dấu quét nhầm và xác nhận."""
+    if not _archive_exists(bind):
+        return 0
+    return _update_from(bind, "session_cols", "session", _SESSION_COLS)
+
+
 def _backfill_prior_sessions(bind: sa.Connection) -> dict[str, int]:
     """Bước 4b (BR-39 v0.3, DEC-498): hồ sơ khiếu nại mở từ Phase 2 thêm phiên mở hoàn đã hủy / bỏ dở có clip
     của kiện / hồ sơ hàng hoàn (trừ phiên bị loại) — `auto = true`, `backfilled = true`, `ON CONFLICT DO
@@ -826,9 +835,13 @@ def _backfill_prior_sessions(bind: sa.Connection) -> dict[str, int]:
     Audit `CLAIM_EVIDENCE_UPDATE` một dòng / hồ sơ (`reason = BACKFILL_BR39`, người dùng null); `version + 1`."""
     skip = "true"
     if _archive_exists(bind):
+        # Nâng cấp lại: bỏ qua cặp 4b lần trước người dùng đã bỏ ở Phase 2, và (v0.4 — DEC-528) mọi cặp đã bỏ ở
+        # Phase 3 (bước 6 chèn lại đúng dòng đã bỏ — 4b không được thêm thành bằng chứng đang dùng).
         skip = (
             f"NOT EXISTS (SELECT 1 FROM {ARCHIVE}.backfill_prior_pairs b WHERE b.claim_id = c.id "
-            "AND b.session_id = s.id)"
+            "AND b.session_id = s.id) "
+            f"AND NOT EXISTS (SELECT 1 FROM {ARCHIVE}.claim_evidence_cols r WHERE r.claim_id = c.id "
+            "AND r.session_id = s.id AND r.removed_at IS NOT NULL)"
         )
     rows = bind.execute(
         sa.text(
@@ -996,7 +1009,6 @@ def _restore_phase3(bind: sa.Connection) -> dict[str, int]:
     )
     out.update(_restore_removed_evidence(bind))
     out.update(_restore_detached(bind))
-    out["session_cols"] = _update_from(bind, "session_cols", "session", _SESSION_COLS)
     out["setting_cols"] = _update_from(bind, "setting_cols", "setting", _SETTING_COLS)
     for table in RESTORE_ORDER:
         out[table] = _copy_back(bind, table, table)
@@ -1016,6 +1028,14 @@ def _restore_removed_evidence(bind: sa.Connection) -> dict[str, int]:
     """Nâng cấp lại: dòng đã bỏ (xóa ở bước 5 lúc lùi) chèn lại vào hồ sơ gốc — trừ khi (hồ sơ, phiên) /
     (hồ sơ, ảnh) đã có dòng (người dùng thêm lại khi chạy Phase 2 → giữ dòng hiện có, log
     `restore_removed_conflict`); hồ sơ hệ thống `LEGACY_HOLD` do lùi tạo còn nguyên → xóa, đã bị đổi → giữ."""
+    # v0.4 (DEC-528): dòng 4b của chính lượt này (`backfilled`, `added_at` = giờ transaction) không phải "người
+    # dùng thêm lại" — bỏ dòng đó, chèn lại dòng đã bỏ (lưới an toàn: 4b đã bỏ qua mọi cặp đã bỏ).
+    bind.execute(
+        sa.text(
+            f"DELETE FROM claim_evidence e USING {ARCHIVE}.claim_evidence_cols a WHERE e.backfilled "
+            "AND e.added_at = now() AND a.removed_at IS NOT NULL AND e.claim_id = a.claim_id AND e.session_id = a.session_id"
+        )
+    )
     conflicts = bind.execute(
         sa.text(
             f"SELECT a.claim_id::text, COALESCE(a.session_id, a.snapshot_id)::text FROM {ARCHIVE}.claim_evidence_cols a "
@@ -1438,6 +1458,7 @@ def upgrade() -> None:
     _add_columns()
     _add_checks()
     stats = _backfill(bind)
+    stats["session_cols_3b"] = _restore_session_cols(bind)
     stats.update(_backfill_prior_sessions(bind))
     stats["cancel_revert_candidates"] = _log_cancel_candidates(bind)
     restored = _restore_phase3(bind)

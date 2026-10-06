@@ -749,3 +749,65 @@ def test_missing_snapshot_deleted_in_phase2_then_back(mig_db: None, monkeypatch:
     assert run(f"SELECT status, deleted_at FROM snapshot WHERE id = '{SNAP_P}'") == [("DELETED", None)]
     command.upgrade(cfg, SCHEMA_HEAD)
     assert run(f"SELECT status FROM snapshot WHERE id = '{SNAP_P}'") == [("MISSING",)]
+
+
+# ---------------------------------------------------------------- T-289: 0006 v0.4 (G2R3-1, DEC-528)
+
+
+def test_reupgrade_keeps_excluded_and_removed_sessions_out(
+    mig_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G2R3-1: hồ sơ mở có phiên C do Supervisor hủy `cancel_cause = WRONG_SCAN`, phiên A bỏ dở đã đánh dấu quét
+    nhầm (bỏ mềm khỏi hồ sơ), phiên E tự thêm rồi bị bỏ qua API-134, phiên F (station hủy `WRONG_SCAN`) đã xác nhận
+    "Là phiên hoàn thật" → lùi → lên lại: C, A, E **không** vào bằng chứng đang dùng; dòng đã bỏ của A, E giữ nguyên
+    (lý do, người, giờ); không có `restore_removed_conflict`; F vẫn là bằng chứng đang dùng, cột xác nhận còn."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    seed_return_claims()
+    command.upgrade(cfg, SCHEMA_HEAD)  # 4b thêm A (S_A)
+    s_c, s_e = i(0x696), i(0x697)
+    run_many(
+        [
+            *_session(s_c, "RETURN", "CANCELLED", 260, cancel="SUPERVISOR"),
+            f"UPDATE session SET cancel_cause = 'WRONG_SCAN', note = 'Quét nhầm kiện bên cạnh' WHERE id = '{s_c}'",
+            *_session(s_e, "RETURN", "ABANDONED", 240),
+            # A: đánh dấu quét nhầm (API-189) → bỏ mềm khỏi hồ sơ mở.
+            f"UPDATE session SET wrong_scan_at = now(), wrong_scan_by = '{U2}', wrong_scan_code = 'WRONG_SCAN', "
+            f"wrong_scan_note = 'Kiện của đơn khác' WHERE id = '{S_A}'",
+            f"UPDATE claim_evidence SET removed_at = now() - interval '1 hour', removed_by = '{U2}', "
+            f"removed_reason = 'Đánh dấu quét nhầm: Kiện của đơn khác' WHERE claim_id = '{CLAIM_OPEN}' AND session_id = '{S_A}'",
+            # E: tự thêm ở Phase 3 rồi CSKH bỏ (API-134).
+            "INSERT INTO claim_evidence (id, claim_id, kind, session_id, auto, added_by, added_at, removed_at, removed_by, "
+            f"removed_reason) VALUES (gen_random_uuid(), '{CLAIM_OPEN}', 'SESSION', '{s_e}', true, NULL, "
+            f"now() - interval '2 hours', now() - interval '30 minutes', '{U2}', 'Video không liên quan')",
+            # F (= S_W): station hủy WRONG_SCAN, Admin xác nhận phiên hoàn thật → vào bằng chứng (DEC-529).
+            f"UPDATE session SET review_confirmed_at = now(), review_confirmed_by = '{U1}', "
+            f"review_confirmed_note = 'Xem video: kiện hoàn thật' WHERE id = '{S_W}'",
+            "INSERT INTO claim_evidence (id, claim_id, kind, session_id, auto, added_by, added_at) VALUES "
+            f"(gen_random_uuid(), '{CLAIM_OPEN}', 'SESSION', '{S_W}', false, '{U1}', now())",
+        ]
+    )
+    active_before = _evidence(CLAIM_OPEN)
+    removed_sql = (
+        "SELECT id::text, session_id::text, removed_at, removed_by::text, removed_reason, auto, backfilled "
+        f"FROM claim_evidence WHERE claim_id = '{CLAIM_OPEN}' AND removed_at IS NOT NULL ORDER BY session_id"
+    )
+    removed_before = run(removed_sql)
+    sessions_sql = (
+        "SELECT id::text, cancel_cause, wrong_scan_code, wrong_scan_note, review_confirmed_note FROM session "
+        f"WHERE id IN ('{s_c}', '{S_A}', '{S_W}') ORDER BY id"
+    )
+    sessions_before = run(sessions_sql)
+    assert {s for s, _ in active_before} == {S_PACK, S_D, SNAP_P, S_W}
+    assert {r[1] for r in removed_before} == {S_A, s_e}
+    monkeypatch.setenv(DETACH_ENV, "1")
+
+    command.downgrade(cfg, "0005")
+    warnings = _capture_warnings(monkeypatch)
+    command.upgrade(cfg, SCHEMA_HEAD)
+
+    assert _evidence(CLAIM_OPEN) == active_before
+    assert not {s_c, S_A, s_e} & {s for s, _ in _evidence(CLAIM_OPEN)}
+    assert run(removed_sql) == removed_before
+    assert run(sessions_sql) == sessions_before
+    assert not [w for w in warnings if "restore_removed_conflict" in w]

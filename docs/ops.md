@@ -243,7 +243,16 @@ audit, index báo cáo) và **0007** (mã đơn / mã yêu cầu trả unique th
 Thời gian đo trên máy dev (Docker Desktop, không phải server kho — T-201,
 `RUN_PERF=1 uv run pytest -m perf tests/integration/test_perf_migration_0006.py -s`): 1 triệu đơn + 1 triệu kiện /
 phiên đóng gói / dòng lịch sử, 20.000 hồ sơ hàng hoàn, 5.000 hồ sơ khiếu nại → `alembic upgrade` 0005 → 0006
-**~20 giây** (khóa các bảng bị sửa suốt thời gian đó). Log migrate in `0006: backfill {…}` (số dòng từng phần) và
+**~20 giây**, 0005 → 0007 (đủ M11: 4b, 4c, unique theo shop) **~22 giây** (khóa các bảng bị sửa suốt thời gian đó).
+Log thêm: `backfill_review_needed [...]` (phiên Supervisor hủy trước Phase 3 đã vào hồ sơ khiếu nại mở với nhãn
+"Cần soát" — gửi CSKH soát) và `0006: N kiện có thể bị hủy oan …` (chạy `aicam fix-cancel-requests`, T-285).
+
+**Lùi về Phase 2** (`alembic downgrade 0005` bằng image Phase 3, trước khi về image cũ) chép dữ liệu Phase 3 sang
+schema `phase3_archive` rồi mới gỡ; nâng cấp lại khôi phục y hệt. Từ chối (không đổi gì) khi: còn mã đơn / mã yêu
+cầu trả trùng giữa shop (0007 — sửa tiến); còn link chia sẻ đang tạo / đang hoạt động (thu hồi trước, hoặc
+`AICAM_DOWNGRADE_ALLOW_ACTIVE_SHARES=1`); còn kiện của đơn TikTok / shop Shopee sẽ bị ngắt (Phase 2 một shop) —
+`AICAM_DOWNGRADE_DETACH_FOREIGN_ORDERS=1` để tách kiện khỏi đơn trong thời gian chạy Phase 2. Bằng chứng đã bỏ còn
+hạn giữ → hồ sơ hệ thống "Bằng chứng đã bỏ — giữ tới …" (đã đóng) để Phase 2 giữ đúng hạn. Log migrate in `0006: backfill {…}` (số dòng từng phần) và
 cảnh báo `0006: đơn có trạng thái sàn chưa ánh xạ → nhóm UNKNOWN` kèm 20 chữ trạng thái nhiều nhất nếu có. Sau
 nâng cấp: `VACUUM ANALYZE "order"` (cập nhật cột nhóm trạng thái).
 
