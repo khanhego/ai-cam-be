@@ -81,7 +81,12 @@ async def test_adjust_new_to_handed_over_with_alert(api: AsyncClient, db: AsyncS
     assert [(h.source, h.from_status, h.to_status) for h in history] == [("MANUAL", "NEW", "HANDED_OVER")]
     await db.refresh(package)
     assert package.status_changed_at == history[0].at
-    log = await db.scalar(select(AuditLog).where(AuditLog.action == "WAREHOUSE_STATUS_ADJUST"))
+    log = await db.scalar(
+        # theo kiện: test đồng thời commit thật để lại dòng audit của kiện khác (không bị TRUNCATE)
+        select(AuditLog).where(
+            AuditLog.action == "WAREHOUSE_STATUS_ADJUST", AuditLog.object_id == str(package.id)
+        )
+    )
     assert log is not None
     assert log.data is not None
     assert (log.data["from"], log.data["to"], log.data["reason"]) == (

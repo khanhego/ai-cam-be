@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 from httpx import AsyncClient
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import clock
@@ -196,3 +196,19 @@ async def test_pack_close_snapshot_from_cached_frame(
     closed = (await desk.scan("SPXTST0000013")).json()
     other = uuid.UUID(closed["closed_session"]["id"])
     assert await db.scalar(select(Snapshot).where(Snapshot.session_id == other)) is None
+
+
+async def test_pack_close_insert_survives_generic_plan(
+    api: AsyncClient, db: AsyncSession, redis_client: Redis, media_settings: Settings
+) -> None:
+    """G3 V2-2 (hồi quy QA live): `ON CONFLICT … WHERE` phải là literal. Với tham số bind, Postgres chỉ suy
+    ra index unique một phần khi plan có giá trị cụ thể; sang generic plan → 500 khi đóng PACK."""
+    await db.execute(text("SET LOCAL plan_cache_mode = force_generic_plan"))
+    desk, cam = await _desk(api, db, "PACK")
+    await make_order(db, 14, status="READY_TO_SHIP", warehouse_status="NEW")
+    assert (await desk.scan("SPXTST0000014")).json()["outcome"] == "SESSION_OPENED"
+    await frames.store(redis_client, cam.id, JPEG, clock.now())
+    closed = (await desk.scan("SPXTST0000014")).json()
+    assert closed["outcome"] == "SESSION_COMPLETED", closed
+    session_id = uuid.UUID(closed["closed_session"]["id"])
+    assert await db.scalar(select(Snapshot.kind).where(Snapshot.session_id == session_id)) == "PACK_CLOSE"

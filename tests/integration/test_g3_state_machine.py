@@ -184,7 +184,7 @@ async def test_sm_f9_correct_issue_to_other_issue(api: AsyncClient, db: AsyncSes
 
 
 async def test_j07_does_not_auto_close_incomplete_inspection(
-    desk: Desk, db: AsyncSession, test_settings: Settings
+    desk: Desk, db: AsyncSession, test_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """J-07 (DEC-340): kết luận "Khác" đã lưu nhưng ghi chú bị trống → không tự hoàn tất; giữ phiên + cờ, D2."""
     order, _ = await make_order(db, 85)
@@ -195,10 +195,21 @@ async def test_j07_does_not_auto_close_incomplete_inspection(
     assert pack is not None
     pack.inspection_note = None  # dữ liệu cũ / lưu dở
     await db.flush()
+    from aicam.realtime import publish
+
+    alerts: list[dict[str, Any]] = []
+
+    async def capture(_station: Any, event: str, data: dict[str, Any]) -> None:
+        if event == "alert":
+            alerts.append(data)
+
+    monkeypatch.setattr(publish, "to_station", capture)
     clock.advance(timedelta(minutes=50))
     out = await sessions.check_timeouts(db, test_settings)
     await db.refresh(pack)
     assert pack.status == "OPEN"
+    # G3 V2-4: station biết lý do cụ thể
+    assert [a.get("reason") for a in alerts if a["code"] == "SESSION_WARN"] == ["INSPECTION_INCOMPLETE"]
     assert sessions.AUTO_CLOSE_BLOCKED in pack.flags
     assert out.get("blocked") == 1
     from aicam.modules.reports import service as reports

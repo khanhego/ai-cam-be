@@ -979,8 +979,11 @@ async def check_timeouts(session: AsyncSession, settings: Settings) -> dict[str,
                 await publish.to_station(
                     station_id,
                     "alert",
-                    {"code": "SESSION_WARN", "session_id": str(session_id), "minutes": minutes[pack.type]},
-                )
+                    {
+                        "code": "SESSION_WARN", "session_id": str(session_id), "minutes": minutes[pack.type],
+                        "reason": "INSPECTION_INCOMPLETE",  # G3 V2-4: station báo đúng lý do
+                    },
+                )  # fmt: skip
             elif age >= abandon_after and pack.type == "RETURN" and pack.inspection_conclusion is not None:
                 # EX-R15, DEC-253: kết luận đã lưu → tự hoàn tất như quét đóng (cờ AUTO_CLOSED).
                 station = await stations.get_station(session, station_id)

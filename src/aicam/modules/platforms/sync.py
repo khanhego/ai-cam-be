@@ -718,23 +718,30 @@ async def sync_returns(
         return {"skipped": "not_configured"}
     if settings.platform_adapter == "shopee" and not settings.shopee_returns_enabled:
         return {"skipped": "returns_disabled"}  # G3 F-11: chờ T-3 xác nhận API returns thật
-    query = select(Shop).where(Shop.auth_status == "CONNECTED")
+    query = select(Shop.id).where(Shop.auth_status == "CONNECTED")
     if shop_id is not None:
         query = query.where(Shop.id == shop_id)
     out: dict[str, Any] = {}
-    shops = (await session.scalars(query)).all()
+    # Chỉ giữ id (scalar): bản ghi lỗi → rollback làm hết hạn mọi `Shop` trong session; đọc thuộc tính shop đã
+    # hết hạn ngoài greenlet → `MissingGreenlet`, chặn mọi shop sau (G3 V2-1).
+    shop_ids = list((await session.scalars(query)).all())
     await commit(session)
-    for shop in shops:
-        token = await _acquire_returns_lock(shop.id)
+    for sid in shop_ids:
+        key = str(sid)
+        token = await _acquire_returns_lock(sid)
         if token is None:
-            out[str(shop.id)] = {"status": "SKIPPED", "reason": "locked"}
+            out[key] = {"status": "SKIPPED", "reason": "locked"}
             continue
         try:
-            out[str(shop.id)] = (await sync_shop_returns(session, shop, adapter, settings)).as_dict()
+            shop = await session.get(Shop, sid, populate_existing=True)
+            if shop is None or shop.auth_status != "CONNECTED":
+                out[key] = {"status": "SKIPPED", "reason": "disconnected"}
+                continue
+            out[key] = (await sync_shop_returns(session, shop, adapter, settings)).as_dict()
         except Exception as exc:  # G3 F-6: một shop lỗi bất ngờ không chặn shop khác
             await rollback(session)
-            log.exception("returns_sync_shop_crashed", shop_id=str(shop.id))
-            out[str(shop.id)] = SyncResult(status="FAILED", error=type(exc).__name__).as_dict()
+            log.exception("returns_sync_shop_crashed", shop_id=key)
+            out[key] = SyncResult(status="FAILED", error=type(exc).__name__).as_dict()
         finally:
-            await _release_returns_lock(shop.id, token)
+            await _release_returns_lock(sid, token)
     return out

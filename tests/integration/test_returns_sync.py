@@ -589,6 +589,55 @@ async def test_j13_record_errors_skipped_and_retried(
     assert await sync.get_redis().hgetall(sync.RETRY_KEY.format(shop=shop.id)) == {}  # bỏ sau N lượt
 
 
+async def _second_shop(db: AsyncSession, settings: Settings) -> Shop:
+    shop = Shop(platform="SHOPEE", platform_shop_id="TST-SHOP-2", name="TST Shop 2")
+    platforms.store_credentials(
+        shop,
+        ShopCredentials("TST-SHOP-2", "acc-2", "ref-2", NOW + timedelta(hours=4)),
+        Cipher(settings.fernet_key),
+    )
+    db.add(shop)
+    await db.flush()
+    return shop
+
+
+async def test_j13_multi_shop_record_error_and_crash(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3 V2-1: ≥ 2 shop — bản ghi lỗi (rollback) ở shop này không làm shop sau `MissingGreenlet`; shop crash
+    → shop khác vẫn chạy và lock `sync_returns:{shop}` được nhả."""
+    ids = [(await _shop(db, test_settings)).id, (await _second_shop(db, test_settings)).id]
+    await make_order(db, 63)
+    mock.returns = {}
+    mock.put_return(replace(platform_return(63), updated_at=NOW))
+    original = returns.upsert_from_platform
+
+    async def bad(session: AsyncSession, o: Order, ret: Any, **kw: Any) -> Any:
+        raise ValueError("dữ liệu lạ")
+
+    monkeypatch.setattr(returns, "upsert_from_platform", bad)
+    out = await sync.sync_returns(db, mock, test_settings)
+    assert {k: v["status"] for k, v in out.items()} == {str(i): "OK" for i in ids}
+    assert all(v["skipped"] == 1 for v in out.values())
+
+    monkeypatch.setattr(returns, "upsert_from_platform", original)
+    real = sync.sync_shop_returns
+    crashed = ids[0]
+
+    async def crash_first(session: AsyncSession, shop: Shop, *a: Any) -> Any:
+        if shop.id == crashed:
+            raise RuntimeError("boom")
+        return await real(session, shop, *a)
+
+    monkeypatch.setattr(sync, "sync_shop_returns", crash_first)
+    clock.freeze(NOW + timedelta(minutes=15))
+    out = await sync.sync_returns(db, mock, test_settings)
+    assert out[str(ids[0])]["status"] == "FAILED"
+    assert out[str(ids[1])]["status"] == "OK"
+    for i in ids:  # lock đã nhả
+        assert await sync._acquire_returns_lock(i) is not None
+
+
 async def test_j04_success_keeps_returns_error(
     db: AsyncSession, mock: MockAdapter, test_settings: Settings
 ) -> None:
