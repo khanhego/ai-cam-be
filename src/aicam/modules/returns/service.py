@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import structlog
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import ColumnElement, and_, delete, exists, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
@@ -76,6 +76,41 @@ _ACTIVE_PACKAGE_STATUSES = (
 
 
 # ---------------------------------------------------------------- đọc / khóa
+
+
+# G3 C3 (DEC-341, quyết định PO theo ủy quyền — Q15): đồng hồ "hoàn quá hạn chưa về" (BR-12) của yêu cầu trả
+# của người mua chỉ chạy khi sàn đã chấp nhận trả (có mã vận đơn chiều về, hoặc trạng thái khác các trạng thái
+# chờ duyệt dưới đây). Kiện vẫn vào RETURN_EXPECTED (người mua có thể gửi sớm — bàn hoàn vẫn nhận), nhưng
+# J-14 không chuyển MISSING / không báo HIGH khi người mua còn đang yêu cầu / tranh chấp.
+AWAITING_ACCEPT_STATUSES = ("REQUESTED", "JUDGING", "SELLER_DISPUTE")
+
+
+def clock_started(case: ReturnCase) -> bool:
+    return (
+        case.kind != "BUYER_RETURN"
+        or bool(case.return_tracking_number)
+        or (case.platform_status or "").upper() not in AWAITING_ACCEPT_STATUSES
+        or any(k.startswith("FAILED:") for k in case.signal_keys or [])
+    )
+
+
+def clock_not_started_for_package(
+    package_id: Any, cutoff: datetime, recon_start_at: datetime
+) -> ColumnElement[bool]:
+    """SQL: kiện có hồ sơ mở mà đồng hồ BR-12 chưa chạy (chờ sàn duyệt), mới chạy sau `cutoff`, hoặc hồ sơ có
+    từ trước khi nâng cấp (`recon_start_at` — G3 C2: không dồn MISSING / HIGH ngày go-live)."""
+    awaiting = and_(
+        ReturnCase.kind == "BUYER_RETURN",
+        ReturnCase.return_tracking_number.is_(None),
+        func.upper(func.coalesce(ReturnCase.platform_status, "")).in_(AWAITING_ACCEPT_STATUSES),
+        not_(func.array_to_string(ReturnCase.signal_keys, ",").like("%FAILED:%")),
+    )
+    return exists().where(
+        ReturnCasePackage.package_id == package_id,
+        ReturnCase.id == ReturnCasePackage.return_case_id,
+        ReturnCase.status.in_(OPEN_CASE_STATUSES),
+        or_(awaiting, ReturnCase.expected_since >= cutoff, ReturnCase.created_at < recon_start_at),
+    )
 
 
 async def open_case_ids_of_package(session: AsyncSession, package_id: uuid.UUID) -> list[uuid.UUID]:
@@ -278,6 +313,18 @@ def match_requested_items(ret: PlatformReturn, items: Sequence[OrderItem]) -> li
 
 
 async def _apply_platform_fields(session: AsyncSession, case: ReturnCase, ret: PlatformReturn) -> None:
+    started_before = case.id is not None and case.kind is not None and clock_started(case)
+    await _set_platform_fields(session, case, ret)
+    if (
+        case.kind is not None
+        and not started_before
+        and clock_started(case)
+        and case.status in OPEN_CASE_STATUSES
+    ):
+        case.expected_since = clock.now()  # G3 C3: sàn vừa chấp nhận trả → đồng hồ BR-12 bắt đầu từ đây
+
+
+async def _set_platform_fields(session: AsyncSession, case: ReturnCase, ret: PlatformReturn) -> None:
     case.platform_return_sn = ret.return_sn
     case.platform_status = ret.status
     case.needs_parcel = ret.needs_parcel
@@ -428,6 +475,8 @@ async def attach_or_create(
         if moved and case.expected_since is None:
             case.expected_since = clock.now()
         await session.flush()
+        if moved:
+            await recompute(session, case)  # G3 SM-F3: kiện mới về RETURN_EXPECTED → hồ sơ MISSING → EXPECTED
         return AttachResult(case, changed=True, moved_packages=moved)
 
     if signal.kind != SIGNAL_WAREHOUSE_SCAN:  # (b)
@@ -506,6 +555,11 @@ async def upsert_from_platform(
     if known is None:
         if ret.status_group in ("CANCELLED", "CLOSED"):
             return AttachResult(None)
+        if ret.status_group == "DONE" and await _before_recon_start(session, ret):
+            # G3 C2 (DEC-341): yêu cầu đã hoàn tiền từ trước khi nâng cấp (lượt J-13 đầu lùi nhiều ngày) —
+            # lịch sử, kiện thường đã về từ lâu: không kéo kiện về RETURN_EXPECTED (tránh loạt BR-19 / BR-12).
+            log.info("return_done_before_recon_start_skipped", return_sn=ret.return_sn)
+            return AttachResult(None)
         signal = Signal(SIGNAL_PLATFORM_RETURN, key=return_signal_key(ret.return_sn), ret=ret)
         result = await attach_or_create(session, order, signal, actor_label=actor_label)
         result.changed = result.created or bool(result.moved_packages) or result.changed
@@ -518,6 +572,14 @@ async def upsert_from_platform(
     await session.flush()
     after = (known.status, known.platform_status, known.return_tracking_number, known.seller_due_at)
     return AttachResult(known, changed=before != after or bool(moved), moved_packages=moved)
+
+
+async def _before_recon_start(session: AsyncSession, ret: PlatformReturn) -> bool:
+    from aicam.modules.settings.models import Setting
+
+    start = await session.scalar(select(Setting.recon_start_at).where(Setting.id == 1))
+    at = ret.created_at or ret.updated_at
+    return start is not None and at is not None and at < start
 
 
 async def _cancel_platform_return(

@@ -165,6 +165,11 @@ def test_tc_06_01_j14_overdue_after_time_travel(
         "UPDATE package SET status_changed_at = now() - interval '2 days' "
         "WHERE tracking_number = 'SPXTST0000041'"
     ) == "UPDATE 1"  # fmt: skip
+    # Hồ sơ cũng đã chờ 2 ngày (đồng hồ BR-12 tính từ lúc sàn chấp nhận trả — G3 C3, DEC-341).
+    _psql(
+        "UPDATE return_case SET expected_since = now() - interval '2 days' "
+        "WHERE return_tracking_number = 'SPXRTTST000041'"
+    )
     _run_recon(client, sup)
     package_id = _package_id(client, sup, "SPXTST0000041")
     alerts = _alerts(client, sup, package_id)

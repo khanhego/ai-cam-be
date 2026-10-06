@@ -50,7 +50,7 @@ RUN_LOCK_TTL_S = 600
 QUEUED_KEY = "recon:queued"  # gộp các lần kích hoạt sau J-04 / J-06 / J-13 trong 30 giây
 SOON_DELAY_S = 30.0
 MISSING_LABEL = "Đối soát"
-MISSING_BATCH = 200
+MISSING_BATCH = 20  # G3 BB-13: commit mỗi 20 kiện — không giữ khóa hồ sơ / kiện lâu (station chờ)
 CHUNK = 1000
 _RELEASE_IF_OWNER = """
 if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end
@@ -214,6 +214,7 @@ async def list_alerts(
             .limit(page_size)
         )
     ).all()
+    await _preload(session, rows)  # G3 R7: một truy vấn mỗi loại thay vì N+1 (session.get dùng identity map)
     items = [await alert_out(session, a, orders.MANUAL_TRANSITIONS) for a in rows]
     return ReconAlertPage(
         items=items,
@@ -222,6 +223,21 @@ async def list_alerts(
         total=total,
         summary=SummaryOut(open=await summary(session)),
     )
+
+
+async def _preload(session: AsyncSession, alerts: Any) -> None:
+    from aicam.modules.users.models import User
+
+    package_ids = {a.package_id for a in alerts}
+    if not package_ids:
+        return
+    packages = (await session.scalars(select(Package).where(Package.id.in_(package_ids)))).all()
+    order_ids = {p.order_id for p in packages if p.order_id}
+    if order_ids:
+        await session.scalars(select(Order).where(Order.id.in_(order_ids)))
+    user_ids = {a.resolved_by for a in alerts if a.resolved_by}
+    if user_ids:
+        await session.scalars(select(User).where(User.id.in_(user_ids)))
 
 
 # ---------------------------------------------------------------- API-121 (FR-06.03)
@@ -328,7 +344,9 @@ async def _lock_cases_skip_locked(
     return list(rows) if len(rows) == len(case_ids) else None
 
 
-async def mark_missing(session: AsyncSession, now: datetime, days: int) -> tuple[int, int]:
+async def mark_missing(
+    session: AsyncSession, now: datetime, days: int, recon_start_at: datetime | None = None
+) -> tuple[int, int]:
     """Bước 1 (BR-12, DEC-255): kiện `RETURN_EXPECTED` có `status_changed_at < now − N ngày` →
     `RETURN_MISSING`
     (WAREHOUSE, "Đối soát"); hồ sơ tính lại (BR-24 — `MISSING` chỉ khi chưa kiện nào nhận, không đè
@@ -337,11 +355,16 @@ async def mark_missing(session: AsyncSession, now: datetime, days: int) -> tuple
     # Import muộn: `returns` → `claims` → `reconciliation` (claims đóng cảnh báo khi tạo hồ sơ từ cảnh báo).
     from aicam.modules.returns import service as returns
 
+    if recon_start_at is None:
+        row = await session.get(Setting, 1)
+        recon_start_at = row.recon_start_at if row else now
     cutoff = now - timedelta(days=days)
     candidates = (
         await session.scalars(
             select(Package.id).where(
-                Package.warehouse_status == "RETURN_EXPECTED", Package.status_changed_at < cutoff
+                Package.warehouse_status == "RETURN_EXPECTED",
+                Package.status_changed_at < cutoff,
+                ~returns.clock_not_started_for_package(Package.id, cutoff, recon_start_at),  # G3 C2, C3
             )
         )
     ).all()
@@ -397,25 +420,42 @@ async def apply_hits(session: AsyncSession, hits: list[rules.Hit], now: datetime
         by_key.setdefault((found.package_id, found.rule), found)
     open_rows = (
         await session.execute(
-            select(ReconAlert.id, ReconAlert.package_id, ReconAlert.rule).where(ReconAlert.status == "OPEN")
+            select(
+                ReconAlert.id,
+                ReconAlert.package_id,
+                ReconAlert.rule,
+                ReconAlert.context,
+                ReconAlert.context_key,
+            ).where(ReconAlert.status == "OPEN")
         )
     ).all()
     open_keys: set[tuple[uuid.UUID, str]] = set()
-    updates: list[dict[str, Any]] = []
+    seen: list[uuid.UUID] = []
     to_close: list[uuid.UUID] = []
-    for alert_id, package_id, rule in open_rows:
+    for alert_id, package_id, rule, context, context_key in open_rows:
         key = (package_id, rule)
         open_keys.add(key)
         hit = by_key.get(key)
         if hit is None:
             to_close.append(alert_id)
-        else:
-            updates.append(
-                {"id": alert_id, "last_seen_at": now, "context": hit.context, "context_key": hit.context_key}
+            continue
+        seen.append(alert_id)
+        if hit.context != context or hit.context_key != context_key:  # G3 R7: chỉ ghi dòng đổi nội dung
+            # G3 R6: guard `status = 'OPEN'` — API-121 vừa xử lý tay thì không ghi đè.
+            result = await session.execute(
+                update(ReconAlert)
+                .where(ReconAlert.id == alert_id, ReconAlert.status == "OPEN")
+                .values(context=hit.context, context_key=hit.context_key)
+                .execution_options(synchronize_session=False)
             )
-    if updates:
-        await session.execute(update(ReconAlert), updates)
-        out.updated = len(updates)
+            out.updated += int(getattr(result, "rowcount", 0) or 0)
+    for i in range(0, len(seen), CHUNK):  # `last_seen_at`: một câu lệnh mỗi lô
+        await session.execute(
+            update(ReconAlert)
+            .where(ReconAlert.id.in_(seen[i : i + CHUNK]), ReconAlert.status == "OPEN")
+            .values(last_seen_at=now)
+            .execution_options(synchronize_session=False)
+        )
     for i in range(0, len(to_close), CHUNK):
         result = await session.execute(
             update(ReconAlert)
@@ -474,6 +514,12 @@ async def run_rules(session: AsyncSession, settings: Settings) -> dict[str, Any]
         return {"skipped": "disabled"}
     token = secrets.token_hex(8)
     if not await get_redis().set(RUN_LOCK_KEY, token, nx=True, ex=RUN_LOCK_TTL_S):
+        # G3 BB-10: lượt kích hoạt sau J-04 / J-06 / J-13 rơi đúng lúc J-14 đang chạy → đẩy lại sau 30 giây
+        # (gộp bằng `recon:queued`), thay đổi mới không phải chờ lượt 30 phút.
+        from aicam.modules.media import jobs
+
+        if await get_redis().set(QUEUED_KEY, "1", nx=True, ex=int(SOON_DELAY_S)):
+            await jobs.send(RUN_TASK, [], "default", SOON_DELAY_S)
         return {"skipped": "locked"}
     began = time_mod.monotonic()
     try:
@@ -485,7 +531,9 @@ async def run_rules(session: AsyncSession, settings: Settings) -> dict[str, Any]
             return_missing_days=row.return_missing_days if row else 7,
             handover_warn_hours=row.handover_warn_hours if row else 24,
         )
-        moved, cases_changed = await mark_missing(session, now, params.return_missing_days)
+        moved, cases_changed = await mark_missing(
+            session, now, params.return_missing_days, params.recon_start_at
+        )
         hits: list[rules.Hit] = []
         for rule in rules.RULES:
             hits.extend(await rule(session, params))

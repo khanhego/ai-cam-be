@@ -82,7 +82,9 @@ async def shipped_not_packed(session: AsyncSession, p: Params) -> list[Hit]:
             pid,
             "SHIPPED_NOT_PACKED",
             {"warehouse_status": ws, "platform_status": ps, "since": _iso(at)},
-            ps or "",
+            # G3 C4: key theo nhóm trạng thái sàn (đã giao đi) — SHIPPED → TO_CONFIRM_RECEIVE → COMPLETED tiến
+            # bình thường không làm cảnh báo đã xử lý tay bắn lại.
+            "SHIPPED",
         )
         for pid, ws, ps, at in rows
     ]
@@ -110,7 +112,7 @@ async def cancelled_after_pack(session: AsyncSession, p: Params) -> list[Hit]:
             pid,
             "CANCELLED_AFTER_PACK",
             {"warehouse_status": ws, "platform_status": ps, "since": _iso(at)},
-            ps or ws,
+            "CANCELLED",  # G3 C4: IN_CANCEL → CANCELLED, PACKED → CANCELLED_AFTER_PACK cùng một đợt
         )
         for pid, ws, ps, at in rows
     ]
@@ -177,6 +179,9 @@ async def return_unannounced(session: AsyncSession, p: Params) -> list[Hit]:
                 not_(func.array_to_string(ReturnCase.signal_keys, ",").like("%FAILED:%")),
                 Package.is_placeholder.is_(False),
             )
+            .order_by(
+                ReturnCase.created_at, ReturnCase.id
+            )  # G3 R5: hồ sơ cũ nhất thắng khi kiện thuộc nhiều hồ sơ
         )
     ).all()
     return [
@@ -201,6 +206,11 @@ async def packed_not_handed_over(session: AsyncSession, p: Params) -> list[Hit]:
                 Package.warehouse_status == "PACKED",
                 Package.status_changed_at < p.now - timedelta(hours=p.handover_warn_hours),
                 Package.created_at >= p.recon_start_at,
+                # G3 R8 / BB-11: sàn chưa lấy hàng (đã giao đi → J-06 chuyển; đã hủy → BR-11 lo).
+                or_(
+                    Order.platform_status.is_(None),
+                    Order.platform_status.notin_((*SHIPPED_PLATFORM_STATUSES, *CANCELLED_STATUSES)),
+                ),
             )
         )
     ).all()
@@ -232,8 +242,12 @@ async def return_done_not_received(session: AsyncSession, p: Params) -> list[Hit
             .where(
                 ReturnCase.platform_status.in_(DONE_PLATFORM_STATUSES),
                 ReturnCase.status.notin_(("CANCELLED",)),
+                ReturnCase.needs_parcel.is_not(False),  # G3 C1: chỉ hoàn tiền (không cần kiện về) không xét
+                ReturnCase.kind != "REFUND_ONLY",
+                ReturnCase.created_at >= p.recon_start_at,  # G3 C2: hồ sơ sau nâng cấp
                 Package.warehouse_status.in_(("RETURN_EXPECTED", "RETURN_MISSING")),
             )
+            .order_by(ReturnCase.created_at, ReturnCase.id)  # G3 R5
         )
     ).all()
     return [
@@ -255,6 +269,8 @@ async def unverified_stale(session: AsyncSession, p: Params) -> list[Hit]:
             select(Package.id, Package.warehouse_status, Package.created_at).where(
                 Package.verified.is_(False),
                 Package.is_placeholder.is_(False),
+                # G3 R8: kiện đã ở trạng thái cuối (hủy / đã nhận hoàn) không còn gì để xác minh → tự đóng.
+                Package.warehouse_status.notin_(("CANCELLED", "RETURN_RECEIVED_OK", "RETURN_RECEIVED_ISSUE")),
                 Package.created_at < p.now - UNVERIFIED_AFTER,
                 Package.created_at >= p.recon_start_at,
             )

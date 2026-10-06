@@ -76,6 +76,10 @@ async def adjust_status(
     )
     if package is None:
         raise _not_found()
+    # G3 BB-19: hồ sơ của kiện đọc lại dưới khóa kiện — có hồ sơ mới gắn giữa bước đọc và bước khóa thì chưa
+    # khóa được (thứ tự hồ sơ → kiện) → báo người dùng thử lại, không sửa nửa vời.
+    if set(await returns.open_case_ids_of_package(session, package_id)) - {c.id for c in cases}:
+        raise AppError("VERSION_CONFLICT", "Dữ liệu kiện vừa thay đổi, tải lại rồi thử lại.", 409)
 
     active = await session.scalar(
         select(PackSession.id).where(
@@ -107,11 +111,20 @@ async def adjust_status(
 
     await orders.transition(session, package, data.to_status, source="MANUAL", actor_user_id=actor)
     cancelled: list[uuid.UUID] = []
-    if from_status in RETURN_STATUSES and data.to_status == "DELIVERED":
-        await session.flush()
-        for case in cases:
+    await session.flush()
+    for case in cases:
+        # G3 SM-F3 / R12: kiện rời luồng hoàn (→ DELIVERED) thì rời hồ sơ (như giao lại — `apply_redelivery`);
+        # mọi hồ sơ đã khóa tính lại (BR-24) — không kẹt `MISSING` khi kiện gia hạn về `RETURN_EXPECTED`,
+        # không
+        # kẹt `PARTIALLY_RECEIVED` khi kiện còn lại được xác nhận đã giao.
+        if from_status in RETURN_STATUSES and data.to_status == "DELIVERED":
+            await returns.unlink_package(session, case.id, package.id)
+            await session.flush()
             if await returns.cancel_if_no_active_package(session, case):
                 cancelled.append(case.id)
+                continue
+        if await returns.recompute(session, case):
+            returns.notify_updated(session, case)
     alert_changed = False
     if alert is not None and alert.status == "OPEN":
         # Cảnh báo đã đóng (tự hết / người khác xử lý) → giữ nguyên, vẫn điều chỉnh kiện (DEC-303).

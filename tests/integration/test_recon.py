@@ -5,6 +5,7 @@ không tạo lại sau xử lý tay; BR-12 không đè `PARTIALLY_RECEIVED`.
 """
 
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -27,7 +28,7 @@ from aicam.modules.settings.models import Setting
 from aicam.realtime import publish
 
 from .factories import PASSWORD, make_station_account, make_user
-from .returns_helpers import buyer_return_case, make_order
+from .returns_helpers import buyer_return_case, make_order, platform_return
 
 pytestmark = pytest.mark.integration
 
@@ -115,6 +116,7 @@ async def test_br12_overdue_moves_to_missing_and_alerts(
     await db.refresh(package)
     assert package.warehouse_status == "RETURN_EXPECTED"
     package.status_changed_at = NOW - timedelta(days=8)
+    case.expected_since = NOW - timedelta(days=8)
     await db.execute(
         update(StatusHistory)
         .where(StatusHistory.package_id == package.id, StatusHistory.to_status == "RETURN_EXPECTED")
@@ -148,6 +150,7 @@ async def test_br12_keeps_partially_received(db: AsyncSession, test_settings: Se
     assert result.case is not None
     first.warehouse_status = "RETURN_RECEIVED_OK"
     second.status_changed_at = NOW - timedelta(days=8)
+    result.case.expected_since = NOW - timedelta(days=8)
     result.case.status = "PARTIALLY_RECEIVED"
     result.case.single_session = False
     await db.flush()
@@ -242,8 +245,10 @@ async def test_br13_unannounced_then_platform_reports(db: AsyncSession, test_set
     await _run(db, test_settings)
     (alert,) = await _alerts(db, package)
     assert (alert.rule, alert.severity, alert.context_key) == ("RETURN_UNANNOUNCED", "LOW", str(scan.case.id))
-    scan.case.platform_return_sn, scan.case.kind = "2410RTTST046", "BUYER_RETURN"
-    await db.flush()
+    # Sàn báo yêu cầu trả qua đường thật `attach_or_create` nhánh (b) — hồ sơ kho đã nhận (G3 BB-18).
+    reported = await buyer_return_case(db, order, 46)
+    assert reported.id == scan.case.id
+    assert (reported.kind, reported.platform_return_sn) == ("BUYER_RETURN", "2410RTTST046")
     out = await _run(db, test_settings)
     assert out["auto_resolved"] == 1
     (alert,) = await _alerts(db, package)
@@ -439,3 +444,161 @@ async def test_sync_change_requests_recon_soon(
         ("reconciliation.run_rules", [], "default", 30.0)
     ]
     assert int(await db.scalar(select(func.count()).select_from(ReconAlert)) or 0) == 0
+
+
+# ---------------------------------------------------------------- G3 (C1–C4, R5–R8, R13, BB-10)
+
+
+async def _backdate(db: AsyncSession, package: Package, case: ReturnCase, days: int) -> None:
+    package.status_changed_at = NOW - timedelta(days=days)
+    case.expected_since = NOW - timedelta(days=days)
+    await db.flush()
+
+
+async def test_c1_refund_only_case_no_br19(db: AsyncSession, test_settings: Settings) -> None:
+    """C1: hồ sơ chỉ hoàn tiền `REFUND_PAID` trên kiện đang về theo hồ sơ khác → không BR-19."""
+    order, (package,) = await make_order(db, 61)
+    await buyer_return_case(db, order, 61)  # kiện → RETURN_EXPECTED
+    ret = replace(
+        platform_return(61), return_sn="R61B", needs_parcel=False, status="REFUND_PAID", status_group="DONE"
+    )
+    refund = await returns.attach_or_create(
+        db, order, returns.Signal(returns.SIGNAL_PLATFORM_RETURN, key="RETURN:R61B", ret=ret)
+    )
+    assert refund.case is not None
+    assert refund.case.kind == "REFUND_ONLY"
+    await _run(db, test_settings)
+    assert await _alerts(db, package, "RETURN_DONE_NOT_RECEIVED") == []
+
+
+async def test_c2_cases_before_recon_start_ignored(db: AsyncSession, test_settings: Settings) -> None:
+    """C2: hồ sơ có từ trước `recon_start_at` → không BR-19, không MISSING."""
+    order, (package,) = await make_order(db, 62)
+    case = await buyer_return_case(db, order, 62)
+    case.platform_status = "REFUND_PAID"
+    case.created_at = NOW - timedelta(days=40)
+    await _backdate(db, package, case, 20)
+    out = await _run(db, test_settings)
+    assert out["missing"] == 0
+    assert await _alerts(db, package) == []
+
+
+async def test_c3_dispute_without_tracking_never_missing(db: AsyncSession, test_settings: Settings) -> None:
+    """C3 (DEC-341): người mua yêu cầu / tranh chấp 10 ngày, chưa có mã chiều về → không MISSING, không HIGH;
+    sàn chấp nhận (có mã chiều về) → đồng hồ chạy lại từ lúc đó."""
+    order, (package,) = await make_order(db, 63)
+    case = await buyer_return_case(db, order, 63, status="SELLER_DISPUTE", tracking="")
+    assert case.return_tracking_number is None
+    await _backdate(db, package, case, 10)
+    out = await _run(db, test_settings)
+    assert out["missing"] == 0
+    assert await _alerts(db, package) == []
+    accepted = replace(platform_return(63), status="ACCEPTED")
+    await returns.upsert_from_platform(db, order, accepted)
+    await db.refresh(case)
+    assert case.expected_since == NOW  # đồng hồ bắt đầu khi sàn chấp nhận
+    assert (await _run(db, test_settings))["missing"] == 0
+    clock.freeze(NOW + timedelta(days=8))
+    assert (await _run(db, test_settings))["missing"] == 1
+
+
+async def test_c4_br10_key_by_group_resolved_stays(
+    api: AsyncClient, db: AsyncSession, test_settings: Settings
+) -> None:
+    """C4: BR-10 xử lý tay rồi sàn tiến SHIPPED → COMPLETED → không bắn lại; BR-11 IN_CANCEL → CANCELLED cũng
+    vậy."""
+    package = await _package(db, 64, "NEW", platform="SHIPPED")
+    cancel = await _package(db, 65, "PACKED", platform="IN_CANCEL")
+    await _run(db, test_settings)
+    headers = await _login(api, db, "SUPERVISOR", "c4")
+    for p in (package, cancel):
+        (alert,) = await _alerts(db, p)
+        res = await api.post(
+            f"/api/v1/recon-alerts/{alert.id}/resolve", json={"note": "đã kiểm"}, headers=headers
+        )
+        assert res.status_code == 200, res.text
+    await db.execute(update(Order).where(Order.id == package.order_id).values(platform_status="COMPLETED"))
+    await db.execute(update(Order).where(Order.id == cancel.order_id).values(platform_status="CANCELLED"))
+    await _run(db, test_settings)
+    assert [a.status for a in await _alerts(db, package)] == ["RESOLVED"]
+    assert [a.status for a in await _alerts(db, cancel)] == ["RESOLVED"]
+
+
+async def test_r8_br14_not_when_platform_shipped_or_cancelled(
+    db: AsyncSession, test_settings: Settings
+) -> None:
+    """R8 / BB-11: PACKED 25 giờ nhưng sàn đã lấy hàng / đơn hủy → không BR-14 (BR-11 lo đơn hủy)."""
+    shipped = await _package(db, 66, "PACKED", platform="SHIPPED", changed_ago=timedelta(hours=25))
+    cancelled = await _package(db, 67, "PACKED", platform="CANCELLED", changed_ago=timedelta(hours=25))
+    await _run(db, test_settings)
+    assert await _alerts(db, shipped, "PACKED_NOT_HANDED_OVER") == []
+    assert await _alerts(db, cancelled, "PACKED_NOT_HANDED_OVER") == []
+
+
+async def test_recon_start_excludes_br14_br20(db: AsyncSession, test_settings: Settings) -> None:
+    """R13: kiện tạo trước `recon_start_at` không vào BR-14 / BR-20; BR-20 kiện đã hủy → tự đóng."""
+    old = await _package(db, 68, "PACKED", changed_ago=timedelta(hours=30))
+    old.created_at = NOW - timedelta(days=40)
+    stale = Package(tracking_number="SPXVN0000000778", verified=False, created_at=NOW - timedelta(days=40))
+    fresh = Package(tracking_number="SPXVN0000000779", verified=False, created_at=NOW - timedelta(hours=25))
+    db.add_all([stale, fresh])
+    await db.flush()
+    await _run(db, test_settings)
+    assert await _alerts(db, old) == []
+    assert await _alerts(db, stale) == []
+    (alert,) = await _alerts(db, fresh)
+    fresh.warehouse_status = "CANCELLED"
+    await db.flush()
+    await _run(db, test_settings)
+    (alert,) = await _alerts(db, fresh)
+    assert alert.status == "AUTO_RESOLVED"
+
+
+async def test_auto_close_and_refire_after_auto_resolved(db: AsyncSession, test_settings: Settings) -> None:
+    """R13: BR-10 tự đóng khi kiện đóng gói; tái phát (đợt mới) sau AUTO_RESOLVED → cảnh báo mới."""
+    package = await _package(db, 69, "NEW", platform="SHIPPED")
+    await _run(db, test_settings)
+    package.warehouse_status = "PACKED"
+    await db.flush()
+    await _run(db, test_settings)
+    assert [a.status for a in await _alerts(db, package)] == ["AUTO_RESOLVED"]
+    package.warehouse_status = "NEW"
+    await db.flush()
+    await _run(db, test_settings)
+    assert sorted(a.status for a in await _alerts(db, package)) == ["AUTO_RESOLVED", "OPEN"]
+
+
+async def test_r6_apply_hits_does_not_reopen_resolved(db: AsyncSession, test_settings: Settings) -> None:
+    """R6: cảnh báo vừa xử lý tay (API-121) sau khi J-14 đọc tập mở → cập nhật ngữ cảnh không ghi đè."""
+    from aicam.modules.reconciliation import rules
+
+    package = await _package(db, 70, "NEW", platform="SHIPPED")
+    await _run(db, test_settings)
+    (alert,) = await _alerts(db, package)
+    hit = rules.Hit(package.id, "SHIPPED_NOT_PACKED", {"x": 1}, "OTHER")
+    original = db.execute
+    calls = {"n": 0}
+
+    async def resolve_midway(stmt: Any, *a: Any, **kw: Any) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 2:  # sau SELECT tập mở: người dùng xử lý tay
+            await original(update(ReconAlert).where(ReconAlert.id == alert.id).values(status="RESOLVED"))
+        return await original(stmt, *a, **kw)
+
+    db.execute = resolve_midway  # type: ignore[method-assign]
+    try:
+        await recon.apply_hits(db, [hit], NOW)
+    finally:
+        db.execute = original  # type: ignore[method-assign]
+    (row,) = await _alerts(db, package)
+    assert (row.status, row.context_key) == ("RESOLVED", "SHIPPED")
+
+
+async def test_bb10_locked_run_requeues(
+    db: AsyncSession, test_settings: Settings, sent_jobs: list[Any]
+) -> None:
+    """BB-10: kích hoạt rơi lúc J-14 đang chạy → đẩy lại sau 30 giây (gộp `recon:queued`)."""
+    await get_redis().set(recon.RUN_LOCK_KEY, "other", ex=60)
+    assert await _run(db, test_settings) == {"skipped": "locked"}
+    assert await _run(db, test_settings) == {"skipped": "locked"}
+    assert [j for j in sent_jobs if j[0] == recon.RUN_TASK] == [(recon.RUN_TASK, [], "default", 30.0)]

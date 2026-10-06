@@ -236,7 +236,47 @@ async def test_return_to_delivered_cancels_case_without_active_packages(
     await db.refresh(lone)
     await db.refresh(shared)
     assert lone.status == "CANCELLED"
-    assert shared.status == "EXPECTED"  # còn kiện chị em đang về → T-104 recompute xử lý
+    assert shared.status == "EXPECTED"  # còn kiện chị em đang về
+    # G3 SM-F3: kiện đã xác nhận giao rời hồ sơ (không còn tính vào hồ sơ).
+    links = (
+        await db.scalars(
+            select(ReturnCasePackage.package_id).where(ReturnCasePackage.return_case_id == shared.id)
+        )
+    ).all()
+    assert set(links) == {sibling.id}
+
+
+async def test_adjust_recomputes_case(api: AsyncClient, db: AsyncSession) -> None:
+    """G3 SM-F3 / R12: (a) giao thất bại P1 đã nhận, P2 quá hạn → chỉnh P2 DELIVERED: P2 rời hồ sơ, hồ sơ
+    `RECEIVED_OK` (không kẹt MISSING / PARTIALLY_RECEIVED); (b) gia hạn MISSING → EXPECTED: hồ sơ về
+    `EXPECTED`."""
+    headers = await _login(api, db, "SUPERVISOR")
+    p1 = await _package(db, 21, "RETURN_RECEIVED_OK")
+    p2 = Package(order_id=p1.order_id, tracking_number="SPXADJ0000022", warehouse_status="RETURN_MISSING")
+    db.add(p2)
+    case = ReturnCase(
+        order_id=p1.order_id, kind="FAILED_DELIVERY", status="PARTIALLY_RECEIVED", source="PLATFORM",
+        single_session=False,
+    )  # fmt: skip
+    db.add(case)
+    await db.flush()
+    db.add_all([ReturnCasePackage(return_case_id=case.id, package_id=p.id) for p in (p1, p2)])
+    await db.flush()
+    res = await _adjust(api, headers, p2.id, to_status="DELIVERED", reason="ĐVVC xác nhận đã giao lại")
+    assert res.status_code == 200, res.text
+    await db.refresh(case)
+    assert case.status == "RECEIVED_OK"
+
+    p3 = await _package(db, 23, "RETURN_MISSING")
+    missing = ReturnCase(order_id=p3.order_id, kind="BUYER_RETURN", status="MISSING", source="PLATFORM")
+    db.add(missing)
+    await db.flush()
+    db.add(ReturnCasePackage(return_case_id=missing.id, package_id=p3.id))
+    await db.flush()
+    res = await _adjust(api, headers, p3.id, to_status="RETURN_EXPECTED", reason="ĐVVC xác nhận đang trả")
+    assert res.status_code == 200, res.text
+    await db.refresh(missing)
+    assert missing.status == "EXPECTED"
 
 
 @pytest.mark.parametrize("role", ["CSKH", "STATION"])

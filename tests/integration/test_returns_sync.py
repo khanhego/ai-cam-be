@@ -40,9 +40,15 @@ BASE = "https://partner.test-stable.shopeemobile.com"
 
 
 @pytest.fixture(autouse=True)
-def _env(test_settings: Settings, redis_client: object) -> None:
+async def _env(db: AsyncSession, test_settings: Settings, redis_client: object) -> None:
+    from aicam.modules.settings.models import Setting
+
     clock.freeze(NOW)
     test_settings.shopee_enabled = True
+    row = await db.get(Setting, 1)
+    assert row is not None
+    row.recon_start_at = NOW - timedelta(days=30)  # nâng cấp Phase 2 từ 30 ngày trước
+    await db.flush()
 
 
 @pytest.fixture
@@ -613,3 +619,19 @@ async def test_j05_skips_placeholder(db: AsyncSession, mock: MockAdapter, test_s
     await db.flush()
     out = await sync.verify_unverified(db, mock, test_settings)
     assert out["checked"] == 0
+
+
+async def test_j13_done_before_upgrade_not_pulled(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """G3 C2: lượt J-13 đầu thấy yêu cầu đã hoàn tiền (DONE) từ trước lúc nâng cấp → không tạo hồ sơ, kiện giữ
+    nguyên (không loạt BR-19 / BR-12 ngày go-live); DONE sau nâng cấp → vẫn xét như cũ."""
+    await _shop(db, test_settings)
+    order, (package,) = await make_order(db, 52)
+    old = NOW - timedelta(days=40)
+    mock.put_return(replace(platform_return(52), status="REFUND_PAID", status_group="DONE", created_at=old,
+                            updated_at=NOW))  # fmt: skip
+    await sync.sync_returns(db, mock, test_settings)
+    assert await _case_of(db, order) == []
+    await db.refresh(package)
+    assert package.warehouse_status == "DELIVERED"
