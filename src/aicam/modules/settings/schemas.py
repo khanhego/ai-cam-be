@@ -32,6 +32,8 @@ class SettingsIn(BaseModel):
     claim_due_soon_hours: int | None = Field(None, ge=1, le=168)
     # Phase 3 (FR-03.16): tùy chọn khi PUT (thiếu = giữ).
     packer_name_required: bool | None = None
+    # Phase 3 (FR-08.08, BR-40): giờ mặc định hạn phản hồi Chỉ hoàn tiền khi sàn không có hạn.
+    refund_only_default_hours: int | None = Field(None, ge=1, le=168)
     # Giảm `retention_clip_days` / `retention_raw_days` cần xác nhận (FR-02.10) — thiếu → 409.
     confirm_reduction: bool = False
 
@@ -48,6 +50,7 @@ class SettingsOut(BaseModel):
     claim_deadline_days: int
     claim_due_soon_hours: int
     packer_name_required: bool = False
+    refund_only_default_hours: int = 48
     # Sàn giữ clip (BR-25) — chỉ đọc, từ biến môi trường `RETENTION_CLIP_MIN_DAYS`.
     retention_clip_min_days: int
     updated_at: datetime

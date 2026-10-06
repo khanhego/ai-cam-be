@@ -168,6 +168,15 @@ RETURN_CASE_ITEM = (
     "claims[].status",
     "merged_into.id",
     "merged_into.code",
+    # Phase 3 (02 §6.2 API-110 — T-215).
+    "platform",
+    "shop.id",
+    "shop.name",
+    "platform_status_group",
+    "response_due_at",
+    "response_due_source",
+    "claim.id",
+    "claim.code",
 )
 RETURN_CASE_ENUMS = {
     "kind": _e("FAILED_DELIVERY", "BUYER_RETURN", "REFUND_ONLY", "UNANNOUNCED", "UNIDENTIFIED"),
@@ -200,8 +209,9 @@ SETTINGS_FIELDS = (
     *SETTINGS_THRESHOLDS,
     "retention_clip_min_days",
     "updated_at",
-    # Phase 3 (02 §6.2 API-80 — T-212).
+    # Phase 3 (02 §6.2 API-80 — T-212, T-215).
     "packer_name_required",
+    "refund_only_default_hours",
 )
 # `sessions[]` API-31 mở rộng (02 §6.2) — cũng là response API-113.
 SESSION_RETURN_FIELDS = (
@@ -250,6 +260,9 @@ RECON_ALERT_ITEM = (
     "resolution.to_status",
     "resolution.claim_id",
     "allowed_status_targets",
+    "platform",  # Phase 3 (T-215)
+    "shop.id",
+    "shop.name",
 )
 # Hồ sơ khiếu nại (02 §6.2 API-130..135) — chi tiết dùng lại trong API-131, 133, 134.
 CLAIM_ENUMS = {
@@ -556,6 +569,9 @@ CONTRACT: tuple[Api, ...] = (
                     "last_session.ended_at",
                     "has_clip",
                     "is_placeholder",  # Phase 2 (02 §6.2 API-30, DEC-260)
+                    "platform",  # Phase 3 (T-215)
+                    "shop.id",
+                    "shop.name",
                     "return_case.id",
                     "return_case.code",
                     "return_case.kind",
@@ -866,6 +882,9 @@ CONTRACT: tuple[Api, ...] = (
                     "due_soon",
                     "overdue",
                     "created_at",
+                    "platform",  # Phase 3 (T-215)
+                    "shop.id",
+                    "shop.name",
                 ),
             ),
             *(f"status_counts.{s}" for s in ("NEW", "SUBMITTED", "WAITING", "WON", "LOST", "CLOSED")),
@@ -981,6 +1000,10 @@ CONTRACT: tuple[Api, ...] = (
             "counts.claims_due_soon",
             "counts.label_on_tray",
             "counts.cam2_unverified",
+            # Phase 3 (02 §6.2 API-32 mở rộng — T-215).
+            "counts.returns_dropped_7d",
+            "counts.refund_only_pending",
+            "counts.claims_overdue_unsent",
             "stations[].work_mode",
             "stations[].operator_name",
             "stations[].id",

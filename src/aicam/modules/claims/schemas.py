@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from aicam.core.pagination import Page
+from aicam.modules.orders.refs import ShopRef
 
 ClaimType = Literal[
     "DAMAGED", "MISSING_ITEM", "WRONG_ITEM", "EMPTY_BOX", "OTHER", "BUYER_CLAIM", "LOST_IN_TRANSIT"
@@ -63,6 +64,9 @@ class ClaimListItem(BaseModel):
     due_soon: bool
     overdue: bool
     created_at: datetime
+    # Phase 3 (02 §6.2 API-130 — T-215): null = đơn chưa gắn shop.
+    platform: str | None = None
+    shop: ShopRef | None = None
 
 
 class StatusCounts(BaseModel):

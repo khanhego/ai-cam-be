@@ -192,7 +192,17 @@ async def test_j04_platform_error_sets_last_error(
         )
     ).json()["access_token"]
     report = (await api.get("/api/v1/reports/daily", headers={"Authorization": f"Bearer {token}"})).json()
-    assert {"kind": "SYNC_ERROR", "shop_id": str(shop.id), "at": clock.iso_z(NOW)} in report["attention"]
+    # Phase 3 (02 §6.2 API-32 — T-215): SYNC_ERROR chỉ ADMIN thấy, thêm `shop_name`, `platform`, `code`.
+    assert [a for a in report["attention"] if a["kind"] == "SYNC_ERROR"] == []
+    await make_user(db, "tst_adm", "ADMIN")
+    token = (
+        await api.post(
+            "/api/v1/auth/login", json={"username": "tst_adm", "password": PASSWORD, "client": "DASHBOARD"}
+        )
+    ).json()["access_token"]
+    report = (await api.get("/api/v1/reports/daily", headers={"Authorization": f"Bearer {token}"})).json()
+    assert {"kind": "SYNC_ERROR", "shop_id": str(shop.id), "at": clock.iso_z(NOW), "shop_name": "TST Shop",
+            "platform": "SHOPEE", "code": "SYNC_FAILED"} in report["attention"]  # fmt: skip
 
     # Lượt sau thành công → xóa lỗi.
     mock.fail_list_times = 0

@@ -1306,6 +1306,27 @@
           "package": {
             "$ref": "#/components/schemas/ClaimPackageBrief"
           },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "shop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShopRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "source": {
             "enum": [
               "AUTO_RETURN",
@@ -3391,6 +3412,16 @@
       "LinkOrderOut": {
         "description": "API-112: chi tiết hồ sơ đích (như API-111); `merged_into` = hồ sơ đích khi hồ sơ chưa xác định được gộp\nvào hồ sơ mở của đơn; `merged_claims` = hồ sơ khiếu nại gộp do trùng BR-27.",
         "properties": {
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaseRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "claims": {
             "items": {
               "$ref": "#/components/schemas/ClaimBrief"
@@ -3486,6 +3517,17 @@
             "title": "Packages",
             "type": "array"
           },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
           "platform_return_sn": {
             "anyOf": [
               {
@@ -3507,6 +3549,17 @@
               }
             ],
             "title": "Platform Status"
+          },
+          "platform_status_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status Group"
           },
           "reason": {
             "anyOf": [
@@ -3572,6 +3625,33 @@
             "title": "Requested Items",
             "type": "array"
           },
+          "response_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Due At"
+          },
+          "response_due_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PLATFORM",
+                  "DEFAULT"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Due Source"
+          },
           "return_tracking_number": {
             "anyOf": [
               {
@@ -3601,6 +3681,16 @@
             },
             "title": "Sessions",
             "type": "array"
+          },
+          "shop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShopRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "source": {
             "enum": [
@@ -4565,6 +4655,17 @@
               }
             ]
           },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
           "platform_order_sn": {
             "anyOf": [
               {
@@ -4591,6 +4692,16 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/ReturnCaseBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShopRef"
               },
               {
                 "type": "null"
@@ -5154,6 +5265,17 @@
           "package": {
             "$ref": "#/components/schemas/AlertPackage"
           },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
           "resolution": {
             "anyOf": [
               {
@@ -5185,6 +5307,16 @@
             ],
             "title": "Severity",
             "type": "string"
+          },
+          "shop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShopRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "status": {
             "enum": [
@@ -5548,6 +5680,16 @@
       },
       "ReturnCaseDetail": {
         "properties": {
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaseRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "claims": {
             "items": {
               "$ref": "#/components/schemas/ClaimBrief"
@@ -5636,6 +5778,17 @@
             "title": "Packages",
             "type": "array"
           },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
           "platform_return_sn": {
             "anyOf": [
               {
@@ -5657,6 +5810,17 @@
               }
             ],
             "title": "Platform Status"
+          },
+          "platform_status_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status Group"
           },
           "reason": {
             "anyOf": [
@@ -5722,6 +5886,33 @@
             "title": "Requested Items",
             "type": "array"
           },
+          "response_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Due At"
+          },
+          "response_due_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PLATFORM",
+                  "DEFAULT"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Due Source"
+          },
           "return_tracking_number": {
             "anyOf": [
               {
@@ -5751,6 +5942,16 @@
             },
             "title": "Sessions",
             "type": "array"
+          },
+          "shop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShopRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "source": {
             "enum": [
@@ -5817,6 +6018,16 @@
       },
       "ReturnCaseItem": {
         "properties": {
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CaseRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "claims": {
             "items": {
               "$ref": "#/components/schemas/ClaimBrief"
@@ -5894,6 +6105,28 @@
             "title": "Packages",
             "type": "array"
           },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "platform_status_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Status Group"
+          },
           "reason_label": {
             "anyOf": [
               {
@@ -5929,6 +6162,33 @@
             ],
             "title": "Reported At"
           },
+          "response_due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Due At"
+          },
+          "response_due_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PLATFORM",
+                  "DEFAULT"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Due Source"
+          },
           "return_tracking_number": {
             "anyOf": [
               {
@@ -5939,6 +6199,16 @@
               }
             ],
             "title": "Return Tracking Number"
+          },
+          "shop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShopRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "status": {
             "enum": [
@@ -7160,6 +7430,19 @@
             ],
             "title": "Packer Name Required"
           },
+          "refund_only_default_hours": {
+            "anyOf": [
+              {
+                "maximum": 168.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Refund Only Default Hours"
+          },
           "retention_clip_days": {
             "maximum": 365.0,
             "minimum": 1.0,
@@ -7251,6 +7534,11 @@
             "default": false,
             "title": "Packer Name Required",
             "type": "boolean"
+          },
+          "refund_only_default_hours": {
+            "default": 48,
+            "title": "Refund Only Default Hours",
+            "type": "integer"
           },
           "retention_clip_days": {
             "title": "Retention Clip Days",
@@ -8501,6 +8789,11 @@
             "title": "Claims Open",
             "type": "integer"
           },
+          "claims_overdue_unsent": {
+            "default": 0,
+            "title": "Claims Overdue Unsent",
+            "type": "integer"
+          },
           "had_mismatch": {
             "title": "Had Mismatch",
             "type": "integer"
@@ -8519,6 +8812,16 @@
           },
           "recon_open": {
             "$ref": "#/components/schemas/ReconOpen"
+          },
+          "refund_only_pending": {
+            "default": 0,
+            "title": "Refund Only Pending",
+            "type": "integer"
+          },
+          "returns_dropped_7d": {
+            "default": 0,
+            "title": "Returns Dropped 7D",
+            "type": "integer"
           },
           "returns_expected": {
             "title": "Returns Expected",
@@ -9336,6 +9639,43 @@
               "minimum": 1,
               "title": "Page Size",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHOPEE",
+                    "TIKTOK"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
             }
           }
         ],
@@ -10459,15 +10799,7 @@
             "schema": {
               "anyOf": [
                 {
-                  "enum": [
-                    "OPEN",
-                    "MISMATCH",
-                    "WAITING_APPROVAL",
-                    "COMPLETED",
-                    "CANCELLED",
-                    "ABANDONED",
-                    "SUPERSEDED"
-                  ],
+                  "maxLength": 200,
                   "type": "string"
                 },
                 {
@@ -10569,6 +10901,53 @@
               "minimum": 1,
               "title": "Page Size",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHOPEE",
+                    "TIKTOK"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "return_dropped",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Return Dropped",
+              "type": "boolean"
             }
           }
         ],
@@ -10842,6 +11221,43 @@
               "minimum": 1,
               "title": "Page Size",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHOPEE",
+                    "TIKTOK"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
             }
           }
         ],
@@ -11118,6 +11534,73 @@
               "minimum": 1,
               "title": "Page Size",
               "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHOPEE",
+                    "TIKTOK"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "pending_only",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Pending Only",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "due_asc",
+                    "created_desc"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Sort"
             }
           }
         ],

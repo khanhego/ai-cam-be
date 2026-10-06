@@ -43,6 +43,7 @@ from aicam.modules.claims.service import (
 from aicam.modules.media import snapshots as media_snapshots
 from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.orders.models import Order, Package
+from aicam.modules.orders.refs import shop_conditions, shop_ref, shops_by_id
 from aicam.modules.returns.models import ReturnCase
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.settings import service as settings_service
@@ -78,8 +79,11 @@ async def list_claims(
     q: str | None,
     page: int,
     page_size: int,
+    platform: str | None = None,
+    shop_id: uuid.UUID | None = None,
 ) -> ClaimPage:
-    """API-130 (FR-08.03, 08.04): lọc; `status_counts` cùng bộ lọc (trừ `status`), một truy vấn."""
+    """API-130 (FR-08.03, 08.04): lọc; `status_counts` cùng bộ lọc (trừ `status`), một truy vấn. Phase 3:
+    `platform`, `shop_id` theo shop của đơn (`claim.order_id`, không có → đơn của kiện)."""
     cfg = await settings_service.get(db)
     now = clock.now()
     conds: list[ColumnElement[bool]] = []
@@ -120,6 +124,15 @@ async def list_claims(
                 Claim.order_id.in_(select(Order.id).where(func.upper(Order.platform_order_sn) == code)),
             )
         )
+    if platform or shop_id:
+        claim_shop = (
+            select(Order.shop_id)
+            .select_from(Package)
+            .join(Order, Order.id == func.coalesce(Claim.order_id, Package.order_id))
+            .where(Package.id == Claim.package_id)
+            .scalar_subquery()
+        )
+        conds += shop_conditions(claim_shop, platform, shop_id)
     counts_row = (
         await db.execute(
             select(*(func.count(case((Claim.status == s, 1))).label(s) for s in CLAIM_STATUSES)).where(*conds)
@@ -134,18 +147,20 @@ async def list_claims(
     )
     rows = (
         await db.execute(
-            select(Claim, Package.tracking_number, Order.platform_order_sn)
+            select(Claim, Package.tracking_number, Order.platform_order_sn, Order.shop_id)
             .join(Package, Package.id == Claim.package_id)
-            .outerjoin(Order, Order.id == Claim.order_id)
+            .outerjoin(Order, Order.id == func.coalesce(Claim.order_id, Package.order_id))
             .where(*where)
             .order_by(*order_by)
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
     ).all()
-    owners = await _users(db, {c.owner_user_id for c, _, _ in rows if c.owner_user_id})
+    owners = await _users(db, {c.owner_user_id for c, _, _, _ in rows if c.owner_user_id})
+    shops = await shops_by_id(db, [shop for _, _, _, shop in rows])
     items = []
-    for c, tracking, order_sn in rows:
+    for c, tracking, order_sn, shop_key in rows:
+        shop = shops.get(shop_key) if shop_key else None
         soon, overdue = due_flags(c, now, cfg.claim_due_soon_hours)
         items.append(
             ClaimListItem(
@@ -162,6 +177,8 @@ async def list_claims(
                 due_soon=soon,
                 overdue=overdue,
                 created_at=c.created_at,
+                platform=shop.platform if shop else None,
+                shop=shop_ref(shop),
             )
         )
     return ClaimPage(

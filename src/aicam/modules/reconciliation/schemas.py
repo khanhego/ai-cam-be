@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from aicam.modules.orders.refs import ShopRef
+
 Rule = Literal[
     "SHIPPED_NOT_PACKED",
     "CANCELLED_AFTER_PACK",
@@ -52,6 +54,9 @@ class ReconAlertOut(BaseModel):
     closed_at: datetime | None
     resolution: Resolution | None
     allowed_status_targets: list[str]
+    # Phase 3 (02 §6.2 API-120 — T-215): null = kiện / đơn chưa gắn shop.
+    platform: str | None = None
+    shop: ShopRef | None = None
 
 
 class OpenSummary(BaseModel):

@@ -28,6 +28,7 @@ from aicam.modules.claims.schemas import (
     NoteOut,
     UserBrief,
 )
+from aicam.modules.orders.refs import PlatformCode
 from aicam.modules.users.queries import get_user_ref
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
@@ -49,11 +50,13 @@ async def list_claims(
     q: Annotated[str | None, Query(max_length=64)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    platform: PlatformCode | None = None,
+    shop_id: uuid.UUID | None = None,
 ) -> ClaimPage:
     """API-130: danh sách hồ sơ (D16)."""
     return await views.list_claims(
         db, viewer=p.user_id, status=status, claim_type=type, counterparty=counterparty, owner=owner, due=due,
-        q=q, page=page, page_size=page_size,
+        q=q, page=page, page_size=page_size, platform=platform, shop_id=shop_id,
     )  # fmt: skip
 
 

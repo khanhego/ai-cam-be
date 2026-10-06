@@ -29,6 +29,7 @@ log = structlog.get_logger()
 
 FIELDS = ("retention_raw_days", "retention_clip_days", "session_warn_minutes", "session_abandon_minutes")
 ALL_FIELDS = (*FIELDS, *THRESHOLD_FIELDS)
+PHASE3_FIELDS = ("packer_name_required", "refund_only_default_hours")
 
 
 async def get(session: AsyncSession) -> Setting:
@@ -44,6 +45,7 @@ def to_out(row: Setting, settings: Settings) -> SettingsOut:
     return SettingsOut(
         **{f: getattr(row, f) for f in ALL_FIELDS},
         packer_name_required=row.packer_name_required,
+        refund_only_default_hours=row.refund_only_default_hours,
         retention_clip_min_days=settings.retention_clip_min_days,
         updated_at=row.updated_at,
     )
@@ -112,16 +114,16 @@ async def update(session: AsyncSession, data: SettingsIn, p: Principal, settings
             )
     for f, value in after.items():
         setattr(row, f, value)
-    flags_before = {"packer_name_required": row.packer_name_required}
-    flags_after = {
-        "packer_name_required": (
-            row.packer_name_required if data.packer_name_required is None else data.packer_name_required
-        )
+    # Phase 3: trường tùy chọn (thiếu = giữ).
+    extra_before: dict[str, object] = {f: getattr(row, f) for f in PHASE3_FIELDS}
+    extra_after: dict[str, object] = {
+        f: extra_before[f] if getattr(data, f) is None else getattr(data, f) for f in PHASE3_FIELDS
     }
-    row.packer_name_required = flags_after["packer_name_required"]
+    for f, value in extra_after.items():
+        setattr(row, f, value)
     audit.record(session, "SETTINGS_UPDATE", user_id=p.user_id, object_type="SETTING", object_id="1", ip=p.ip,
-                 data={"before": {**before, **flags_before}, "after": {**after, **flags_after}})  # fmt: skip
-    if flags_before != flags_after:
+                 data={"before": {**before, **extra_before}, "after": {**after, **extra_after}})  # fmt: skip
+    if extra_before["packer_name_required"] != extra_after["packer_name_required"]:
         after_commit(session, lambda: _publish_station_states(session, settings))
     if impact is not None:
         audit.record(

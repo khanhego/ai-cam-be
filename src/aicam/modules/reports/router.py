@@ -16,10 +16,10 @@ router = APIRouter(tags=["reports"])
 
 @router.get("/reports/daily", response_model=service.DailyOut)
 async def daily(
-    _: Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR", "CSKH"))],
+    p: Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR", "CSKH"))],
     db: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
     date: date | None = None,
 ) -> service.DailyOut:
     """Số liệu ngày (giờ VN) + trạng thái station + mục cần xử lý (FR-09.01)."""
-    return await service.daily(db, date, settings)
+    return service.for_role(await service.daily(db, date, settings), p.role)
