@@ -23,6 +23,7 @@ from aicam.modules.sessions.router import get_platform_adapter
 from aicam.modules.settings.models import Setting
 from aicam.modules.stations.models import Camera
 from aicam.realtime import publish
+from tests.contract.spec import CONTRACT
 from tests.integration.factories import PASSWORD, make_user
 from tests.integration.returns_helpers import (
     buyer_return_case,
@@ -69,6 +70,45 @@ def _error(res: Response, status: int, code: str) -> None:
     assert err["message"]
 
 
+_BY_ID = {a.id: a for a in CONTRACT}
+
+
+def _values(body: Any, path: list[str]) -> list[Any] | None:
+    """Giá trị tại đường dẫn chấm (`[]` = mọi phần tử). None = thiếu khóa (khác giá trị null)."""
+    if not path:
+        return [body]
+    head, rest = path[0], path[1:]
+    if body is None:
+        return []  # cha null / rỗng: không xét con
+    if head.endswith("[]"):
+        key = head[:-2]
+        if not isinstance(body, dict) or key not in body:
+            return None
+        out: list[Any] = []
+        for item in body[key] or []:
+            found = _values(item, rest)
+            if found is None:
+                return None
+            out.extend(found)
+        return out
+    if not isinstance(body, dict) or head not in body:
+        return None
+    return _values(body[head], rest)
+
+
+def _assert_contract_shape(label: str, body: Any) -> int:
+    """G3 R13: response thật có đủ trường bắt buộc của 02 §6 (spec.py) và giá trị enum hợp lệ."""
+    api = _BY_ID.get(label)
+    if api is None or not isinstance(body, dict):
+        return 0
+    for name in api.fields:
+        assert _values(body, name.split(".")) is not None, f"{label}: thiếu trường {name}"
+    for name, allowed in api.enums.items():
+        for value in _values(body, name.split(".")) or []:
+            assert value is None or value in allowed, f"{label}: {name} = {value!r} ngoài enum 02"
+    return len(api.fields)
+
+
 async def test_phase2_responses_follow_contract(
     api: AsyncClient, db: AsyncSession, redis_client: object, test_settings: Settings
 ) -> None:
@@ -90,6 +130,8 @@ async def test_phase2_responses_follow_contract(
         assert res.status_code == status, f"{label}: {res.status_code} {res.text}"
         body = res.json() if res.content else None
         checked[label] = checked.get(label, 0) + (_assert_utc_z(body, label) if body is not None else 0)
+        if res.status_code == next((a.status for a in CONTRACT if a.id == label), res.status_code):
+            _assert_contract_shape(label, body)
         return body
 
     async def scan(code: str) -> Any:
@@ -211,3 +253,14 @@ async def test_phase2_responses_follow_contract(
                 "API-134", "API-113", "API-120", "API-121"}  # fmt: skip
     missing = expected - {k for k, v in checked.items() if v}
     assert not missing, f"response không có mốc giờ để kiểm: {missing}"
+
+
+def test_contract_shape_check_detects_missing_field_and_bad_enum() -> None:
+    """Tự kiểm bộ so: thiếu trường / enum lạ → lỗi."""
+    with pytest.raises(AssertionError, match="thiếu trường"):
+        _assert_contract_shape("API-100", {})
+    api = _BY_ID["API-11"]
+    body = {name.split(".")[0]: None for name in api.fields}
+    body["outcome"] = "LẠ"
+    with pytest.raises(AssertionError, match="ngoài enum"):
+        _assert_contract_shape("API-11", body)
