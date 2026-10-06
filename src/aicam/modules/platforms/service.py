@@ -222,6 +222,27 @@ async def lookup_target(
     return LookupTarget(creds, shop.id if shop else None)
 
 
+async def lookup_targets(
+    session: AsyncSession, adapter: PlatformAdapter, settings: Settings
+) -> list[LookupTarget]:
+    """Mọi shop `CONNECTED` có token đọc được (J-05, J-06 — T-204 đa shop). Adapter mock chưa có shop → một
+    đích không shop (dev / test như Phase 2)."""
+    cipher = Cipher(settings.fernet_key)
+    shops = (
+        await session.scalars(
+            select(Shop)
+            .where(Shop.platform == adapter.code, Shop.auth_status == "CONNECTED")
+            .order_by(Shop.created_at)
+        )
+    ).all()
+    out = [LookupTarget(c, s.id) for s in shops if (c := credentials(s, cipher)) is not None]
+    if not out and isinstance(adapter, MockAdapter):
+        return [LookupTarget(None, None)]
+    if isinstance(adapter, MockAdapter):
+        out += [LookupTarget(None, s.id) for s in shops if s.id not in {t.shop_id for t in out}]
+    return out
+
+
 # ---------------------------------------------------------------- API-70
 
 
@@ -338,17 +359,7 @@ async def handle_callback(
     shop.name = name or shop.name
     shop.last_error = None
     await session.flush()
-    # MVP một shop (DEC-12): kết nối shop khác → ngắt shop cũ.
-    others = (
-        await session.scalars(
-            select(Shop).where(
-                Shop.platform == PLATFORM, Shop.id != shop.id, Shop.auth_status != "DISCONNECTED"
-            )
-        )
-    ).all()
-    for other in others:
-        other.auth_status = "DISCONNECTED"
-        other.access_token_enc = other.refresh_token_enc = None
+    # Phase 3 (FR-05.14, AC-40): nhiều shop cùng chạy — kết nối shop mới **không** ngắt shop khác.
     user_id = uuid.UUID(user_raw)
     audit.record(
         session, "SHOP_CONNECT", user_id=user_id, object_type="SHOP", object_id=shop.id, ip=ip,

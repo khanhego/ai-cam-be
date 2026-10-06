@@ -157,10 +157,10 @@ async def test_callback_denied_and_bad_state(
     assert res.headers["location"].endswith("result=error")
 
 
-async def test_reconnect_other_shop_disconnects_old(
+async def test_connect_other_shop_keeps_old_connected(
     api: AsyncClient, db: AsyncSession, admin: dict[str, str], mock: MockAdapter
 ) -> None:
-    """MVP một shop (DEC-12): kết nối shop khác → shop cũ DISCONNECTED, xóa token."""
+    """Phase 3 (FR-05.14, AC-40 — T-204): kết nối shop khác **không** ngắt shop cũ (bỏ DEC-12 một shop)."""
     old = Shop(
         platform="SHOPEE",
         platform_shop_id="123",
@@ -172,7 +172,7 @@ async def test_reconnect_other_shop_disconnects_old(
     await db.flush()
     await _connect(api, admin)
     await db.refresh(old)
-    assert (old.auth_status, old.access_token_enc) == ("DISCONNECTED", None)
+    assert (old.auth_status, old.access_token_enc) == ("CONNECTED", b"x")
 
 
 async def test_sync_now(

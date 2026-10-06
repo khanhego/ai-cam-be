@@ -44,6 +44,9 @@ class PlatformOrder:
     raw: dict[str, Any] = field(default_factory=dict)
     # Nhóm chung ∈ ORDER_STATUS_GROUPS — adapter đặt (TikTok cần cả yêu cầu hủy, không suy được từ `status`).
     status_group: str = "UNKNOWN"
+    # Kiện gộp (FR-05.22, DEC-454): mã đơn **khác** cùng shop đi chung mã vận đơn với đơn này — adapter đánh
+    # dấu; `orders.upsert_platform_order` ghi `package_order` thay vì chuyển kiện sang đơn này.
+    merged_order_sns: tuple[str, ...] = ()
 
     @property
     def is_cancelled(self) -> bool:

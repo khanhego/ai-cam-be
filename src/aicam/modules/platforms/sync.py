@@ -156,14 +156,11 @@ async def refresh_tokens(
 # ---------------------------------------------------------------- J-04
 
 
-async def _order_packages(session: AsyncSession, order_sn: str) -> dict[Any, str]:
-    rows = (
-        await session.scalars(
-            select(Package)
-            .join(Order, Order.id == Package.order_id)
-            .where(Order.platform_order_sn == order_sn)
-        )
-    ).all()
+async def _order_packages(session: AsyncSession, order_id: Any) -> dict[Any, str]:
+    """Kiện của **một** đơn (theo id — §5.1 #6: shop B không thấy kiện của đơn trùng mã ở shop A)."""
+    if order_id is None:
+        return {}
+    rows = (await session.scalars(select(Package).where(Package.order_id == order_id))).all()
     return {p.id: p.warehouse_status for p in rows}
 
 
@@ -177,11 +174,12 @@ async def _upsert(session: AsyncSession, order: PlatformOrder, shop_id: Any) -> 
     for attempt in (1, 2):
         try:
             async with session.begin_nested():
-                before = await _order_packages(session, order.platform_order_sn)
+                existing = await orders.order_for_upsert(session, order.platform_order_sn, shop_id)
+                before = await _order_packages(session, existing.id if existing else None)
                 result = await orders.upsert_platform_order(session, order, shop_id=shop_id)
                 merged = await returns.merge_unidentified_by_code(session, result.order)
                 signalled = await _order_return_signal(session, result.order, order)
-                after = await _order_packages(session, order.platform_order_sn)
+                after = await _order_packages(session, result.order.id)
                 return (
                     any(before.get(pid, status) != status for pid, status in after.items())
                     or bool(merged)
@@ -376,8 +374,8 @@ async def verify_unverified(
     out = {"checked": 0, "verified": 0}
     if not platforms.is_configured(settings):
         return out
-    target = await platforms.lookup_target(session, adapter, settings)
-    if target is None:
+    targets = await platforms.lookup_targets(session, adapter, settings)
+    if not targets:
         return out
     packages = (
         await session.scalars(
@@ -393,16 +391,30 @@ async def verify_unverified(
         )
     ).all()
     codes = [p.tracking_number for p in packages]
+    await commit(session)
     for code in codes:
         out["checked"] += 1
-        try:
-            found = await adapter.find_by_tracking(target.creds, code)
-        except PlatformError as exc:
-            log.warning("platform_verify_failed", code=code, error=str(exc))
-            break  # sàn lỗi: để lượt sau, giữ unverified
-        if found is None or code.upper() not in found.tracking_numbers:
+        # §5.1 #2 (T-204): tra từng shop đang kết nối, ghi đơn vào đúng shop trả về. ≥ 2 shop cùng trả →
+        # mơ hồ, giữ chưa xác minh (tra song song + `AMBIGUOUS_SHOP`: T-206).
+        hits: list[tuple[PlatformOrder, Any]] = []
+        failed = False
+        for target in targets:
+            try:
+                found = await adapter.find_by_tracking(target.creds, code)
+            except PlatformError as exc:
+                log.warning("platform_verify_failed", code=code, shop_id=str(target.shop_id), error=str(exc))
+                failed = True
+                continue
+            if found is not None and code.upper() in found.tracking_numbers:
+                hits.append((found, target.shop_id))
+        if len(hits) > 1:
+            log.warning("platform_verify_ambiguous", code=code, shops=[str(s) for _, s in hits])
             continue
-        await _upsert(session, found, target.shop_id)
+        if not hits:
+            if failed and len(targets) == 1:
+                break  # sàn lỗi: để lượt sau, giữ unverified
+            continue
+        await _upsert(session, hits[0][0], hits[0][1])
         out["verified"] += 1
         await commit(session)
     await commit(session)
@@ -482,8 +494,11 @@ async def sync_shipping_status(
     out = {"checked": 0, "changed": 0}
     if not platforms.is_configured(settings):
         return out
-    target = await platforms.lookup_target(session, adapter, settings)
-    if target is None:
+    # §5.1 (T-204): kiện tra bằng token **shop của đơn** (không gọi sàn bằng token shop khác — DEC-509); đơn
+    # chưa gắn shop (đơn file) → shop mặc định như Phase 2. Fan-out một task / shop: T-205.
+    by_shop = {t.shop_id: t for t in await platforms.lookup_targets(session, adapter, settings)}
+    default = await platforms.lookup_target(session, adapter, settings)
+    if not by_shop and default is None:
         return out
     failed_packages = (
         select(ReturnCasePackage.package_id)
@@ -508,6 +523,25 @@ async def sync_shipping_status(
         )
     ).all()
     await commit(session)
+    groups: dict[Any, list[Any]] = {}
+    for row in rows:
+        groups.setdefault(row[1].shop_id, []).append(row)
+    for shop_key, shop_rows in groups.items():
+        target = by_shop.get(shop_key) if shop_key is not None else default
+        if target is None:
+            continue  # shop không còn kết nối: không tra (token shop khác không dùng được)
+        await _shipping_for_target(session, adapter, settings, target, shop_rows, out)
+    return out
+
+
+async def _shipping_for_target(
+    session: AsyncSession,
+    adapter: PlatformAdapter,
+    settings: Settings,
+    target: Any,
+    rows: list[Any],
+    out: dict[str, int],
+) -> None:
     for i in range(0, len(rows), SHIPPING_BATCH):
         chunk = rows[i : i + SHIPPING_BATCH]
         by_code = {p.tracking_number.upper(): (p, o) for p, o in chunk}
@@ -515,7 +549,7 @@ async def sync_shipping_status(
         try:
             statuses = await adapter.get_shipping_statuses(target.creds, refs)
         except PlatformError as exc:
-            log.warning("platform_shipping_failed", error=str(exc))
+            log.warning("platform_shipping_failed", shop_id=str(target.shop_id), error=str(exc))
             break
         changed = 0
         for st in statuses:
@@ -529,7 +563,6 @@ async def sync_shipping_status(
                 reconciliation.request_run_soon(session)
             await commit(session)  # nhả `order:{sn}` + khóa kiện sau mỗi kiện (như J-04 — DEC-162)
         out["changed"] += changed
-    return out
 
 
 # ---------------------------------------------------------------- J-13 (Phase 2, T-105)

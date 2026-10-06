@@ -4,13 +4,25 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import structlog
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
 from aicam.modules.media import jobs
-from aicam.modules.orders.models import PLATFORMS, Order, OrderItem, Package, Shop, StatusHistory
+from aicam.modules.orders.models import (
+    PLATFORMS,
+    Order,
+    OrderItem,
+    Package,
+    PackageOrder,
+    Shop,
+    StatusHistory,
+)
 from aicam.modules.platforms.base import CANCEL_GROUPS, PlatformItem, PlatformOrder
+
+log = structlog.get_logger()
 
 _RETURN_OPENABLE = ("RETURN_EXPECTED", "RETURN_MISSING", "HANDED_OVER", "DELIVERED", "NEW")
 _RETURN_RECEIVED = ("RETURN_RECEIVED_OK", "RETURN_RECEIVED_ISSUE")
@@ -234,23 +246,94 @@ def _csv_snapshot(order: Order, items: Sequence[OrderItem]) -> dict[str, object]
     }
 
 
+PLATFORM_LABELS = {"SHOPEE": "Shopee", "TIKTOK": "TikTok Shop"}
+SYNC_WARNINGS_MAX = 20  # 02a §3 `shop.sync_warnings` ≤ 20 phần tử (mới nhất trước)
+
+
+async def add_sync_warning(session: AsyncSession, shop_id: uuid.UUID, entry: dict[str, object]) -> None:
+    """Cảnh báo đồng bộ của shop (DEC-432 — không đặt `last_error`): mới nhất trước, ≤ 20, cùng (mã, mã vận
+    đơn) chỉ giữ bản mới nhất (J-04 chạy 5 phút / lần không nhân bản)."""
+    shop = await session.scalar(
+        select(Shop).where(Shop.id == shop_id).with_for_update().execution_options(populate_existing=True)
+    )
+    if shop is None:
+        return
+    key = (entry.get("code"), entry.get("tracking_number"))
+    rest = [w for w in shop.sync_warnings or [] if (w.get("code"), w.get("tracking_number")) != key]
+    shop.sync_warnings = [entry, *rest][:SYNC_WARNINGS_MAX]
+
+
+async def order_for_upsert(
+    session: AsyncSession, platform_order_sn: str, shop_id: uuid.UUID | None
+) -> Order | None:
+    """BR-29: đơn mà dữ liệu sàn (shop, mã) sẽ ghi vào — (shop, mã), không có → đơn chưa gắn shop cùng mã
+    (đơn file — sẽ được nhận). Người gọi giữ khóa `order:{sn}` khi định ghi."""
+    if shop_id is not None:
+        order: Order | None = await session.scalar(
+            select(Order)
+            .where(Order.shop_id == shop_id, Order.platform_order_sn == platform_order_sn)
+            .execution_options(populate_existing=True)
+        )
+        if order is not None:
+            return order
+    found: Order | None = await session.scalar(
+        select(Order)
+        .where(Order.shop_id.is_(None), Order.platform_order_sn == platform_order_sn)
+        .execution_options(populate_existing=True)
+    )
+    return found
+
+
+async def _owner_conflict(
+    session: AsyncSession, order: Order, package: Package, data: PlatformOrder, code: str
+) -> str | None:
+    """Kiện (đã khóa) đang thuộc đơn khác: `OTHER_SHOP` (EX-T2 — bỏ qua kiện), `MERGED` (kiện gộp cùng shop —
+    FR-05.22), None = như Phase 1 (gắn kiện sang đơn này)."""
+    owner = await session.get(Order, package.order_id) if package.order_id else None
+    if owner is None:
+        return None
+    if owner.shop_id is not None and order.shop_id is not None and owner.shop_id != order.shop_id:
+        other = await session.get(Shop, owner.shop_id)
+        name = (other.name if other else None) or "khác"
+        label = PLATFORM_LABELS.get(other.platform, other.platform) if other else "?"
+        await add_sync_warning(
+            session,
+            order.shop_id,
+            {
+                "code": "TRACKING_OWNED_BY_OTHER_SHOP",
+                "tracking_number": code.upper(),
+                "message": f"Mã vận đơn {code.upper()} đã thuộc đơn của shop {name} ({label}).",
+                "at": clock.iso_z(clock.now()),
+            },
+        )
+        log.warning(
+            "tracking_owned_by_other_shop", tracking_number=code.upper(), shop_id=str(order.shop_id),
+            owner_shop_id=str(owner.shop_id), order_sn=data.platform_order_sn,
+        )  # fmt: skip
+        return "OTHER_SHOP"
+    if owner.shop_id == order.shop_id and owner.platform_order_sn in data.merged_order_sns:
+        return "MERGED"
+    return None
+
+
 async def upsert_platform_order(
     session: AsyncSession, data: PlatformOrder, *, shop_id: uuid.UUID | None = None
 ) -> UpsertResult:
-    """Ghi đơn từ API sàn (source=API). Đơn nguồn CSV bị ghi đè, giữ bản cũ trong audit (BR-17, FR-05.10).
+    """Ghi đơn từ API sàn (source=API) của shop `shop_id` (BR-29). Khóa `order:{sn}` trước khi đọc (G3-F4,
+    DEC-493 — hai shop cùng mã chia một khóa).
 
-    Đơn hủy trên sàn: kiện NEW → CANCELLED, kiện PACKED → CANCELLED_AFTER_PACK (EX-P10).
-    Khóa theo mã đơn trước khi đọc (G3-F4).
+    - Tìm (shop, mã) → không có: đơn chưa gắn shop cùng mã (đơn file) → **nhận** (đặt shop, `source = API`,
+      bản CSV cũ vào audit `ORDER_OVERWRITTEN_BY_API` — BR-17) → không có: tạo.
+    - Mã vận đơn đã thuộc đơn của **shop khác** → bỏ qua kiện, cảnh báo `TRACKING_OWNED_BY_OTHER_SHOP` vào
+      `shop.sync_warnings` (EX-T2); đơn cùng shop mà adapter đánh dấu gộp (`merged_order_sns`) →
+      `package_order` (FR-05.22), kiện vẫn thuộc đơn chính; còn lại như Phase 1 (gắn kiện sang đơn này).
+    - Đơn hủy trên sàn: kiện NEW → CANCELLED, kiện PACKED → CANCELLED_AFTER_PACK (EX-P10).
     """
     await lock_orders(session, [data.platform_order_sn])
-    order = await session.scalar(
-        select(Order)
-        .where(Order.platform_order_sn == data.platform_order_sn)
-        .execution_options(populate_existing=True)
-    )
+    order = await order_for_upsert(session, data.platform_order_sn, shop_id)
     created = order is None
     if order is None:
-        order = Order(platform_order_sn=data.platform_order_sn, source="API")
+        order = Order(platform_order_sn=data.platform_order_sn, source="API", shop_id=shop_id)
         session.add(order)
     elif order.source == "CSV":
         audit.record(
@@ -273,12 +356,33 @@ async def upsert_platform_order(
     await sync_items(session, order.id, data.items, with_image=True)
 
     packages: list[Package] = []
+    if data.tracking_numbers:
+        # EX-T2 (02a §6): khóa kiện (id tăng) trước khi quyết gắn / bỏ qua.
+        await session.execute(
+            select(Package.id)
+            .where(func.upper(Package.tracking_number).in_([c.upper() for c in data.tracking_numbers]))
+            .order_by(Package.id)
+            .with_for_update()
+        )
     for code in data.tracking_numbers:
-        package = await find_package(session, code)
+        package = await find_package(session, code, for_update=True)
         if package is None:
             package = Package(tracking_number=code.upper(), order_id=order.id)
             session.add(package)
             await session.flush()
+        elif package.order_id is not None and package.order_id != order.id:
+            conflict = await _owner_conflict(session, order, package, data, code)
+            if conflict == "OTHER_SHOP":
+                continue
+            if conflict == "MERGED":
+                await session.execute(
+                    pg_insert(PackageOrder)
+                    .values(package_id=package.id, order_id=order.id)
+                    .on_conflict_do_nothing(index_elements=["package_id", "order_id"])
+                )
+            else:
+                package.order_id = order.id
+            package.verified = True
         else:
             package.order_id = order.id
             package.verified = True
@@ -286,8 +390,9 @@ async def upsert_platform_order(
     if data.is_cancelled:
         # Đơn hủy trên sàn thường không còn mã vận đơn trong dữ liệu sàn → xét mọi kiện đã gắn đơn (EX-P10).
         # G3 SM-F4: khóa kiện (theo id) + đọc lại trước khi quyết — quét PACK vừa chuyển NEW → PACKING thì
-        # nhánh PACKING (đánh cờ phiên) chạy, không ghi đè PACKING bằng CANCELLED.
-        ids = sorted({p.id for p in packages} | set(
+        # nhánh PACKING (đánh cờ phiên) chạy, không ghi đè PACKING bằng CANCELLED. Kiện gộp (đơn chính khác)
+        # không đổi theo đơn phụ.
+        ids = sorted({p.id for p in packages if p.order_id == order.id} | set(
             (await session.scalars(select(Package.id).where(Package.order_id == order.id))).all()
         ))  # fmt: skip
         locked = (
@@ -303,6 +408,18 @@ async def upsert_platform_order(
             await apply_platform_cancel(session, package)
     await session.flush()
     return UpsertResult(order=order, created=created, packages=packages)
+
+
+async def merged_orders(session: AsyncSession, package_id: uuid.UUID) -> Sequence[Order]:
+    """Đơn **thêm** của kiện gộp (FR-05.22), theo mã đơn."""
+    return (
+        await session.scalars(
+            select(Order)
+            .join(PackageOrder, PackageOrder.order_id == Order.id)
+            .where(PackageOrder.package_id == package_id)
+            .order_by(Order.platform_order_sn)
+        )
+    ).all()
 
 
 async def orders_by_sn(session: AsyncSession, sns: Sequence[str]) -> dict[str, Order]:
