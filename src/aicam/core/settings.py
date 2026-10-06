@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     evidence_pack_timeout_s: int = 900
     # Phase 2 (02a §9): sàn giữ clip (BR-25, DEC-210) — chỉ đổi qua env; migration 0003 nâng setting lên sàn.
     retention_clip_min_days: int = 60
+    # Phase 2 (02a §9): đối soát J-14 — tắt khi sự cố; giới hạn mềm mỗi lần chạy.
+    recon_enabled: bool = True
+    recon_run_soft_limit_s: int = 120
     import_root: Path = Path("/data/imports")  # file CSV / xlsx gốc (T-17); J-11 xóa sau 90 ngày
 
     platform_adapter: str = "mock"  # shopee | mock

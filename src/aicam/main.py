@@ -20,6 +20,7 @@ from aicam.modules.imports.router import router as imports_router
 from aicam.modules.media.router import router as media_router
 from aicam.modules.orders.router import router as orders_router
 from aicam.modules.platforms.router import router as platforms_router
+from aicam.modules.reconciliation.router import router as recon_router
 from aicam.modules.reports.router import router as reports_router
 from aicam.modules.returns.router import router as returns_router
 from aicam.modules.sessions.listeners import on_tray_changed
@@ -82,6 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(reports_router, prefix="/api/v1")
     app.include_router(returns_router, prefix="/api/v1")
     app.include_router(claims_router, prefix="/api/v1")
+    app.include_router(recon_router, prefix="/api/v1")
     app.include_router(settings_router, prefix="/api/v1")
     app.include_router(ws_router)
 

@@ -34,6 +34,7 @@ from aicam.modules.platforms.base import (
     ShippingStatus,
     ShopCredentials,
 )
+from aicam.modules.reconciliation import service as reconciliation
 from aicam.modules.returns import service as returns
 from aicam.modules.returns.models import OPEN_CASE_STATUSES, ReturnCase, ReturnCasePackage
 from aicam.realtime import publish
@@ -298,6 +299,7 @@ async def sync_shop_orders(
         shop.last_error = None
         if result.changed:
             _report_updated(session, settings)
+            reconciliation.request_run_soon(session)  # J-14 sau 30 giây (02a §7)
         await commit(session)
     except PlatformError as exc:
         await rollback(session)
@@ -515,6 +517,7 @@ async def sync_shipping_status(
             if await _apply_shipping(session, pair[0].id, pair[1].id, st):
                 changed += 1
                 _report_updated(session, settings)
+                reconciliation.request_run_soon(session)
             await commit(session)  # nhả `order:{sn}` + khóa kiện sau mỗi kiện (như J-04 — DEC-162)
         out["changed"] += changed
     return out
@@ -607,6 +610,7 @@ async def sync_shop_returns(
                 result.changed += 1
                 kinds[attached.case.kind] = kinds.get(attached.case.kind, 0) + 1
                 _report_updated(session, settings)
+                reconciliation.request_run_soon(session)
             await commit(session)
         shop.last_return_cursor = started
         if shop.last_error and shop.last_error.get("job") == RETURNS_JOB:

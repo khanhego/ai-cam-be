@@ -20,6 +20,7 @@ from aicam.modules.media import exports, jobs, snapshots
 from aicam.modules.media import service as media
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms import sync as platform_sync
+from aicam.modules.reconciliation import service as reconciliation
 from aicam.modules.sessions import service as sessions
 from aicam.modules.stations import service as stations
 from aicam.modules.stations.mediamtx import HttpMediaMTX, MediaMTXError
@@ -207,3 +208,11 @@ def sync_returns(shop_id: str | None = None) -> dict[str, Any]:
             db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None
         )
     )
+
+
+@app.task(  # type: ignore[untyped-decorator]
+    name="reconciliation.run_rules", soft_time_limit=get_settings().recon_run_soft_limit_s
+)
+def run_recon_rules() -> dict[str, Any]:
+    """J-14 (30 phút; sau J-04 / J-06 / J-13 có thay đổi; API-123): đối soát 7 quy tắc (FR-06.02, 06.06)."""
+    return _run(lambda db: reconciliation.run_rules(db, get_settings()))

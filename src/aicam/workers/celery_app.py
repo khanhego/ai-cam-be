@@ -38,6 +38,7 @@ app.conf.update(
         "j06-sync-shipping-status": {"task": "platforms.sync_shipping_status", "schedule": 900.0},
         "j13-sync-returns": {"task": "platforms.sync_returns", "schedule": 900.0},  # NFR-35 ≤ 15 phút
         "j12-refresh-tokens": {"task": "platforms.refresh_tokens", "schedule": 1800.0},
+        "j14-recon-rules": {"task": "reconciliation.run_rules", "schedule": 1800.0},
         "j15-claim-deadlines": {"task": "claims.check_deadlines", "schedule": 3600.0},
         # 02:00 giờ VN (UTC+7, không đổi giờ mùa hè) = 19:00 UTC.
         "j02-enforce-retention": {"task": "media.enforce_retention", "schedule": crontab(hour=19, minute=0)},

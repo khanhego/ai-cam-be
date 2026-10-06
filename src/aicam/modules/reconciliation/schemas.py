@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 Rule = Literal[
     "SHIPPED_NOT_PACKED",
@@ -58,3 +58,25 @@ class OpenSummary(BaseModel):
     HIGH: int = 0
     MEDIUM: int = 0
     LOW: int = 0
+
+
+class SummaryOut(BaseModel):
+    open: OpenSummary
+
+
+class ReconAlertPage(BaseModel):
+    """API-120: trang cảnh báo + tổng mở theo mức."""
+
+    items: list[ReconAlertOut]
+    page: int
+    page_size: int
+    total: int
+    summary: SummaryOut
+
+
+class ResolveIn(BaseModel):
+    note: str = Field(max_length=500)
+
+
+class RunOut(BaseModel):
+    queued: bool

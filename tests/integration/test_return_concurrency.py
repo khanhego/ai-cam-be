@@ -18,6 +18,7 @@ from aicam.core.security import encode_access_token
 from aicam.core.settings import Settings, get_settings
 from aicam.main import create_app
 from aicam.modules.orders import service as orders
+from aicam.modules.orders.models import Package
 from aicam.modules.platforms.mock.adapter import MockAdapter
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.sessions.router import get_platform_adapter
@@ -211,3 +212,31 @@ async def test_scan_j13_j06_same_order_no_deadlock(committed: AsyncEngine, test_
             package = await orders.find_package(db, f"SPXTST{n:07d}")
             assert package is not None
             assert package.warehouse_status in ("RETURN_EXPECTED", "RETURN_INSPECTING"), n
+
+
+async def test_j14_skips_locked_package(committed: AsyncEngine, test_settings: Settings) -> None:
+    """02a §6 (DEC-256 / 266): J-14 dùng `SKIP LOCKED` — kiện (hoặc hồ sơ) đang bị API / job khác khóa thì
+    bỏ qua lượt này, không chờ, không deadlock; lượt sau chuyển `RETURN_MISSING`."""
+    from datetime import timedelta
+
+    from aicam.core import clock
+    from aicam.modules.reconciliation import service as recon
+
+    async with sessionmaker()() as db:
+        _, (package,) = await make_order(db, 71, warehouse_status="RETURN_EXPECTED")
+        package.status_changed_at = clock.now() - timedelta(days=8)
+        await db.commit()
+        package_id = package.id
+
+    async with sessionmaker()() as holder, sessionmaker()() as job:
+        locked = await orders.find_package(holder, "SPXTST0000071", for_update=True)
+        assert locked is not None
+        out = await asyncio.wait_for(recon.run_rules(job, test_settings), timeout=5)
+        assert out["missing"] == 0
+        await holder.rollback()
+        out = await asyncio.wait_for(recon.run_rules(job, test_settings), timeout=5)
+        assert out["missing"] == 1
+    async with sessionmaker()() as db:
+        package = await db.get(Package, package_id)
+        assert package is not None
+        assert package.warehouse_status == "RETURN_MISSING"

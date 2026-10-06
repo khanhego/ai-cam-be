@@ -61,7 +61,8 @@ def _hours(now: datetime, since: datetime) -> int:
 
 
 async def shipped_not_packed(session: AsyncSession, p: Params) -> list[Hit]:
-    """BR-10 (HIGH): kiện `NEW` / `PACKING`, đơn sàn đã giao đi, đơn tạo sau `recon_start_at` (DEC-254), không phải
+    """BR-10 (HIGH): kiện `NEW` / `PACKING`, đơn sàn đã giao đi, đơn tạo sau `recon_start_at` (DEC-254),
+    không phải
     kiện tạm. Key = trạng thái sàn."""
     created = func.coalesce(Order.created_at_platform, Package.created_at)
     rows = (
@@ -77,7 +78,12 @@ async def shipped_not_packed(session: AsyncSession, p: Params) -> list[Hit]:
         )
     ).all()
     return [
-        Hit(pid, "SHIPPED_NOT_PACKED", {"warehouse_status": ws, "platform_status": ps, "since": _iso(at)}, ps)
+        Hit(
+            pid,
+            "SHIPPED_NOT_PACKED",
+            {"warehouse_status": ws, "platform_status": ps, "since": _iso(at)},
+            ps or "",
+        )
         for pid, ws, ps, at in rows
     ]
 
@@ -101,17 +107,18 @@ async def cancelled_after_pack(session: AsyncSession, p: Params) -> list[Hit]:
     ).all()
     return [
         Hit(
-            pid, "CANCELLED_AFTER_PACK",
+            pid,
+            "CANCELLED_AFTER_PACK",
             {"warehouse_status": ws, "platform_status": ps, "since": _iso(at)},
             ps or ws,
-        )  # fmt: skip
+        )
         for pid, ws, ps, at in rows
     ]
 
 
 async def return_overdue(session: AsyncSession, p: Params) -> list[Hit]:
-    """BR-12 (HIGH): kiện `RETURN_MISSING` (J-14 bước 1 đã chuyển theo `status_changed_at` — DEC-255). Key = mốc
-    vào `RETURN_MISSING` (mỗi lần gia hạn qua API-122 rồi quá hạn lại là một đợt mới). `since` = lần vào
+    """BR-12 (HIGH): kiện `RETURN_MISSING` (J-14 bước 1 đã chuyển theo `status_changed_at` — DEC-255). Key =
+    mốc vào `RETURN_MISSING` (mỗi lần gia hạn qua API-122 rồi quá hạn lại là một đợt mới). `since` = lần vào
     `RETURN_EXPECTED` gần nhất."""
     expected_since = (
         select(func.max(StatusHistory.at))
@@ -122,9 +129,12 @@ async def return_overdue(session: AsyncSession, p: Params) -> list[Hit]:
     rows = (
         await session.execute(
             select(
-                Package.id, Package.warehouse_status, Order.platform_status, Package.status_changed_at,
+                Package.id,
+                Package.warehouse_status,
+                Order.platform_status,
+                Package.status_changed_at,
                 expected_since,
-            )  # fmt: skip
+            )
             .outerjoin(Order, Order.id == Package.order_id)
             .where(Package.warehouse_status == "RETURN_MISSING")
         )
@@ -134,21 +144,29 @@ async def return_overdue(session: AsyncSession, p: Params) -> list[Hit]:
         start = since or changed_at
         out.append(
             Hit(
-                pid, "RETURN_OVERDUE",
-                {"warehouse_status": ws, "platform_status": ps, "since": _iso(start),
-                 "days": int((p.now - start).total_seconds() // 86400)},
+                pid,
+                "RETURN_OVERDUE",
+                {
+                    "warehouse_status": ws,
+                    "platform_status": ps,
+                    "since": _iso(start),
+                    "days": int((p.now - start).total_seconds() // 86400),
+                },
                 _iso(changed_at) or "",
-            )  # fmt: skip
+            )
         )
     return out
 
 
 async def return_unannounced(session: AsyncSession, p: Params) -> list[Hit]:
-    """BR-13 (LOW): hồ sơ `UNANNOUNCED` chưa có mã sàn, không có tín hiệu giao thất bại, tạo quá 24 giờ, chưa hủy.
+    """BR-13 (LOW): hồ sơ `UNANNOUNCED` chưa có mã sàn, không có tín hiệu giao thất bại, tạo quá 24 giờ,
+    chưa hủy.
     Cảnh báo cho mọi kiện thật của hồ sơ. Key = id hồ sơ."""
     rows = (
         await session.execute(
-            select(Package.id, Package.warehouse_status, ReturnCase.id, ReturnCase.code, ReturnCase.created_at)
+            select(
+                Package.id, Package.warehouse_status, ReturnCase.id, ReturnCase.code, ReturnCase.created_at
+            )
             .join(ReturnCasePackage, ReturnCasePackage.package_id == Package.id)
             .join(ReturnCase, ReturnCase.id == ReturnCasePackage.return_case_id)
             .where(
@@ -163,16 +181,18 @@ async def return_unannounced(session: AsyncSession, p: Params) -> list[Hit]:
     ).all()
     return [
         Hit(
-            pid, "RETURN_UNANNOUNCED",
+            pid,
+            "RETURN_UNANNOUNCED",
             {"warehouse_status": ws, "return_case": code, "since": _iso(at), "hours": _hours(p.now, at)},
             str(case_id),
-        )  # fmt: skip
+        )
         for pid, ws, case_id, code, at in rows
     ]
 
 
 async def packed_not_handed_over(session: AsyncSession, p: Params) -> list[Hit]:
-    """BR-14 (MEDIUM): `PACKED` quá `handover_warn_hours`, kiện tạo sau `recon_start_at`. Key = mốc vào `PACKED`."""
+    """BR-14 (MEDIUM): `PACKED` quá `handover_warn_hours`, kiện tạo sau `recon_start_at`. Key = mốc vào
+    `PACKED`."""
     rows = (
         await session.execute(
             select(Package.id, Package.warehouse_status, Order.platform_status, Package.status_changed_at)
@@ -186,10 +206,11 @@ async def packed_not_handed_over(session: AsyncSession, p: Params) -> list[Hit]:
     ).all()
     return [
         Hit(
-            pid, "PACKED_NOT_HANDED_OVER",
+            pid,
+            "PACKED_NOT_HANDED_OVER",
             {"warehouse_status": ws, "platform_status": ps, "since": _iso(at), "hours": _hours(p.now, at)},
             _iso(at) or "",
-        )  # fmt: skip
+        )
         for pid, ws, ps, at in rows
     ]
 
@@ -200,9 +221,12 @@ async def return_done_not_received(session: AsyncSession, p: Params) -> list[Hit
     rows = (
         await session.execute(
             select(
-                Package.id, Package.warehouse_status, ReturnCase.platform_status, ReturnCase.code,
+                Package.id,
+                Package.warehouse_status,
+                ReturnCase.platform_status,
+                ReturnCase.code,
                 ReturnCase.updated_at,
-            )  # fmt: skip
+            )
             .join(ReturnCasePackage, ReturnCasePackage.package_id == Package.id)
             .join(ReturnCase, ReturnCase.id == ReturnCasePackage.return_case_id)
             .where(
@@ -214,17 +238,18 @@ async def return_done_not_received(session: AsyncSession, p: Params) -> list[Hit
     ).all()
     return [
         Hit(
-            pid, "RETURN_DONE_NOT_RECEIVED",
+            pid,
+            "RETURN_DONE_NOT_RECEIVED",
             {"warehouse_status": ws, "platform_status": ps, "return_case": code, "since": _iso(at)},
             ps or "",
-        )  # fmt: skip
+        )
         for pid, ws, ps, code, at in rows
     ]
 
 
 async def unverified_stale(session: AsyncSession, p: Params) -> list[Hit]:
-    """BR-20 (LOW): kiện chưa xác minh quá 24 giờ (không tính kiện tạm), tạo sau `recon_start_at`. Key = lúc tạo
-    (một lần / kiện)."""
+    """BR-20 (LOW): kiện chưa xác minh quá 24 giờ (không tính kiện tạm), tạo sau `recon_start_at`. Key = lúc
+    tạo (một lần / kiện)."""
     rows = (
         await session.execute(
             select(Package.id, Package.warehouse_status, Package.created_at).where(
@@ -237,10 +262,11 @@ async def unverified_stale(session: AsyncSession, p: Params) -> list[Hit]:
     ).all()
     return [
         Hit(
-            pid, "UNVERIFIED_STALE",
+            pid,
+            "UNVERIFIED_STALE",
             {"warehouse_status": ws, "since": _iso(at), "hours": _hours(p.now, at)},
             _iso(at) or "",
-        )  # fmt: skip
+        )
         for pid, ws, at in rows
     ]
 

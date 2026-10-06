@@ -3760,6 +3760,27 @@
         "title": "NoteOut",
         "type": "object"
       },
+      "OpenSummary": {
+        "properties": {
+          "HIGH": {
+            "default": 0,
+            "title": "High",
+            "type": "integer"
+          },
+          "LOW": {
+            "default": 0,
+            "title": "Low",
+            "type": "integer"
+          },
+          "MEDIUM": {
+            "default": 0,
+            "title": "Medium",
+            "type": "integer"
+          }
+        },
+        "title": "OpenSummary",
+        "type": "object"
+      },
       "OperatorIn": {
         "description": "API-101 — strip rồi 2–40 ký tự (kiểm ở service để trả `fields.name`).",
         "properties": {
@@ -4716,6 +4737,42 @@
         "title": "ReconAlertOut",
         "type": "object"
       },
+      "ReconAlertPage": {
+        "description": "API-120: trang cảnh báo + tổng mở theo mức.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ReconAlertOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/SummaryOut"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total",
+          "summary"
+        ],
+        "title": "ReconAlertPage",
+        "type": "object"
+      },
       "RefreshIn": {
         "properties": {
           "client": {
@@ -4853,6 +4910,20 @@
           "claim_id"
         ],
         "title": "Resolution",
+        "type": "object"
+      },
+      "ResolveIn": {
+        "properties": {
+          "note": {
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "title": "ResolveIn",
         "type": "object"
       },
       "ResolvedBy": {
@@ -5812,6 +5883,19 @@
           "message"
         ],
         "title": "RowErrorOut",
+        "type": "object"
+      },
+      "RunOut": {
+        "properties": {
+          "queued": {
+            "title": "Queued",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "queued"
+        ],
+        "title": "RunOut",
         "type": "object"
       },
       "SampleRow": {
@@ -6865,6 +6949,18 @@
           }
         },
         "title": "StatusCounts",
+        "type": "object"
+      },
+      "SummaryOut": {
+        "properties": {
+          "open": {
+            "$ref": "#/components/schemas/OpenSummary"
+          }
+        },
+        "required": [
+          "open"
+        ],
+        "title": "SummaryOut",
         "type": "object"
       },
       "SyncHealth": {
@@ -9499,6 +9595,257 @@
         "summary": "Adjust Warehouse Status",
         "tags": [
           "packages"
+        ]
+      }
+    },
+    "/api/v1/recon-alerts": {
+      "get": {
+        "description": "API-120: danh sách cảnh báo lệch + tổng mở theo mức (FR-06.03, D15).",
+        "operationId": "list_alerts_api_v1_recon_alerts_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "OPEN",
+                    "RESOLVED",
+                    "AUTO_RESOLVED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "HIGH",
+                    "MEDIUM",
+                    "LOW"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "rule",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHIPPED_NOT_PACKED",
+                    "CANCELLED_AFTER_PACK",
+                    "RETURN_OVERDUE",
+                    "RETURN_UNANNOUNCED",
+                    "PACKED_NOT_HANDED_OVER",
+                    "RETURN_DONE_NOT_RECEIVED",
+                    "UNVERIFIED_STALE"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rule"
+            }
+          },
+          {
+            "in": "query",
+            "name": "package_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Package Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "in": "query",
+            "name": "date_to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconAlertPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Alerts",
+        "tags": [
+          "reconciliation"
+        ]
+      }
+    },
+    "/api/v1/recon-alerts/{alert_id}/resolve": {
+      "post": {
+        "description": "API-121: đánh dấu đã xử lý (FR-06.03).",
+        "operationId": "resolve_alert_api_v1_recon_alerts__alert_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "alert_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Alert Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReconAlertOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Alert",
+        "tags": [
+          "reconciliation"
+        ]
+      }
+    },
+    "/api/v1/recon/run": {
+      "post": {
+        "description": "API-123: chạy đối soát ngay (FR-06.02) — chỉ đẩy J-14; J-14 đang chạy → 409 `RECON_IN_PROGRESS`.",
+        "operationId": "run_now_api_v1_recon_run_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Now",
+        "tags": [
+          "reconciliation"
         ]
       }
     },
