@@ -360,6 +360,17 @@
             ],
             "title": "Note"
           },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
           "session_id": {
             "anyOf": [
               {
@@ -371,6 +382,21 @@
               }
             ],
             "title": "Session Id"
+          },
+          "session_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PACK",
+                  "RETURN"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Type"
           },
           "station": {
             "$ref": "#/components/schemas/aicam__modules__sessions__schemas__StationRef"

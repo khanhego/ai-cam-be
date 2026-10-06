@@ -18,6 +18,7 @@ from aicam.core.settings import get_settings
 
 BUILD_CLIPS = "media.build_session_clips"
 RENDER_EXPORT = "media.render_export"
+FLAG_ORDER_CANCELLED = "sessions.flag_order_cancelled"
 
 Sender = Callable[[str, list[Any], str, float], None]
 
@@ -60,5 +61,14 @@ def enqueue_build_clips(session: AsyncSession, session_id: uuid.UUID, ended_at: 
 def enqueue_render_export(session: AsyncSession, export_id: uuid.UUID) -> None:
     async def _send() -> None:
         await send(RENDER_EXPORT, [str(export_id)], "export")
+
+    after_commit(session, _send)
+
+
+def enqueue_flag_order_cancelled(session: AsyncSession, package_id: uuid.UUID) -> None:
+    """BR-21 (DEC-266): đơn hủy khi kiện `PACKING` → task riêng gắn cờ phiên, sau commit của job đồng bộ."""
+
+    async def _send() -> None:
+        await send(FLAG_ORDER_CANCELLED, [str(package_id)], "default")
 
     after_commit(session, _send)

@@ -117,3 +117,31 @@ async def test_pack_scan_waits_for_manual_adjust(committed: AsyncEngine, test_se
         package = await orders.find_package(db, "SPXTST0000021")
         assert package is not None
         assert package.warehouse_status == "HANDED_OVER"
+
+
+async def test_flag_order_cancelled_races_closing_scan(
+    committed: AsyncEngine, test_settings: Settings
+) -> None:
+    """TC-03.77, DEC-266, R3-8: `flag_order_cancelled` ∥ quét đóng → không deadlock, kiện cuối luôn
+    `CANCELLED_AFTER_PACK` (task trước → cờ rồi đóng; đóng trước → task chuyển từ `PACKED`)."""
+    from aicam.modules.sessions import service as sessions
+
+    headers = await _station("race", mode="PACK")
+    async with _client(test_settings) as client:
+        for n in range(23, 28):
+            code = f"SPXTST{n:07d}"
+            assert (await _scan(client, headers, code))["outcome"] == "SESSION_OPENED"
+            async with sessionmaker()() as db:
+                package = await orders.find_package(db, code)
+                assert package is not None
+                package_id = package.id
+
+            async def run_task(pid: uuid.UUID = package_id) -> str:
+                async with sessionmaker()() as db:
+                    return await sessions.flag_order_cancelled(db, pid, test_settings)
+
+            await asyncio.wait_for(asyncio.gather(_scan(client, headers, code), run_task()), timeout=5)
+            async with sessionmaker()() as db:
+                package = await orders.find_package(db, code)
+            assert package is not None
+            assert package.warehouse_status == "CANCELLED_AFTER_PACK", code

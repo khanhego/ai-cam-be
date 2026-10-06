@@ -53,6 +53,12 @@ def check_timeouts() -> dict[str, int]:
     return _run(lambda db: sessions.check_timeouts(db, get_settings()))
 
 
+@app.task(name="sessions.flag_order_cancelled", soft_time_limit=60)  # type: ignore[untyped-decorator]
+def flag_order_cancelled(package_id: str) -> str:
+    """BR-21 (02a §5, DEC-266): đơn hủy khi kiện đang đóng → gắn cờ phiên / hủy sau khi đóng (R3-8)."""
+    return _run(lambda db: sessions.flag_order_cancelled(db, uuid.UUID(package_id), get_settings()))
+
+
 @app.task(  # type: ignore[untyped-decorator]
     name="media.build_session_clips", bind=True, max_retries=3, soft_time_limit=120, time_limit=150
 )

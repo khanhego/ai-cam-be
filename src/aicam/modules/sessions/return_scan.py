@@ -142,6 +142,15 @@ async def prepare(
     return Prepared(resolution, checked)
 
 
+async def lock_case_orders(session: AsyncSession, case_id: uuid.UUID) -> None:
+    """Khóa `order:{sn}` của hồ sơ + đơn chờ gộp (R3-2) — gọi **trước** khóa station (DEC-266)."""
+    case = await session.get(ReturnCase, case_id)
+    if case is None:
+        return
+    await _lock_order_of(session, case.pending_merge_order_id)
+    await _lock_order_of(session, case.order_id)
+
+
 async def _lock_order_of(session: AsyncSession, order_id: uuid.UUID | None) -> None:
     if order_id is None:
         return

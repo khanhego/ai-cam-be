@@ -216,6 +216,8 @@ APPROVAL_ITEM = (
     "decided_by.display_name",
     "decided_at",
     "note",
+    "session_type",  # Phase 2 (02 API-20)
+    "operator_name",
 )
 STATION_ITEM = (
     "id",

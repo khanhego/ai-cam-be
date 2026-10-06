@@ -189,7 +189,9 @@ async def test_operator_set_and_validate(api: AsyncClient, db: AsyncSession) -> 
     assert "name" in short.json()["error"]["details"]["fields"]
     assert long.status_code == 422
     assert exact.status_code == 200
-    logs = (await db.scalars(select(AuditLog).where(AuditLog.action == "STATION_OPERATOR"))).all()
+    logs = (
+        await db.scalars(select(AuditLog).where(AuditLog.action == "STATION_OPERATOR").order_by(AuditLog.id))
+    ).all()
     assert [log.data for log in logs] == [{"old": None, "new": "Lan QA"}, {"old": "Lan QA", "new": "y" * 40}]
 
 

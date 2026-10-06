@@ -136,10 +136,16 @@ class Desk:
 
 
 async def make_desk(
-    api: AsyncClient, db: AsyncSession, n: int = 1, *, operator: str | None = "Lan QA", kind: str = "BOTH"
+    api: AsyncClient,
+    db: AsyncSession,
+    n: int = 1,
+    *,
+    operator: str | None = "Lan QA",
+    kind: str = "BOTH",
+    mode: str = "RETURN",
 ) -> Desk:
     user, station = await make_station_account(db, f"tst_station0{n}", f"TST Station 0{n}")
-    station.kind, station.work_mode, station.operator_name = kind, "RETURN", operator
+    station.kind, station.work_mode, station.operator_name = kind, mode, operator
     await db.flush()
     res = await api.post(
         "/api/v1/auth/login", json={"username": user.username, "password": PASSWORD, "client": "STATION"}

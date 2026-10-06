@@ -8,6 +8,7 @@ from sqlalchemy import delete, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
+from aicam.modules.media import jobs
 from aicam.modules.orders.models import Order, OrderItem, Package, StatusHistory
 from aicam.modules.platforms.base import CANCELLED_STATUSES, PlatformItem, PlatformOrder
 
@@ -141,7 +142,13 @@ async def create_unverified_package(session: AsyncSession, code: str) -> Package
 
 
 async def apply_platform_cancel(session: AsyncSession, package: Package) -> bool:
-    """Sàn hủy đơn: kiện NEW → CANCELLED, PACKED → CANCELLED_AFTER_PACK (EX-P10); trạng thái khác giữ."""
+    """Sàn hủy đơn: kiện NEW → CANCELLED, PACKED → CANCELLED_AFTER_PACK (EX-P10); trạng thái khác giữ.
+
+    Kiện `PACKING` (BR-21): không khóa kiện / phiên trong transaction đồng bộ — sau commit đẩy task
+    `sessions.flag_order_cancelled` (transaction riêng: station → kiện, DEC-266)."""
+    if package.warehouse_status == "PACKING":
+        jobs.enqueue_flag_order_cancelled(session, package.id)
+        return False
     target = {"NEW": "CANCELLED", "PACKED": "CANCELLED_AFTER_PACK"}.get(package.warehouse_status)
     if target is None:
         return False
