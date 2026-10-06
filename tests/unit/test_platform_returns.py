@@ -16,7 +16,7 @@ from aicam.core import clock
 from aicam.modules.platforms.base import ShipmentRef, ShopCredentials
 from aicam.modules.platforms.mock.adapter import MockAdapter
 from aicam.modules.platforms.shopee import mapping, returns_mapping
-from aicam.modules.platforms.shopee.adapter import ShopeeAdapter
+from aicam.modules.platforms.shopee.adapter import RETURNS_FIRST_PAGE, ShopeeAdapter
 from aicam.modules.platforms.shopee.client import ShopeeClient
 
 BASE = "https://partner.test-stable.shopeemobile.com"
@@ -147,7 +147,7 @@ async def test_list_returns_pages_and_windows() -> None:
         q = parse_qs(urlparse(str(request.url)).query)
         calls.append(q)
         page = int(q["page_no"][0])
-        if page == 1:
+        if page == RETURNS_FIRST_PAGE:
             return ok({"return": [_detail("RT1"), _detail("RT2")], "more": True})
         return ok({"return": [_detail("RT3", status="REFUND_PAID")], "more": False})
 
@@ -229,3 +229,59 @@ async def test_mock_return_controls() -> None:
     assert [r.return_sn async for r in mock.list_returns(None, NOW + timedelta(minutes=1))] == [
         "2410RTTST045"
     ]
+
+
+@respx.mock
+async def test_list_returns_first_page_zero_stops_on_empty_and_max_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G3 F-4, F-5: trang đầu `page_no = 0` (giả định T-3); danh sách rỗng → dừng dù `more`; trần số trang."""
+    from aicam.modules.platforms.shopee import adapter as shopee_adapter
+
+    pages: list[int] = []
+
+    def _empty_but_more(request: httpx.Request) -> httpx.Response:
+        pages.append(int(parse_qs(urlparse(str(request.url)).query)["page_no"][0]))
+        return ok({"return": [], "more": True})
+
+    route = respx.get(f"{BASE}/api/v2/returns/get_return_list").mock(side_effect=_empty_but_more)
+    assert [r async for r in _adapter().list_returns(CREDS, NOW - timedelta(days=1))] == []
+    assert pages == [0]
+
+    monkeypatch.setattr(shopee_adapter, "RETURNS_MAX_PAGES", 3)
+    pages.clear()
+    route.mock(
+        side_effect=lambda req: (pages.append(1), ok({"return": [_detail(f"R{len(pages)}")], "more": True}))[
+            1
+        ]
+    )
+    out = [r async for r in _adapter().list_returns(CREDS, NOW - timedelta(days=1))]
+    assert len(out) == 3
+
+
+def test_quantity_parsing_never_raises() -> None:
+    """G3 F-6: `amount` lạ không làm hỏng cả lượt J-13."""
+    assert [returns_mapping.to_item({"amount": v}).quantity for v in ("2", "1.0", "abc", None, -3, 4)] == [
+        2, 1, 0, 0, 0, 4
+    ]  # fmt: skip
+
+
+async def test_client_respects_time_budget() -> None:
+    """G3 F-14: Retry-After dài hơn thời gian còn lại của job → lỗi ngay (không ngủ quá soft_time_limit)."""
+    from aicam.modules.platforms.base import PlatformError
+    from aicam.modules.platforms.shopee import client as shopee_client
+
+    slept: list[float] = []
+
+    async def _sleep(s: float) -> None:
+        slept.append(s)
+
+    c = ShopeeClient(2001234, "k", BASE, max_attempts=3, timeout_s=1.0, sleep=_sleep)
+    with respx.mock:
+        respx.get(f"{BASE}/api/v2/x").mock(return_value=httpx.Response(429, headers={"Retry-After": "30"}))
+        with shopee_client.time_budget(10.0), pytest.raises(PlatformError, match="hết thời gian"):
+            await c.call("GET", "/api/v2/x")
+        assert slept == []
+        with shopee_client.time_budget(100.0), pytest.raises(PlatformError):
+            await c.call("GET", "/api/v2/x")
+        assert slept == [30.0, 30.0]

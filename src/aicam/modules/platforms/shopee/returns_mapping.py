@@ -71,6 +71,14 @@ def _str(value: Any) -> str | None:
     return text or None
 
 
+def _quantity(value: Any) -> int:
+    """Số lượng sàn trả (G3 F-6): chuỗi lạ / số thực / None → 0 (người kiểm sửa), không hỏng cả lượt J-13."""
+    try:
+        return max(0, int(float(str(value).strip()))) if value not in (None, "") else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def to_item(raw: dict[str, Any]) -> ReturnItem:
     return ReturnItem(
         item_id=_str(raw.get("item_id")),
@@ -78,7 +86,7 @@ def to_item(raw: dict[str, Any]) -> ReturnItem:
         sku=_str(raw.get("variation_sku") or raw.get("model_sku") or raw.get("item_sku")),
         product_name=_str(raw.get("name") or raw.get("item_name")),
         variation=_str(raw.get("model_name") or raw.get("variation")),
-        quantity=max(0, int(raw.get("amount") or raw.get("quantity") or 0)),
+        quantity=_quantity(raw.get("amount") or raw.get("quantity")),
     )
 
 

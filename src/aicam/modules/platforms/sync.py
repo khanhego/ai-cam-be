@@ -5,6 +5,7 @@ Mọi job không làm gì khi chưa cấu hình Shopee (`SHOPEE_ENABLED=false`).
 adapter (5 lần, giãn cách mũ — FR-05.08); lỗi cuối ghi `shop.last_error` → dashboard `SYNC_ERROR` (API-32).
 """
 
+import json
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -252,9 +253,14 @@ class SyncResult:
     orders: int = 0
     changed: int = 0
     error: str | None = None
+    skipped: int = 0  # J-13: yêu cầu trả bỏ qua lượt này (đưa vào danh sách thử lại — G3 F-6)
 
     def as_dict(self) -> dict[str, Any]:
-        return {"status": self.status, "orders": self.orders, "changed": self.changed, "error": self.error}
+        out: dict[str, Any] = {"status": self.status, "orders": self.orders, "changed": self.changed,
+                               "error": self.error}  # fmt: skip
+        if self.skipped:
+            out["skipped"] = self.skipped
+        return out
 
 
 async def sync_shop_orders(
@@ -296,7 +302,8 @@ async def sync_shop_orders(
                     return SyncResult(status="EXPIRED", orders=result.orders)
         shop.last_sync_cursor = started
         shop.last_synced_at = clock.now()
-        shop.last_error = None
+        if not (shop.last_error and shop.last_error.get("job") == RETURNS_JOB):  # G3 F-7: không xóa lỗi J-13
+            shop.last_error = None
         if result.changed:
             _report_updated(session, settings)
             reconciliation.request_run_soon(session)  # J-14 sau 30 giây (02a §7)
@@ -377,6 +384,7 @@ async def verify_unverified(
             select(Package)
             .where(
                 Package.verified.is_(False),
+                Package.is_placeholder.is_(False),  # kiện tạm TAM- không có trên sàn (G3 SM-F7)
                 Package.order_id.is_(None),
                 Package.updated_at > clock.now() - VERIFY_MAX_AGE,
             )
@@ -548,18 +556,26 @@ async def _release_returns_lock(shop_id: Any, token: str) -> None:
     await get_redis().eval(_RELEASE_IF_OWNER, 1, returns_lock_key(shop_id), token)  # type: ignore[misc]
 
 
+RETRY_KEY = "returns_retry:{shop}"  # Redis hash return_sn → JSON {order_sn, attempts, reason}
+RETRY_MAX_ATTEMPTS = 8  # ~2 giờ với nhịp 15 phút; quá → bỏ + log error (không kẹt mãi)
+
+
+class ReturnSkipped(Exception):
+    """Một yêu cầu trả chưa xử lý được (đơn chưa lấy được, dữ liệu lạ) — đưa vào danh sách thử lại."""
+
+
 async def _sync_one_return(
     session: AsyncSession, ret: PlatformReturn, adapter: PlatformAdapter, creds: ShopCredentials | None,
     shop_id: Any,
 ) -> returns.AttachResult | None:  # fmt: skip
     """Một yêu cầu trả: đơn chưa có → `get_order` + upsert (savepoint) như J-04; rồi
-    `returns.upsert_from_platform` + gộp hồ sơ chưa xác định theo mã chiều về (02 §6.3 #6)."""
+    `returns.upsert_from_platform` + gộp hồ sơ chưa xác định theo mã chiều về (02 §6.3 #6). Sàn không trả đơn
+    → `ReturnSkipped` (G3 R10: không mất yêu cầu — thử lại ở lượt sau)."""
     order = await session.scalar(select(Order).where(Order.platform_order_sn == ret.order_sn))
     if order is None:
         data = await adapter.get_order(creds, ret.order_sn)
         if data is None:
-            log.warning("return_order_not_found", return_sn=ret.return_sn, order_sn=ret.order_sn)
-            return None
+            raise ReturnSkipped("ORDER_NOT_FOUND")
         for attempt in (1, 2):
             try:
                 async with session.begin_nested():
@@ -570,7 +586,7 @@ async def _sync_one_return(
                 if attempt == 2:
                     raise
         if order is None:
-            return None
+            raise ReturnSkipped("ORDER_NOT_FOUND")
     result = await returns.upsert_from_platform(session, order, ret)
     if (
         result.case is not None
@@ -583,15 +599,81 @@ async def _sync_one_return(
     return result
 
 
+async def _remember_retry(shop_id: Any, return_sn: str, order_sn: str, reason: str) -> None:
+    key = RETRY_KEY.format(shop=shop_id)
+    redis = get_redis()
+    raw = await redis.hget(key, return_sn)  # type: ignore[misc]
+    attempts = (json.loads(raw)["attempts"] if raw else 0) + 1
+    if attempts > RETRY_MAX_ATTEMPTS:
+        await redis.hdel(key, return_sn)  # type: ignore[misc]
+        log.error("returns_retry_dropped", shop_id=str(shop_id), return_sn=return_sn, order_sn=order_sn,
+                  reason=reason, attempts=attempts - 1)  # fmt: skip
+        return
+    await redis.hset(  # type: ignore[misc]
+        key, return_sn, json.dumps({"order_sn": order_sn, "attempts": attempts, "reason": reason})
+    )
+
+
+async def _forget_retry(shop_id: Any, return_sn: str) -> None:
+    await get_redis().hdel(RETRY_KEY.format(shop=shop_id), return_sn)  # type: ignore[misc]
+
+
+async def _process(
+    session: AsyncSession, ret: PlatformReturn, adapter: PlatformAdapter, creds: ShopCredentials | None,
+    shop_id: Any, result: SyncResult, kinds: dict[str, int], settings: Settings,
+) -> None:  # fmt: skip
+    """Một bản ghi: lỗi sàn (PlatformError) → ném (cả lượt dừng, cursor không tiến — như cũ); lỗi khác của bản
+    ghi này (G3 F-6, R10) → rollback, log `return_sn`, đếm `skipped`, đưa vào danh sách thử lại, đi tiếp."""
+    try:
+        attached = await _sync_one_return(session, ret, adapter, creds, shop_id)
+        if attached is not None and attached.case is not None and attached.changed:
+            result.changed += 1
+            kinds[attached.case.kind] = kinds.get(attached.case.kind, 0) + 1
+            _report_updated(session, settings)
+            reconciliation.request_run_soon(session)
+        await commit(session)
+        await _forget_retry(shop_id, ret.return_sn)
+    except PlatformError:
+        raise
+    except Exception as exc:
+        await rollback(session)
+        result.skipped += 1
+        reason = str(exc) if isinstance(exc, ReturnSkipped) else type(exc).__name__
+        log.warning(
+            "returns_sync_record_skipped", shop_id=str(shop_id), return_sn=ret.return_sn,
+            order_sn=ret.order_sn,
+            reason=reason, exc_info=not isinstance(exc, ReturnSkipped),
+        )  # fmt: skip
+        await _remember_retry(shop_id, ret.return_sn, ret.order_sn, reason)
+
+
+async def _retry_pending(
+    session: AsyncSession, shop_id: Any, adapter: PlatformAdapter, creds: ShopCredentials | None,
+    result: SyncResult, kinds: dict[str, int], settings: Settings,
+) -> None:  # fmt: skip
+    """Yêu cầu trả lượt trước chưa xử lý được (R10): đọc lại chi tiết từ sàn rồi xử lý như bản ghi mới."""
+    pending = await get_redis().hgetall(RETRY_KEY.format(shop=shop_id))  # type: ignore[misc]
+    for raw_sn, raw in sorted(pending.items()):
+        sn = raw_sn.decode() if isinstance(raw_sn, bytes) else str(raw_sn)
+        ret = await adapter.get_return(creds, sn)
+        if ret is None:
+            await _remember_retry(shop_id, sn, json.loads(raw).get("order_sn", ""), "RETURN_NOT_FOUND")
+            continue
+        result.orders += 1
+        await _process(session, ret, adapter, creds, shop_id, result, kinds, settings)
+
+
 async def sync_shop_returns(
     session: AsyncSession, shop: Shop, adapter: PlatformAdapter, settings: Settings
 ) -> SyncResult:
     """J-13 cho một shop (đã giữ lock `sync_returns:{shop}`). `since` = cursor − 10 phút; lần đầu lùi
-    `SHOPEE_INITIAL_SYNC_DAYS`. Commit sau mỗi yêu cầu (nhả `order:{sn}` trước lời gọi mạng kế — DEC-162).
+    `SHOPEE_RETURNS_INITIAL_DAYS` (G3 F-10). Commit sau mỗi yêu cầu (nhả `order:{sn}` trước lời gọi mạng kế
+    — DEC-162).
 
     Không tự làm mới token (refresh token Shopee dùng một lần, chỉ J-04 / J-12 làm dưới lock `sync:{shop}` —
     DEC-316): token hết hạn → `EXPIRED`, bỏ lượt. Lỗi sàn cuối → `shop.last_error` `SYNC_FAILED` (`job =
-    returns`), cursor không tiến."""
+    returns`), cursor không tiến. Lỗi riêng một yêu cầu (dữ liệu lạ, đơn chưa lấy được) → bỏ qua + danh sách
+    thử lại Redis (tối đa 8 lượt), cursor vẫn tiến (G3 F-6, R10)."""
     result = SyncResult()
     creds = platforms.credentials(shop, Cipher(settings.fernet_key))
     if creds is not None and creds.expires_at <= clock.now():
@@ -599,35 +681,32 @@ async def sync_shop_returns(
         return SyncResult(status="EXPIRED")
     started = clock.now()
     since = (
-        shop.last_return_cursor or started - timedelta(days=settings.shopee_initial_sync_days)
+        shop.last_return_cursor or started - timedelta(days=settings.shopee_returns_initial_days)
     ) - CURSOR_OVERLAP
     kinds: dict[str, int] = {}
+    shop_id = shop.id  # bản ghi lỗi → rollback làm `shop` hết hạn: không đọc thuộc tính giữa vòng
     try:
+        await _retry_pending(session, shop_id, adapter, creds, result, kinds, settings)
         async for ret in adapter.list_returns(creds, since):
             result.orders += 1
-            attached = await _sync_one_return(session, ret, adapter, creds, shop.id)
-            if attached is not None and attached.case is not None and attached.changed:
-                result.changed += 1
-                kinds[attached.case.kind] = kinds.get(attached.case.kind, 0) + 1
-                _report_updated(session, settings)
-                reconciliation.request_run_soon(session)
-            await commit(session)
+            await _process(session, ret, adapter, creds, shop_id, result, kinds, settings)
+        shop = await session.get(Shop, shop_id, populate_existing=True) or shop
         shop.last_return_cursor = started
         if shop.last_error and shop.last_error.get("job") == RETURNS_JOB:
             shop.last_error = None
         await commit(session)
     except PlatformError as exc:
         await rollback(session)
-        shop = await session.get(Shop, shop.id) or shop
+        shop = await session.get(Shop, shop_id) or shop
         shop.last_error = {**_error("SYNC_FAILED", exc), "job": RETURNS_JOB}
         result.status = "FAILED"
         result.error = str(exc)
         _report_updated(session, settings)
         await commit(session)
         # metric `aicam_returns_sync_errors_total{shop}` (02a §10) — log có cấu trúc
-        log.warning("returns_sync_failed", shop_id=str(shop.id), error=str(exc), returns=result.orders)
+        log.warning("returns_sync_failed", shop_id=str(shop_id), error=str(exc), returns=result.orders)
     # metric `aicam_returns_synced_total{kind}` (02a §10)
-    log.info("returns_sync", shop_id=str(shop.id), synced_by_kind=kinds, **result.as_dict())
+    log.info("returns_sync", shop_id=str(shop_id), synced_by_kind=kinds, **result.as_dict())
     return result
 
 
@@ -637,6 +716,8 @@ async def sync_returns(
     """J-13 (15 phút / mọi shop `CONNECTED`; sau khi kết nối cho một shop). Không làm gì khi chưa cấu hình."""
     if not platforms.is_configured(settings):
         return {"skipped": "not_configured"}
+    if settings.platform_adapter == "shopee" and not settings.shopee_returns_enabled:
+        return {"skipped": "returns_disabled"}  # G3 F-11: chờ T-3 xác nhận API returns thật
     query = select(Shop).where(Shop.auth_status == "CONNECTED")
     if shop_id is not None:
         query = query.where(Shop.id == shop_id)
@@ -650,6 +731,10 @@ async def sync_returns(
             continue
         try:
             out[str(shop.id)] = (await sync_shop_returns(session, shop, adapter, settings)).as_dict()
+        except Exception as exc:  # G3 F-6: một shop lỗi bất ngờ không chặn shop khác
+            await rollback(session)
+            log.exception("returns_sync_shop_crashed", shop_id=str(shop.id))
+            out[str(shop.id)] = SyncResult(status="FAILED", error=type(exc).__name__).as_dict()
         finally:
             await _release_returns_lock(shop.id, token)
     return out

@@ -20,6 +20,7 @@ from aicam.modules.media import exports, jobs, snapshots
 from aicam.modules.media import service as media
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms import sync as platform_sync
+from aicam.modules.platforms.shopee import client as shopee_client
 from aicam.modules.reconciliation import service as reconciliation
 from aicam.modules.sessions import service as sessions
 from aicam.modules.stations import service as stations
@@ -163,6 +164,8 @@ def housekeeping() -> dict[str, int]:
 
 # ---------------------------------------------------------------- Shopee (T-22, queue `sync`)
 
+SYNC_BUDGET_S = 210.0  # < soft_time_limit 240: còn thời gian ghi lỗi / nhả lock
+
 
 @app.task(name="platforms.sync_orders", soft_time_limit=240, time_limit=270)  # type: ignore[untyped-decorator]
 def sync_orders(shop_id: str | None = None, lock_held: bool | str = False) -> dict[str, Any]:
@@ -170,10 +173,11 @@ def sync_orders(shop_id: str | None = None, lock_held: bool | str = False) -> di
 
     async def _job(db: AsyncSession) -> dict[str, Any]:
         settings = get_settings()
-        return await platform_sync.sync_orders(
-            db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None,
-            lock_held=lock_held,
-        )  # fmt: skip
+        with shopee_client.time_budget(SYNC_BUDGET_S):  # G3 F-14
+            return await platform_sync.sync_orders(
+                db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None,
+                lock_held=lock_held,
+            )  # fmt: skip
 
     return _run(_job)
 
@@ -203,11 +207,14 @@ def refresh_tokens() -> dict[str, int]:
 def sync_returns(shop_id: str | None = None) -> dict[str, Any]:
     """J-13 (15 phút / mọi shop CONNECTED; sau khi kết nối): yêu cầu trả → hồ sơ hàng hoàn. Timeout 4 phút."""
     settings = get_settings()
-    return _run(
-        lambda db: platform_sync.sync_returns(
-            db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None
-        )
-    )
+
+    async def _job(db: AsyncSession) -> dict[str, Any]:
+        with shopee_client.time_budget(SYNC_BUDGET_S):  # G3 F-14
+            return await platform_sync.sync_returns(
+                db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None
+            )
+
+    return _run(_job)
 
 
 @app.task(  # type: ignore[untyped-decorator]

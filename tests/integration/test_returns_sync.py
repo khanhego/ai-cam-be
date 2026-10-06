@@ -322,9 +322,8 @@ async def test_j13_shopee_503_twice_then_ok(db: AsyncSession, test_settings: Set
          "needs_logistics": True, "tracking_number": "SPXRTSPE000041", "reason": "ITEM_DAMAGED",
          "update_time": int(NOW.timestamp()), "create_time": int(NOW.timestamp()),
          "item": [{"item_sku": "AT-DEN-L", "name": "Áo thun basic", "amount": 1}]}]}})  # fmt: skip
-    respx.get(f"{BASE}/api/v2/returns/get_return_list").mock(
-        side_effect=[httpx.Response(503), httpx.Response(503), ok]
-    )
+    replies = iter([httpx.Response(503), httpx.Response(503)])  # rồi luôn OK (lượt đầu: 2 cửa sổ)
+    respx.get(f"{BASE}/api/v2/returns/get_return_list").mock(side_effect=lambda _: next(replies, ok))
     shop = await _shop(db, test_settings)
     out = await sync.sync_returns(db, adapter, test_settings)
     assert out[str(shop.id)]["status"] == "OK"
@@ -537,3 +536,80 @@ async def test_j04_merges_unidentified_after_order_sync(
     assert merged is not None
     assert (merged.kind, merged.order_id) == ("UNANNOUNCED", real.order_id)
     assert await db.get(Package, placeholder.id, populate_existing=True) is None
+
+
+# ---------------------------------------------------------------- G3 F-6, F-7, F-11, R10, SM-F7
+
+
+async def test_j13_record_errors_skipped_and_retried(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F-6 / R10: một yêu cầu lỗi (dữ liệu lạ) hoặc sàn không trả đơn → bỏ qua + đếm + thử lại sau; yêu cầu
+    khác vẫn xử lý, cursor vẫn tiến. Lượt sau đơn đã có → xử lý xong, rời danh sách."""
+    shop = await _shop(db, test_settings)
+    order, _ = await make_order(db, 61)
+    order_id = order.id
+    mock.returns = {}
+    mock.put_return(replace(platform_return(61), updated_at=NOW))
+    mock.put_return(replace(platform_return(62), updated_at=NOW))  # đơn 62 chưa có, sàn không trả
+    mock.orders.pop("2410TST00062", None)
+    original = returns.upsert_from_platform
+    boom = {"on": True}
+
+    async def flaky(session: AsyncSession, o: Order, ret: Any, **kw: Any) -> Any:
+        if boom["on"] and ret.return_sn == "2410RTTST061":
+            raise ValueError("dữ liệu lạ")
+        return await original(session, o, ret, **kw)
+
+    monkeypatch.setattr(returns, "upsert_from_platform", flaky)
+    shop_id = shop.id
+    out = await sync.sync_returns(db, mock, test_settings)
+    assert out[str(shop_id)]["status"] == "OK"
+    assert out[str(shop_id)]["skipped"] == 2
+    shop = await db.get(Shop, shop_id, populate_existing=True)
+    assert shop is not None
+    assert shop.last_return_cursor == NOW
+    pending = await sync.get_redis().hgetall(sync.RETRY_KEY.format(shop=shop.id))
+    assert {k.decode() if isinstance(k, bytes) else k for k in pending} == {"2410RTTST061", "2410RTTST062"}
+
+    boom["on"] = False
+    clock.freeze(NOW + timedelta(minutes=15))
+    out = await sync.sync_returns(db, mock, test_settings)
+    assert await db.scalar(select(func.count()).where(ReturnCase.order_id == order_id)) == 1
+    pending = await sync.get_redis().hgetall(sync.RETRY_KEY.format(shop=shop.id))
+    assert {k.decode() if isinstance(k, bytes) else k for k in pending} == {"2410RTTST062"}
+    for _ in range(sync.RETRY_MAX_ATTEMPTS):
+        await sync.sync_returns(db, mock, test_settings)
+    assert await sync.get_redis().hgetall(sync.RETRY_KEY.format(shop=shop.id)) == {}  # bỏ sau N lượt
+
+
+async def test_j04_success_keeps_returns_error(
+    db: AsyncSession, mock: MockAdapter, test_settings: Settings
+) -> None:
+    """F-7: J-04 thành công không xóa lỗi của J-13 (`job = returns`)."""
+    shop = await _shop(db, test_settings)
+    mock.fail_returns_times = 5
+    await sync.sync_returns(db, mock, test_settings)
+    await sync.sync_shop_orders(db, shop, mock, test_settings)
+    await db.refresh(shop)
+    assert shop.last_error is not None
+    assert shop.last_error["job"] == "returns"
+
+
+async def test_j13_shopee_returns_flag(db: AsyncSession, mock: MockAdapter, test_settings: Settings) -> None:
+    """F-11: adapter Shopee thật + `SHOPEE_RETURNS_ENABLED=false` → J-13 bỏ lượt; mock vẫn chạy."""
+    test_settings.platform_adapter = "shopee"
+    test_settings.shopee_partner_id, test_settings.shopee_partner_key = "1", "k"
+    test_settings.shopee_redirect_url = "https://x/cb"
+    assert await sync.sync_returns(db, mock, test_settings) == {"skipped": "returns_disabled"}
+    test_settings.shopee_returns_enabled = True
+    assert await sync.sync_returns(db, mock, test_settings) == {}
+
+
+async def test_j05_skips_placeholder(db: AsyncSession, mock: MockAdapter, test_settings: Settings) -> None:
+    """SM-F7: J-05 không tra sàn cho kiện tạm `TAM-`."""
+    await _shop(db, test_settings)
+    db.add(Package(tracking_number="TAM-000901", verified=False, is_placeholder=True, warehouse_status="NEW"))
+    await db.flush()
+    out = await sync.verify_unverified(db, mock, test_settings)
+    assert out["checked"] == 0

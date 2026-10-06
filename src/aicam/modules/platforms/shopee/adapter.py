@@ -25,6 +25,8 @@ from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import structlog
+
 from aicam.core import clock
 from aicam.modules.platforms.base import (
     PlatformError,
@@ -38,6 +40,8 @@ from aicam.modules.platforms.base import (
 from aicam.modules.platforms.shopee import mapping, returns_mapping
 from aicam.modules.platforms.shopee.client import ShopeeClient, ShopeeRequestError
 
+log = structlog.get_logger()
+
 MAX_WINDOW = timedelta(days=15)  # get_order_list: time_to − time_from ≤ 15 ngày
 DETAIL_BATCH = 50
 DETAIL_FIELDS = "item_list,package_list,cancel_reason,pickup_done_time"
@@ -46,6 +50,10 @@ CACHE_SIZE = 5000
 # lần quét — người gọi chỉ chờ 2 giây, không đốt hạn mức API của shop cho một mã lạ.
 LOOKUP_MAX_PAGES = 1
 LOOKUP_MAX_CANDIDATES = 10
+# J-13 (G3 F-4, F-5): tài liệu công khai `get_return_list` ghi `page_no` bắt đầu từ 0 — GIẢ ĐỊNH, chờ T-3
+# xác nhận (02a §7 bảng Shopee returns). Trần số trang mỗi cửa sổ: phòng `more` luôn true (lỗi phía sàn).
+RETURNS_FIRST_PAGE = 0
+RETURNS_MAX_PAGES = 200
 
 
 def _ts(value: Any) -> datetime | None:
@@ -306,19 +314,23 @@ class ShopeeAdapter:
         start, until = since, clock.now()
         while start < until:
             end = min(start + self.returns_window, until)
-            page = 1
-            while True:
+            for page in range(RETURNS_FIRST_PAGE, RETURNS_FIRST_PAGE + RETURNS_MAX_PAGES):
                 params = {
                     "page_no": page, "page_size": self.returns_page_size,
                     "update_time_from": int(start.timestamp()), "update_time_to": int(end.timestamp()),
                 }  # fmt: skip
                 body = _body(await self._shop_call("GET", "/api/v2/returns/get_return_list", creds, params))
-                for detail in body.get("return") or []:
+                items = body.get("return") or []
+                for detail in items:
                     if isinstance(detail, dict) and detail.get("return_sn") and detail.get("order_sn"):
                         yield returns_mapping.to_platform_return(detail)
-                if not body.get("more"):
+                if not items or not body.get("more"):
                     break
-                page += 1
+            else:
+                log.error(
+                    "returns_list_max_pages", pages=RETURNS_MAX_PAGES, window_from=start.isoformat(),
+                    window_to=end.isoformat(),
+                )  # fmt: skip
             start = end
 
     async def get_return(self, creds: ShopCredentials | None, return_sn: str) -> PlatformReturn | None:
