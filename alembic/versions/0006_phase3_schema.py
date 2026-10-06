@@ -24,6 +24,7 @@ Revises: 0005
 
 import json
 import logging
+import os
 import time
 from typing import Any, Sequence, Union
 
@@ -127,6 +128,74 @@ NEW_TABLES = (
     "share_link",
     "backup_object",
     "share_item",
+)
+
+
+# Thứ tự chép lại khi nâng cấp lại (theo khóa ngoại).
+RESTORE_ORDER = (
+    "notify_channel",
+    "notify_event",
+    "notify_message",
+    "notify_provider_token",
+    "backup_run",
+    "backup_object",
+    "share_link",
+    "share_item",
+    "package_order",
+)
+
+ARCHIVE = "phase3_archive"
+ALLOW_ACTIVE_SHARES_ENV = "AICAM_DOWNGRADE_ALLOW_ACTIVE_SHARES"
+_SESSION_COLS = (
+    "cancel_cause, wrong_scan_at, wrong_scan_by, wrong_scan_code, wrong_scan_note, review_confirmed_at, "
+    "review_confirmed_by, review_confirmed_note"
+)
+_SETTING_COLS = (
+    "packer_name_required, refund_only_default_hours, quiet_hours_enabled, quiet_start, quiet_end, backup_enabled, "
+    "backup_confirmed_fingerprint, backup_confirmed_at, backup_confirmed_by, backup_upload_mbps, "
+    "backup_all_pack_clips, backup_restore_pending"
+)
+_SHOP_COLS = "grant_ref, shop_cipher, region, sync_warnings, error_since, disconnected_at, disconnected_by"
+# Cột mới của bảng cũ (khóa `id`) — mất khi drop cột nếu không chép: (bảng archive, nguồn, SELECT).
+COLUMN_ARCHIVES: tuple[tuple[str, str, str], ...] = (
+    ("shop_cols", "shop", f"SELECT id, {_SHOP_COLS} FROM shop WHERE platform = 'SHOPEE'"),
+    # Nhóm chỉ trả lại khi chữ trạng thái chưa đổi lúc chạy Phase 2 (đã đổi → nhóm backfill lại theo chữ mới).
+    (
+        "order_cols",
+        "order",
+        "SELECT id, platform_status, platform_status_group FROM \"order\" WHERE platform_status_group <> 'UNKNOWN'",
+    ),
+    (
+        "return_case_cols",
+        "return_case",
+        "SELECT id, shop_id, platform_status, platform_status_group FROM return_case "
+        "WHERE shop_id IS NOT NULL OR platform_status_group IS NOT NULL",
+    ),
+    (
+        "claim_cols",
+        "claim",
+        "SELECT id, submitted_at, result_at FROM claim WHERE num_nonnulls(submitted_at, result_at) > 0",
+    ),
+    (
+        "claim_evidence_cols",
+        "claim_evidence",
+        "SELECT id, removed_at, removed_by, removed_reason, backfilled FROM claim_evidence "
+        "WHERE removed_at IS NOT NULL OR backfilled",
+    ),
+    (
+        "session_cols",
+        "session",
+        f"SELECT id, {_SESSION_COLS} FROM session WHERE num_nonnulls({_SESSION_COLS}) > 0",
+    ),
+    ("setting_cols", "setting", f"SELECT id, {_SETTING_COLS} FROM setting"),
+)
+# Dòng / quan hệ cần trả lại khi nâng cấp lại.
+ROW_ARCHIVES: tuple[tuple[str, str], ...] = (
+    ("tiktok_shops", "SELECT * FROM shop WHERE platform = 'TIKTOK'"),
+    (
+        "order_shop",
+        "SELECT o.id, o.shop_id FROM \"order\" o JOIN shop s ON s.id = o.shop_id WHERE s.platform = 'TIKTOK'",
+    ),
 )
 
 
@@ -700,6 +769,196 @@ def _backfill_claim_times(bind: sa.Connection) -> dict[str, int]:
     }
 
 
+# ---------------------------------------------------------------- nâng cấp lại (bước 6) — phase3_archive
+
+
+def _columns(bind: sa.Connection, schema: str, table: str) -> list[str]:
+    return list(
+        bind.execute(
+            sa.text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = :s AND table_name = :t ORDER BY ordinal_position"
+            ),
+            {"s": schema, "t": table},
+        ).scalars()
+    )
+
+
+def _copy_back(bind: sa.Connection, archived: str, target: str, where: str = "true", suffix: str = "") -> int:
+    """`phase3_archive.<archived>` → `public.<target>` theo các cột chung (đúng tên, không phụ thuộc thứ tự)."""
+    available = set(_columns(bind, ARCHIVE, archived))
+    cols = ", ".join(f'"{c}"' for c in _columns(bind, "public", target) if c in available)
+    result = bind.execute(
+        sa.text(
+            f'INSERT INTO "{target}" ({cols}) SELECT {cols} FROM {ARCHIVE}.{archived} a WHERE {where} {suffix}'
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+def _update_from(bind: sa.Connection, archived: str, target: str, cols: str, where: str = "true") -> int:
+    names = [c.strip() for c in cols.split(",")]
+    sets = ", ".join(f"{c} = a.{c}" for c in names)
+    result = bind.execute(
+        sa.text(f'UPDATE "{target}" t SET {sets} FROM {ARCHIVE}.{archived} a WHERE a.id = t.id AND ({where})')
+    )
+    return int(result.rowcount or 0)
+
+
+def _restore_phase3(bind: sa.Connection) -> dict[str, int]:
+    """Nâng cấp lại sau downgrade (02a §3 bước 6, như DEC-331): archive → shop, cột, bảng; rồi drop schema."""
+    if _scalar(bind, f"SELECT to_regclass('{ARCHIVE}.meta')") is None:
+        return {}
+    out: dict[str, int] = {}
+    out["tiktok_shops"] = _copy_back(bind, "tiktok_shops", "shop", suffix="ON CONFLICT (id) DO NOTHING")
+    out["shop_cols"] = _update_from(bind, "shop_cols", "shop", _SHOP_COLS)
+    # Shop Shopee bị ngắt lúc lùi (Phase 2 chỉ một shop): còn ngắt + token chưa đổi → trả trạng thái cũ.
+    out["reconnected_shops"] = int(
+        bind.execute(
+            sa.text(
+                f"UPDATE shop s SET auth_status = a.auth_status FROM {ARCHIVE}.reconnected_shops a "
+                "WHERE a.id = s.id AND s.auth_status = 'DISCONNECTED' "
+                "AND s.access_token_enc IS NOT DISTINCT FROM a.access_token_enc"
+            )
+        ).rowcount
+        or 0
+    )
+    out["order_shop"] = int(
+        bind.execute(
+            sa.text(
+                f'UPDATE "order" o SET shop_id = a.shop_id FROM {ARCHIVE}.order_shop a '
+                "WHERE a.id = o.id AND o.shop_id IS NULL AND EXISTS (SELECT 1 FROM shop s WHERE s.id = a.shop_id)"
+            )
+        ).rowcount
+        or 0
+    )
+    out["order_cols"] = _update_from(
+        bind,
+        "order_cols",
+        "order",
+        "platform_status_group",
+        "t.platform_status IS NOT DISTINCT FROM a.platform_status",
+    )
+    out["return_case_cols"] = int(
+        bind.execute(
+            sa.text(
+                f"UPDATE return_case t SET shop_id = COALESCE(t.shop_id, a.shop_id), "
+                "platform_status_group = CASE WHEN t.platform_status IS NOT DISTINCT FROM a.platform_status "
+                "THEN a.platform_status_group ELSE t.platform_status_group END "
+                f"FROM {ARCHIVE}.return_case_cols a WHERE a.id = t.id"
+            )
+        ).rowcount
+        or 0
+    )
+    out["claim_cols"] = int(
+        bind.execute(
+            sa.text(
+                "UPDATE claim t SET submitted_at = COALESCE(a.submitted_at, t.submitted_at), "
+                f"result_at = COALESCE(a.result_at, t.result_at) FROM {ARCHIVE}.claim_cols a WHERE a.id = t.id"
+            )
+        ).rowcount
+        or 0
+    )
+    out["claim_evidence_cols"] = _update_from(
+        bind, "claim_evidence_cols", "claim_evidence", "removed_at, removed_by, removed_reason, backfilled"
+    )
+    out["session_cols"] = _update_from(bind, "session_cols", "session", _SESSION_COLS)
+    out["setting_cols"] = _update_from(bind, "setting_cols", "setting", _SETTING_COLS)
+    for table in RESTORE_ORDER:
+        out[table] = _copy_back(bind, table, table)
+    expected = _scalar(bind, f"SELECT value FROM {ARCHIVE}.meta WHERE key = 'counts'") or {}
+    short = {
+        k: (expected.get(k), v)
+        for k, v in out.items()
+        if k in RESTORE_ORDER and expected.get(k) not in (None, v)
+    }
+    if short:
+        log.warning("0006: số dòng khôi phục khác lúc chép (chép, khôi phục) %s", short)
+    op.execute(f"DROP SCHEMA {ARCHIVE} CASCADE")
+    return out
+
+
+# ---------------------------------------------------------------- downgrade (02a §3, DEC-475) — chép trước, xóa sau
+
+
+def _guard_active_shares(bind: sa.Connection) -> None:
+    """Bước 1a: link còn đang tạo / đang hoạt động → Phase 2 không thu hồi / hết hạn được (không có J-25) → từ chối."""
+    rows = bind.execute(
+        sa.text(
+            "SELECT id::text, status, recipient FROM share_link WHERE status IN ('CREATING', 'ACTIVE') "
+            "ORDER BY created_at LIMIT 20"
+        )
+    ).all()
+    if rows and os.environ.get(ALLOW_ACTIVE_SHARES_ENV) != "1":
+        listed = ", ".join(f"{r.id} ({r.status})" for r in rows)
+        raise RuntimeError(
+            f"Không downgrade 0006: còn {len(rows)} link chia sẻ đang tạo / đang hoạt động ({listed}) — bản Phase 2 "
+            "không thu hồi / hết hạn được. Thu hồi ở màn Link chia sẻ rồi chạy lại; chấp nhận để link sống tới khi "
+            f"bản cloud tự hết hạn thì đặt {ALLOW_ACTIVE_SHARES_ENV}=1. Không có gì bị thay đổi. Xem docs/ops.md §7.2."
+        )
+    if rows:
+        log.warning("0006 downgrade: %s link vẫn sống (ops đặt %s=1)", len(rows), ALLOW_ACTIVE_SHARES_ENV)
+
+
+def _archive_phase3(bind: sa.Connection) -> dict[str, int]:
+    """Bước 2: chép bảng mới + cột mới + shop TikTok / quan hệ sang `phase3_archive` (chưa xóa gì)."""
+    op.execute(
+        f"DROP SCHEMA IF EXISTS {ARCHIVE} CASCADE"
+    )  # archive cũ chỉ còn khi lần nâng cấp trước lỗi giữa chừng
+    op.execute(f"CREATE SCHEMA {ARCHIVE}")
+    for table in NEW_TABLES:
+        op.execute(f'CREATE TABLE {ARCHIVE}.{table} AS SELECT * FROM public."{table}"')
+    for name, _source, select in COLUMN_ARCHIVES:
+        op.execute(f"CREATE TABLE {ARCHIVE}.{name} AS {select}")
+    for name, select in ROW_ARCHIVES:
+        op.execute(f"CREATE TABLE {ARCHIVE}.{name} AS {select}")
+    # Bước 3 (chép trước): shop Shopee sẽ bị ngắt — Phase 2 chỉ dùng shop CONNECTED mới nhất (DEC-12).
+    op.execute(
+        f"CREATE TABLE {ARCHIVE}.reconnected_shops AS SELECT id, auth_status, access_token_enc FROM shop "
+        "WHERE platform = 'SHOPEE' AND auth_status <> 'DISCONNECTED' AND id <> COALESCE(("
+        "  SELECT id FROM shop WHERE platform = 'SHOPEE' AND auth_status = 'CONNECTED' "
+        "  ORDER BY created_at DESC, id DESC LIMIT 1), '00000000-0000-0000-0000-000000000000')"
+    )
+    names = [
+        *NEW_TABLES,
+        *(n for n, _, _ in COLUMN_ARCHIVES),
+        *(n for n, _ in ROW_ARCHIVES),
+        "reconnected_shops",
+    ]
+    counts = {name: int(_scalar(bind, f"SELECT count(*) FROM {ARCHIVE}.{name}")) for name in names}
+    op.execute(f"CREATE TABLE {ARCHIVE}.meta (key text PRIMARY KEY, value jsonb NOT NULL)")
+    bind.execute(
+        sa.text(
+            f"INSERT INTO {ARCHIVE}.meta (key, value) VALUES ('counts', CAST(:counts AS jsonb)), "
+            "('downgraded_at', to_jsonb(now()))"
+        ),
+        {"counts": json.dumps(counts)},
+    )
+    log.info("0006 downgrade: chép sang %s %s", ARCHIVE, json.dumps(counts, ensure_ascii=False))
+    return counts
+
+
+def _prepare_phase2(bind: sa.Connection) -> None:
+    """Bước 3, 8 (phần dữ liệu): ngắt shop Shopee thừa; đơn TikTok rời shop; xóa shop TikTok (đã chép)."""
+    disconnected = bind.execute(
+        sa.text(
+            f"UPDATE shop s SET auth_status = 'DISCONNECTED' FROM {ARCHIVE}.reconnected_shops a WHERE a.id = s.id"
+        )
+    ).rowcount
+    detached = bind.execute(
+        sa.text(
+            "UPDATE \"order\" o SET shop_id = NULL FROM shop s WHERE s.id = o.shop_id AND s.platform = 'TIKTOK'"
+        )
+    ).rowcount
+    removed = bind.execute(sa.text("DELETE FROM shop WHERE platform = 'TIKTOK'")).rowcount
+    log.info(
+        "0006 downgrade: ngắt %s shop Shopee (Phase 2 một shop), %s đơn TikTok rời shop, xóa %s shop TikTok",
+        disconnected,
+        detached,
+        removed,
+    )
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     # Chờ khóa tối đa 5 giây (service chưa dừng → lỗi rõ, cả migration lùi) — như 0003 (G3 M-F2).
@@ -709,9 +968,12 @@ def upgrade() -> None:
     _add_columns()
     _add_checks()
     stats = _backfill(bind)
+    restored = _restore_phase3(bind)
     _create_indexes()
     stats["seconds"] = round(time.monotonic() - started, 1)
     log.info("0006: backfill %s", json.dumps(stats, ensure_ascii=False))
+    if restored:
+        log.info("0006: khôi phục từ %s %s", ARCHIVE, json.dumps(restored, ensure_ascii=False))
     if stats["order_unknown"]:
         log.warning(
             "0006: đơn có trạng thái sàn chưa ánh xạ → nhóm UNKNOWN (không đổi trạng thái kho): %s",
@@ -723,6 +985,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    op.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
+    _guard_active_shares(bind)
+    _archive_phase3(bind)
+    _prepare_phase2(bind)
     op.drop_index("ix_status_history_to_status_at", table_name="status_history")
     op.drop_index(op.f("ix_shop_platform_grant_ref"), table_name="shop")
     op.drop_column("shop", "disconnected_by")

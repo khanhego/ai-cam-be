@@ -87,11 +87,26 @@ class Order(UUIDPk, Base):
         Index(None, "shop_id"),
         # Tra theo mã khi unique không còn toàn cục (0007) — 0006 tạo trước.
         Index("ix_order_platform_order_sn", "platform_order_sn"),
+        # BR-29 (0007): mã đơn unique theo shop; đơn file (chưa gắn shop) unique riêng. Vị từ literal
+        # (DEC-362); code không `ON CONFLICT` trên các index này — upsert dưới khóa `order:{sn}` (DEC-493).
+        Index(
+            "uq_order_shop_sn",
+            "shop_id",
+            "platform_order_sn",
+            unique=True,
+            postgresql_where=text("shop_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_order_noshop_sn",
+            "platform_order_sn",
+            unique=True,
+            postgresql_where=text("shop_id IS NULL"),
+        ),
     )
 
     shop_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("shop.id", ondelete="SET NULL"))
-    # MVP một shop: mã đơn duy nhất toàn cục (DEC-12).
-    platform_order_sn: Mapped[str] = mapped_column(Text, unique=True)
+    # Phase 3: unique theo (shop, mã) — 0007 (BR-29); MVP một shop từng unique toàn cục (DEC-12).
+    platform_order_sn: Mapped[str] = mapped_column(Text)
     platform_status: Mapped[str | None] = mapped_column(Text)
     # 0006 (BR-30): ghi cùng `platform_status`, chỉ qua `orders.set_platform_status` (DEC-508).
     platform_status_group: Mapped[str] = mapped_column(Text, default="UNKNOWN", server_default="UNKNOWN")

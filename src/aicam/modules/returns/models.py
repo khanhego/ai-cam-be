@@ -39,8 +39,10 @@ class ReturnCase(UUIDPk, Base):
     __tablename__ = "return_case"
     __table_args__ = (
         Index("uq_return_case_code", "code", unique=True),
+        # BR-29 (0007): mã yêu cầu trả unique theo shop.
         Index(
-            "uq_return_case_platform_return_sn",
+            "uq_return_case_shop_return_sn",
+            "shop_id",
             "platform_return_sn",
             unique=True,
             postgresql_where=text("platform_return_sn IS NOT NULL"),

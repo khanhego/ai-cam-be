@@ -202,6 +202,7 @@ def test_0006_backfill_groups_shop_grant_and_claim_times(mig_db: None) -> None:
         "quiet_end::text, backup_enabled, backup_upload_mbps, backup_all_pack_clips, backup_restore_pending "
         "FROM setting"
     ) == [(False, 48, True, "22:00:00", "07:00:00", False, 10, False, False)]
+    command.upgrade(alembic_config(), SCHEMA_HEAD)
     command.check(alembic_config())
 
 
@@ -239,3 +240,178 @@ def test_0006_downgrade_then_upgrade_without_phase3_data(mig_db: None) -> None:
     ) == [(0,)]
     command.upgrade(cfg, SCHEMA_HEAD)
     assert run("SELECT count(*) FROM \"order\" WHERE platform_status_group = 'CANCEL_REQUESTED'") == [(1,)]
+
+
+# ---------------------------------------------------------------- T-202: 0007 + lùi / lên lại (phase3_archive)
+
+SHOP_T1, SHOP_T2, SHOP_C = i(0x311), i(0x312), i(0x313)
+O_T1, O_T2, O_C = i(0x481), i(0x482), i(0x483)
+PKG_C = i(0x581)
+SESS_C = i(0x681)
+SHARE, CHANNEL, RUN = i(0xB01), i(0xB02), i(0xB03)
+
+COMPARED = (
+    "user", "shop", "setting", "order", "package", "session", "clip", "snapshot", "return_case", "claim",
+    "claim_evidence", "package_order", "share_link", "share_item", "backup_run", "backup_object",
+    "notify_channel", "notify_event", "notify_message", "notify_provider_token",
+)  # fmt: skip
+
+
+def dump() -> dict[str, list[Any]]:
+    return {
+        t: [r[0] for r in run(f'SELECT to_jsonb(x) FROM "{t}" x ORDER BY to_jsonb(x)::text')]
+        for t in COMPARED
+    }
+
+
+def seed_phase3() -> None:
+    """Ở head: shop TikTok 2 shop + shop Shopee thứ 2 kết nối sau (mới hơn shop A), đơn TikTok (không kiện), kiện gộp,
+    link `FAILED`, kênh / sự kiện / tin thông báo, token Zalo, lượt + đối tượng sao lưu, setting đổi, cột phiên."""
+    run_many(
+        [
+            "INSERT INTO shop (id, platform, platform_shop_id, name, auth_status, grant_ref, shop_cipher, region, "
+            "created_at, sync_warnings) VALUES "
+            f"('{SHOP_T1}', 'TIKTOK', '7001', 'Áo Đẹp Official', 'CONNECTED', 'open-1', 'cipher-1', 'VN', now(), "
+            '\'[{"code": "TRACKING_OWNED_BY_OTHER_SHOP", "message": "x", "at": "2026-10-01T00:00:00Z"}]\'), '
+            f"('{SHOP_T2}', 'TIKTOK', '7002', 'Áo Đẹp Kids', 'CONNECTED', 'open-1', 'cipher-2', 'VN', now(), '[]'), "
+            f"('{SHOP_C}', 'SHOPEE', '880003', 'Áo Mới', 'CONNECTED', '880003', NULL, NULL, now() + interval '1 second', '[]')",
+            f"UPDATE shop SET error_since = now() - interval '1 hour', access_token_enc = 'tok-a' WHERE id = '{SHOP_A}'",
+            'INSERT INTO "order" (id, shop_id, platform_order_sn, platform_status, platform_status_group, source) VALUES '
+            f"('{O_T1}', '{SHOP_T1}', '5761000000001', 'AWAITING_SHIPMENT', 'AWAITING_SHIPMENT', 'API'), "
+            f"('{O_T2}', '{SHOP_T2}', '5761000000002', 'IN_TRANSIT', 'SHIPPED', 'API'), "
+            f"('{O_C}', '{SHOP_C}', '2410C0000001', 'READY_TO_SHIP', 'AWAITING_SHIPMENT', 'API')",
+            "INSERT INTO package (id, order_id, tracking_number, warehouse_status) VALUES "
+            f"('{PKG_C}', '{O_C}', 'SPXP3C00001', 'PACKED')",
+            f"INSERT INTO package_order (package_id, order_id) VALUES ('{PKG_C}', '{i(0x401)}')",
+            "INSERT INTO session (id, type, package_id, station_id, status, started_at, ended_at, open_code, "
+            f"operator_name) VALUES ('{SESS_C}', 'PACK', '{PKG_C}', '{ST}', 'COMPLETED', now() - interval '1 hour', "
+            "now() - interval '58 minutes', 'SPXP3C00001', 'Minh')",
+            "INSERT INTO clip (id, session_id, camera_role, status, start_at, end_at, path, sha256) VALUES "
+            f"('{i(0x781)}', '{SESS_C}', 'CAM1', 'READY', now() - interval '1 hour', now() - interval '58 minutes', "
+            "'clips/c.mp4', 'sha-c')",
+            "INSERT INTO share_link (id, status, source_type, package_id, layout, recipient, expires_at, "
+            f"object_prefix, created_by, error_code) VALUES ('{SHARE}', 'FAILED', 'SESSION', '{PKG_C}', 'CAM1', "
+            f"'Shipper GHN', now() + interval '3 days', 'share/tok/', '{U1}', 'RENDER_FAILED')",
+            f"INSERT INTO share_item (share_id, ord, session_id) VALUES ('{SHARE}', 1, '{SESS_C}')",
+            "INSERT INTO notify_channel (id, name, type, target, events, created_by) VALUES "
+            f"('{CHANNEL}', 'Kho', 'TELEGRAM', '-1001', '{{N01,N03}}', '{U1}')",
+            "INSERT INTO notify_event (id, code, severity, dedupe_key, occurred_at, data) VALUES "
+            f"('{i(0xB11)}', 'N01', 'HIGH', 'cam:1', now(), '{{\"station\": \"S1\"}}')",
+            "INSERT INTO notify_message (id, channel_id, event_code, severity, status, item_count, text) VALUES "
+            f"('{i(0xB12)}', '{CHANNEL}', 'N01', 'HIGH', 'SENT', 1, 'Camera mất tín hiệu')",
+            "INSERT INTO notify_provider_token (provider, access_token_enc) VALUES ('ZALO_OA', 'enc')",
+            "INSERT INTO backup_run (id, trigger, status, key_fingerprint, finished_at) VALUES "
+            f"('{RUN}', 'SCHEDULE', 'SUCCESS', 'fp1', now())",
+            "INSERT INTO backup_object (id, kind, run_id, object_key, status, cloud_present, cloud_key_fingerprint) "
+            f"VALUES ('{i(0xB21)}', 'DB_DUMP', '{RUN}', 'backup/db/x.enc', 'UPLOADED', true, 'fp1'), "
+            f"('{i(0xB22)}', 'CLIP', NULL, 'backup/evidence/clips/c.enc', 'PENDING', false, NULL)",
+            f"UPDATE backup_object SET clip_id = '{i(0x781)}' WHERE id = '{i(0xB22)}'",
+            "UPDATE setting SET packer_name_required = true, refund_only_default_hours = 24, quiet_start = '23:00', "
+            "backup_enabled = true, backup_confirmed_fingerprint = 'fp1', backup_upload_mbps = 20",
+            f"UPDATE session SET cancel_cause = 'OTHER' WHERE id = '{SESS_C}'",
+            f"UPDATE claim SET submitted_at = '2026-09-30T00:00:00Z' WHERE id = '{CLAIM_NEW}'",
+            "INSERT INTO return_case (id, order_id, shop_id, kind, status, source, platform_return_sn, platform_status, "
+            f"platform_status_group) VALUES ('{i(0x8F1)}', '{O_T1}', '{SHOP_T1}', 'REFUND_ONLY', 'NO_PARCEL', "
+            "'PLATFORM', 'TT-R-1', 'RETURN_OR_REFUND_REQUEST_PENDING', 'REQUESTED')",
+        ]
+    )
+
+
+def test_0007_codes_unique_per_shop(mig_db: None) -> None:
+    """BR-29: cùng mã đơn / mã yêu cầu trả ở 2 shop được; trùng trong một shop / giữa hai đơn file bị chặn."""
+    seed_phase2_platform_data()
+    command.upgrade(alembic_config(), SCHEMA_HEAD)
+    run(
+        f"INSERT INTO shop (id, platform, platform_shop_id, auth_status) VALUES ('{SHOP_T1}', 'TIKTOK', '7001', 'CONNECTED')"
+    )
+    run(
+        f"INSERT INTO \"order\" (id, shop_id, platform_order_sn, source) VALUES (gen_random_uuid(), '{SHOP_T1}', '2410P300001', 'API')"
+    )
+    run(
+        "INSERT INTO return_case (id, shop_id, kind, status, source, platform_return_sn) VALUES "
+        f"(gen_random_uuid(), '{SHOP_T1}', 'BUYER_RETURN', 'CANCELLED', 'PLATFORM', 'RS0')"
+    )
+    for bad in (
+        f"INSERT INTO \"order\" (id, shop_id, platform_order_sn, source) VALUES (gen_random_uuid(), '{SHOP_A}', '2410P300001', 'API')",
+        "INSERT INTO \"order\" (id, shop_id, platform_order_sn, source) VALUES (gen_random_uuid(), NULL, '2410P300011', 'CSV')",
+        "INSERT INTO return_case (id, shop_id, kind, status, source, platform_return_sn) VALUES "
+        f"(gen_random_uuid(), '{SHOP_A}', 'BUYER_RETURN', 'CANCELLED', 'PLATFORM', 'RS0')",
+    ):
+        with pytest.raises(Exception, match="duplicate key"):
+            run(bad)
+    assert run("SELECT count(*) FROM \"order\" WHERE platform_order_sn = '2410P300001'") == [(2,)]
+    command.check(alembic_config())
+
+
+def test_0007_downgrade_refused_with_duplicate_codes(mig_db: None) -> None:
+    """Trùng mã giữa shop → lùi 0007 từ chối, in mã, DB nguyên vẹn (vẫn 0007)."""
+    seed_phase2_platform_data()
+    command.upgrade(alembic_config(), SCHEMA_HEAD)
+    run(
+        f"INSERT INTO shop (id, platform, platform_shop_id, auth_status) VALUES ('{SHOP_T1}', 'TIKTOK', '7001', 'CONNECTED')"
+    )
+    run(
+        f"INSERT INTO \"order\" (id, shop_id, platform_order_sn, source) VALUES (gen_random_uuid(), '{SHOP_T1}', '2410P300001', 'API')"
+    )
+    before = dump()
+    with pytest.raises(RuntimeError, match="2410P300001"):
+        command.downgrade(alembic_config(), "0005")
+    assert run("SELECT version_num FROM alembic_version") == [(SCHEMA_HEAD,)]
+    assert dump() == before
+    assert run("SELECT to_regnamespace('phase3_archive')") == [(None,)]
+
+
+def test_round_trip_phase3_data(mig_db: None) -> None:
+    """Lùi head → 0005 (Phase 2) với dữ liệu Phase 3 → archive đủ, Phase 2 một shop Shopee, đơn TikTok rời shop →
+    lên lại → mọi dòng y hệt (so `to_jsonb`), schema archive bị drop."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    command.upgrade(cfg, SCHEMA_HEAD)
+    seed_phase3()
+    before = dump()
+
+    command.downgrade(cfg, "0005")
+
+    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+    assert run("SELECT to_regclass('share_link'), to_regclass('notify_channel')") == [(None, None)]
+    # Phase 2: chỉ shop Shopee; shop kết nối mới nhất giữ CONNECTED, shop cũ hơn bị ngắt.
+    assert run("SELECT id::text, auth_status FROM shop ORDER BY platform_shop_id") == [
+        (SHOP_A, "DISCONNECTED"),
+        (SHOP_B, "DISCONNECTED"),
+        (SHOP_C, "CONNECTED"),
+    ]
+    assert run(f"SELECT shop_id FROM \"order\" WHERE id IN ('{O_T1}', '{O_T2}')") == [(None,), (None,)]
+    assert run("SELECT conname FROM pg_constraint WHERE conname = 'uq_order_platform_order_sn'") == [
+        ("uq_order_platform_order_sn",)
+    ]
+    counts = dict(run("SELECT key, value FROM phase3_archive.meta WHERE key = 'counts'"))["counts"]
+    assert {k: counts[k] for k in ("tiktok_shops", "order_shop", "reconnected_shops", "share_link", "notify_message", "backup_object", "package_order", "setting_cols")} == {
+        "tiktok_shops": 2, "order_shop": 2, "reconnected_shops": 1, "share_link": 1, "notify_message": 1,
+        "backup_object": 2, "package_order": 1, "setting_cols": 1,
+    }  # fmt: skip
+
+    command.upgrade(cfg, SCHEMA_HEAD)
+
+    assert run("SELECT to_regnamespace('phase3_archive')") == [(None,)]
+    after = dump()
+    for table in COMPARED:
+        assert after[table] == before[table], table
+    command.check(cfg)
+
+
+def test_downgrade_refused_with_active_share(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bước 1a: link `ACTIVE` → từ chối (không đổi gì); cờ cho phép → lùi, lên lại link vẫn `ACTIVE`."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    command.upgrade(cfg, SCHEMA_HEAD)
+    seed_phase3()
+    run(f"UPDATE share_link SET status = 'ACTIVE', error_code = NULL WHERE id = '{SHARE}'")
+    before = dump()
+    with pytest.raises(RuntimeError, match="link chia sẻ đang tạo / đang hoạt động"):
+        command.downgrade(cfg, "0005")
+    assert run("SELECT version_num FROM alembic_version") == [(SCHEMA_HEAD,)]
+    assert dump() == before
+    monkeypatch.setenv("AICAM_DOWNGRADE_ALLOW_ACTIVE_SHARES", "1")
+    command.downgrade(cfg, "0005")
+    command.upgrade(cfg, SCHEMA_HEAD)
+    assert run(f"SELECT status FROM share_link WHERE id = '{SHARE}'") == [("ACTIVE",)]
