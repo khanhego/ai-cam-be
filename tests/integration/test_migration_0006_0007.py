@@ -5,8 +5,10 @@ DB riêng `<TEST_DATABASE_URL>_mig` như test 0003 / 0004 / rollback (fixture `m
 """
 
 import asyncio
+import logging
 import os
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -361,16 +363,22 @@ def test_0007_downgrade_refused_with_duplicate_codes(mig_db: None) -> None:
     assert run("SELECT to_regnamespace('phase3_archive')") == [(None,)]
 
 
-def test_round_trip_phase3_data(mig_db: None) -> None:
-    """Lùi head → 0005 (Phase 2) với dữ liệu Phase 3 → archive đủ, Phase 2 một shop Shopee, đơn TikTok rời shop →
-    lên lại → mọi dòng y hệt (so `to_jsonb`), schema archive bị drop."""
+def test_round_trip_phase3_data(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lùi head → 0005 (Phase 2) với dữ liệu Phase 3 → archive đủ, Phase 2 một shop Shopee, đơn TikTok rời shop,
+    kiện của shop Shopee bị ngắt tách khỏi đơn (cờ 1b) → lên lại → mọi dòng y hệt (so `to_jsonb`), archive drop."""
     cfg = alembic_config()
     seed_phase2_platform_data()
     command.upgrade(cfg, SCHEMA_HEAD)
     seed_phase3()
     before = dump()
+    monkeypatch.setenv("AICAM_DOWNGRADE_DETACH_FOREIGN_ORDERS", "1")
 
     command.downgrade(cfg, "0005")
+
+    assert run(f"SELECT order_id FROM package WHERE id = '{i(0x500)}'") == [
+        (None,)
+    ]  # đơn của shop A (bị ngắt)
+    assert run(f"SELECT order_id::text FROM package WHERE id = '{PKG_C}'") == [(O_C,)]  # shop C còn kết nối
 
     assert run("SELECT version_num FROM alembic_version") == [("0005",)]
     assert run("SELECT to_regclass('share_link'), to_regclass('notify_channel')") == [(None, None)]
@@ -401,6 +409,7 @@ def test_round_trip_phase3_data(mig_db: None) -> None:
 
 def test_downgrade_refused_with_active_share(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
     """Bước 1a: link `ACTIVE` → từ chối (không đổi gì); cờ cho phép → lùi, lên lại link vẫn `ACTIVE`."""
+    monkeypatch.setenv("AICAM_DOWNGRADE_DETACH_FOREIGN_ORDERS", "1")
     cfg = alembic_config()
     seed_phase2_platform_data()
     command.upgrade(cfg, SCHEMA_HEAD)
@@ -415,3 +424,263 @@ def test_downgrade_refused_with_active_share(mig_db: None, monkeypatch: pytest.M
     command.downgrade(cfg, "0005")
     command.upgrade(cfg, SCHEMA_HEAD)
     assert run(f"SELECT status FROM share_link WHERE id = '{SHARE}'") == [("ACTIVE",)]
+
+
+# ---------------------------------------------------------------- T-275: 4b, đơn ngoài, bằng chứng đã bỏ, MISSING
+
+PKG_R = i(0x590)
+S_PACK, S_A, S_W, S_N, S_D = i(0x690), i(0x691), i(0x692), i(0x693), i(0x694)
+CLAIM_OPEN, CLAIM_DONE = i(0xA90), i(0xA91)
+SNAP_P = i(0x790)
+DETACH_ENV = "AICAM_DOWNGRADE_DETACH_FOREIGN_ORDERS"
+
+
+def _session(
+    sid: str,
+    kind: str,
+    status: str,
+    minutes_ago: int,
+    *,
+    cancel: str | None = None,
+    clip: str | None = "READY",
+) -> list[str]:
+    out = [
+        "INSERT INTO session (id, type, package_id, station_id, status, started_at, ended_at, open_code, cancel_reason) "
+        f"VALUES ('{sid}', '{kind}', '{PKG_R}', '{ST}', '{status}', now() - interval '{minutes_ago} minutes', "
+        f"now() - interval '{minutes_ago - 2} minutes', 'SPXP3R00001', {f"'{cancel}'" if cancel else 'NULL'})"
+    ]
+    if clip:
+        out.append(
+            "INSERT INTO clip (id, session_id, camera_role, status, start_at, end_at, path, sha256) VALUES "
+            f"(gen_random_uuid(), '{sid}', 'CAM1', '{clip}', now() - interval '{minutes_ago} minutes', "
+            f"now() - interval '{minutes_ago - 2} minutes', 'clips/{sid}.mp4', 'sha')"
+        )
+    return out
+
+
+def seed_return_claims() -> None:
+    """Ở 0005: kiện R (đơn shop A) đóng gói 10 ngày trước; 3 phiên RETURN: A bỏ dở có clip, W hủy `WRONG_SCAN` có
+    clip, N bỏ dở không clip, D `COMPLETED` có clip; hồ sơ mở `CLAIM_OPEN` (chỉ phiên đóng gói + D), hồ sơ đóng
+    `CLAIM_DONE`; 1 ảnh chụp tay của D."""
+    stmts = [
+        "INSERT INTO package (id, order_id, tracking_number, warehouse_status) VALUES "
+        f"('{PKG_R}', '{i(0x406)}', 'SPXP3R00001', 'RETURN_RECEIVED_ISSUE')",
+        *_session(S_PACK, "PACK", "COMPLETED", 14400),
+        *_session(S_A, "RETURN", "ABANDONED", 300),
+        *_session(S_W, "RETURN", "CANCELLED", 200, cancel="WRONG_SCAN"),
+        *_session(S_N, "RETURN", "ABANDONED", 150, clip=None),
+        *_session(S_D, "RETURN", "COMPLETED", 100),
+        "INSERT INTO snapshot (id, session_id, kind, camera_role, taken_at, path, sha256, size_bytes) VALUES "
+        f"('{SNAP_P}', '{S_D}', 'MANUAL', 'CAM1', now() - interval '99 minutes', 'snapshots/p.jpg', 's', 1)",
+        "INSERT INTO claim (id, package_id, type, counterparty, status, source, version) VALUES "
+        f"('{CLAIM_OPEN}', '{PKG_R}', 'EMPTY_BOX', 'PLATFORM', 'NEW', 'AUTO_RETURN', 1), "
+        f"('{CLAIM_DONE}', '{PKG_R}', 'DAMAGED', 'PLATFORM', 'CLOSED', 'MANUAL', 1)",
+        "INSERT INTO claim_evidence (id, claim_id, kind, session_id, snapshot_id, auto, added_by, added_at) VALUES "
+        f"(gen_random_uuid(), '{CLAIM_OPEN}', 'SESSION', '{S_PACK}', NULL, true, NULL, now()), "
+        f"(gen_random_uuid(), '{CLAIM_OPEN}', 'SESSION', '{S_D}', NULL, true, NULL, now()), "
+        f"(gen_random_uuid(), '{CLAIM_OPEN}', 'SNAPSHOT', NULL, '{SNAP_P}', true, NULL, now())",
+    ]
+    run_many(stmts)
+
+
+def _evidence(claim: str) -> set[tuple[str, bool]]:
+    rows = run(
+        "SELECT COALESCE(session_id, snapshot_id)::text, "
+        "COALESCE((to_jsonb(e) ->> 'backfilled')::boolean, false) FROM claim_evidence e "
+        f"WHERE claim_id = '{claim}' AND (to_jsonb(e) ->> 'removed_at') IS NULL"
+    )
+    return {(str(r[0]), bool(r[1])) for r in rows}
+
+
+def test_backfill_prior_sessions_4b(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """4b (BR-39, DEC-498): hồ sơ mở thêm phiên A (bỏ dở có clip) `backfilled`, không thêm W (`WRONG_SCAN`),
+    N (không clip); hồ sơ đóng không đổi; audit + `version + 1`. Lùi → Phase 2 giữ dòng; người dùng bỏ A khi chạy
+    Phase 2 → lên lại không thêm lại; lùi / lên lần nữa không nhân đôi."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    seed_return_claims()
+
+    command.upgrade(cfg, SCHEMA_HEAD)
+
+    assert _evidence(CLAIM_OPEN) == {(S_PACK, False), (S_D, False), (SNAP_P, False), (S_A, True)}
+    assert run(f"SELECT count(*) FROM claim_evidence WHERE claim_id = '{CLAIM_DONE}'") == [(0,)]
+    assert run(f"SELECT version FROM claim WHERE id = '{CLAIM_OPEN}'") == [(2,)]
+    audit = run(
+        "SELECT object_id, data FROM audit_log WHERE action = 'CLAIM_EVIDENCE_UPDATE' AND data->>'reason' = 'BACKFILL_BR39'"
+    )
+    assert audit == [(CLAIM_OPEN, {"reason": "BACKFILL_BR39", "session_ids": [S_A]})]
+
+    monkeypatch.setenv(DETACH_ENV, "1")
+    command.downgrade(cfg, "0005")
+    command.upgrade(cfg, SCHEMA_HEAD)
+    assert _evidence(CLAIM_OPEN) == {(S_PACK, False), (S_D, False), (SNAP_P, False), (S_A, True)}
+    assert run(f"SELECT version FROM claim WHERE id = '{CLAIM_OPEN}'") == [(2,)]
+
+    command.downgrade(cfg, "0005")
+    run(
+        f"DELETE FROM claim_evidence WHERE claim_id = '{CLAIM_OPEN}' AND session_id = '{S_A}'"
+    )  # Phase 2: bỏ A
+    command.upgrade(cfg, SCHEMA_HEAD)
+    assert _evidence(CLAIM_OPEN) == {(S_PACK, False), (S_D, False), (SNAP_P, False)}
+
+
+def test_downgrade_refused_with_foreign_order_packages(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bước 1b (DEC-509): kiện của đơn TikTok / shop Shopee bị ngắt → từ chối, in số kiện theo trạng thái, DB
+    nguyên; cờ → tách kiện, lên lại gắn lại (kiện đã được gắn đơn khác khi chạy Phase 2 → giữ)."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    command.upgrade(cfg, SCHEMA_HEAD)
+    seed_phase3()
+    run(
+        f"INSERT INTO package (id, order_id, tracking_number, warehouse_status) VALUES ('{i(0x5A1)}', '{O_T1}', 'TT0001', 'PACKED')"
+    )
+    run(
+        f"INSERT INTO package (id, order_id, tracking_number, warehouse_status) VALUES ('{i(0x5A2)}', '{O_T2}', 'TT0002', 'HANDED_OVER')"
+    )
+    before = dump()
+    with pytest.raises(RuntimeError, match=r"DELIVERED: 1, HANDED_OVER: 1, PACKED: 1"):
+        command.downgrade(cfg, "0005")
+    assert run("SELECT version_num FROM alembic_version") == [(SCHEMA_HEAD,)]
+    assert dump() == before
+
+    monkeypatch.setenv(DETACH_ENV, "1")
+    command.downgrade(cfg, "0005")
+    assert run(
+        f"SELECT count(*) FROM package WHERE id IN ('{i(0x5A1)}', '{i(0x5A2)}', '{i(0x500)}') AND order_id IS NULL"
+    ) == [(3,)]
+    run(f"UPDATE package SET order_id = '{i(0x401)}' WHERE id = '{i(0x5A2)}'")  # Phase 2 gắn tay đơn khác
+    command.upgrade(cfg, SCHEMA_HEAD)
+    assert dict(run(f"SELECT id::text, order_id::text FROM package WHERE id IN ('{i(0x5A1)}', '{i(0x5A2)}', '{i(0x500)}')")) == {
+        i(0x5A1): O_T1, i(0x5A2): i(0x401), i(0x500): i(0x406)
+    }  # fmt: skip
+
+
+def _phase2_j02_candidates(now: str, days: int) -> set[str]:
+    """Ứng viên J-02 của code Phase 2 (`main`: `retention_clip_query` + `media.protection`) với đồng hồ `now`."""
+    protected = f"""
+    SELECT ce.session_id FROM claim_evidence ce JOIN claim c ON c.id = ce.claim_id
+    WHERE ce.kind = 'SESSION' AND (c.status <> 'CLOSED' OR c.closed_at >= TIMESTAMPTZ '{now}' - interval '{days} days')
+    """
+    return {
+        str(r[0])
+        for r in run(
+            "SELECT k.id FROM clip k WHERE NOT k.held AND k.status = 'READY' "
+            f"AND k.end_at < TIMESTAMPTZ '{now}' - interval '{days} days' AND k.session_id NOT IN ({protected})"
+        )
+    }
+
+
+def _phase2_snapshot_protected(now: str, days: int) -> set[str]:
+    return {
+        str(r[0])
+        for r in run(
+            "SELECT ce.snapshot_id FROM claim_evidence ce JOIN claim c ON c.id = ce.claim_id WHERE ce.kind = 'SNAPSHOT' "
+            f"AND (c.status <> 'CLOSED' OR c.closed_at >= TIMESTAMPTZ '{now}' - interval '{days} days')"
+        )
+    }
+
+
+def test_removed_evidence_kept_as_legacy_hold_then_restored(
+    mig_db: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Bước 5–6 (DEC-497): phiên đóng gói + ảnh đã bỏ khỏi hồ sơ mở còn hạn giữ → hồ sơ hệ thống `LEGACY_HOLD`
+    `CLOSED` (`closed_at` = lúc bỏ); J-02 **Phase 2** không xóa clip / ảnh trước hạn, xóa sau hạn; bỏ quá hạn →
+    không giữ. Lên lại: dòng đã bỏ trở lại nguyên (người, lý do, giờ), hồ sơ hệ thống xóa; người dùng thêm lại ở
+    Phase 2 → giữ dòng đó, log `restore_removed_conflict`."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    seed_return_claims()
+    run("UPDATE setting SET retention_clip_days = 90")
+    command.upgrade(cfg, SCHEMA_HEAD)
+    run(
+        f"UPDATE clip SET end_at = now() - interval '100 days', start_at = now() - interval '101 days' WHERE session_id = '{S_PACK}'"
+    )
+    run(
+        f"UPDATE claim_evidence SET removed_at = now() - interval '1 day', removed_by = '{U2}', removed_reason = 'Nhầm kiện' "
+        f"WHERE claim_id = '{CLAIM_OPEN}' AND (session_id = '{S_PACK}' OR snapshot_id = '{SNAP_P}')"
+    )
+    run(  # bỏ từ 200 ngày trước, clip cũ → quá hạn giữ, không vào hồ sơ hệ thống
+        f"UPDATE claim_evidence SET removed_at = now() - interval '200 days', removed_by = '{U2}', removed_reason = 'Cũ' "
+        f"WHERE claim_id = '{CLAIM_OPEN}' AND session_id = '{S_A}'"
+    )
+    run(f"UPDATE clip SET end_at = now() - interval '300 days' WHERE session_id = '{S_A}'")
+    removed_before = run(
+        "SELECT id::text, session_id::text, snapshot_id::text, removed_at, removed_by::text, removed_reason, backfilled "
+        "FROM claim_evidence WHERE removed_at IS NOT NULL ORDER BY id"
+    )
+    monkeypatch.setenv(DETACH_ENV, "1")
+
+    command.downgrade(cfg, "0005")
+
+    legacy = run(
+        "SELECT id::text, status, closed_at = (SELECT max(removed_at) FROM phase3_archive.claim_evidence_cols "
+        "WHERE removed_at > now() - interval '30 days'), close_reason FROM claim WHERE source = 'LEGACY_HOLD'"
+    )
+    assert len(legacy) == 1
+    legacy_id, status, closed_ok, reason = legacy[0]
+    assert (status, closed_ok) == ("CLOSED", True)
+    assert reason.startswith("Bằng chứng đã bỏ — giữ tới ")
+    assert {(r[0], r[1]) for r in run(f"SELECT kind, COALESCE(session_id, snapshot_id)::text FROM claim_evidence WHERE claim_id = '{legacy_id}'")} == {
+        ("SESSION", S_PACK), ("SNAPSHOT", SNAP_P)
+    }  # fmt: skip
+    notes = [r[0] for r in run(f"SELECT text FROM claim_note WHERE claim_id = '{legacy_id}'")]
+    assert len(notes) == 2
+    assert all("(lý do: Nhầm kiện)" in n and n.startswith("Bằng chứng đã bỏ khỏi KN-") for n in notes)
+    assert run(
+        "SELECT count(*) FROM claim_evidence WHERE claim_id = :c AND session_id = :s",
+        {"c": CLAIM_OPEN, "s": S_A},
+    ) == [(0,)]
+    pack_clips = {str(r[0]) for r in run(f"SELECT id FROM clip WHERE session_id = '{S_PACK}'")}
+    now = run("SELECT now()")[0][0]
+    today = now.isoformat()
+    assert not pack_clips & _phase2_j02_candidates(today, 90)
+    assert SNAP_P in _phase2_snapshot_protected(today, 90)
+    later = (now + timedelta(days=91)).isoformat()  # bỏ 1 ngày trước + 90 ngày → hết hạn sau 89 ngày
+    assert pack_clips <= _phase2_j02_candidates(later, 90)
+    assert SNAP_P not in _phase2_snapshot_protected(later, 90)
+
+    # Phase 2: người dùng thêm lại phiên đóng gói vào hồ sơ (dòng mới, đang dùng).
+    run(
+        "INSERT INTO claim_evidence (id, claim_id, kind, session_id, auto, added_by, added_at) VALUES "
+        f"(gen_random_uuid(), '{CLAIM_OPEN}', 'SESSION', '{S_PACK}', false, '{U2}', now())"
+    )
+    warnings: list[str] = []
+    real_warning = logging.Logger.warning
+
+    def capture(self: logging.Logger, msg: object, *args: object, **kw: object) -> None:
+        warnings.append(str(msg) % args if args else str(msg))
+        real_warning(self, msg, *args, **kw)  # type: ignore[arg-type]
+
+    # env.py gọi `fileConfig` (xóa handler của logger alembic) → bắt qua `Logger.warning`, không qua caplog.
+    monkeypatch.setattr(logging.Logger, "warning", capture)
+    command.upgrade(cfg, SCHEMA_HEAD)
+    monkeypatch.setattr(logging.Logger, "warning", real_warning)
+
+    assert run("SELECT count(*) FROM claim WHERE source = 'LEGACY_HOLD'") == [(0,)]
+    assert run("SELECT count(*) FROM \"user\" WHERE id = '00000000-0000-7000-8000-00000000a1c0'") == [(0,)]
+    restored = run(
+        "SELECT id::text, session_id::text, snapshot_id::text, removed_at, removed_by::text, removed_reason, backfilled "
+        "FROM claim_evidence WHERE removed_at IS NOT NULL ORDER BY id"
+    )
+    assert restored == [r for r in removed_before if r[1] != S_PACK]  # phiên đóng gói: giữ dòng thêm lại
+    assert run(
+        f"SELECT removed_at FROM claim_evidence WHERE claim_id = '{CLAIM_OPEN}' AND session_id = '{S_PACK}'"
+    ) == [(None,)]
+    assert any("restore_removed_conflict" in w for w in warnings)
+
+
+def test_missing_clip_failed_in_phase2_then_back(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Bước 7: clip `MISSING` → `FAILED` khi lùi (CHECK Phase 2), lên lại → `MISSING` nếu vẫn `FAILED`."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    seed_return_claims()
+    command.upgrade(cfg, SCHEMA_HEAD)
+    run(f"UPDATE clip SET status = 'MISSING' WHERE session_id IN ('{S_D}', '{S_A}')")
+    monkeypatch.setenv(DETACH_ENV, "1")
+    command.downgrade(cfg, "0005")
+    assert run(f"SELECT DISTINCT status FROM clip WHERE session_id IN ('{S_D}', '{S_A}')") == [("FAILED",)]
+    run(f"UPDATE clip SET status = 'READY' WHERE session_id = '{S_A}'")  # Phase 2 cắt lại được
+    command.upgrade(cfg, SCHEMA_HEAD)
+    assert dict(run(f"SELECT session_id::text, status FROM clip WHERE session_id IN ('{S_D}', '{S_A}')")) == {
+        S_D: "MISSING", S_A: "READY"
+    }  # fmt: skip

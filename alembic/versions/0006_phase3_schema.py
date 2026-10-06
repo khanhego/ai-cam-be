@@ -26,7 +26,9 @@ import json
 import logging
 import os
 import time
+import uuid
 from typing import Any, Sequence, Union
+from zoneinfo import ZoneInfo
 
 import sqlalchemy as sa
 from alembic import op
@@ -156,6 +158,27 @@ _SETTING_COLS = (
     "backup_all_pack_clips, backup_restore_pending"
 )
 _SHOP_COLS = "grant_ref, shop_cipher, region, sync_warnings, error_since, disconnected_at, disconnected_by"
+_EVIDENCE_COLS = (
+    "id, claim_id, kind, session_id, snapshot_id, auto, added_by, added_at, removed_at, removed_by, removed_reason, "
+    "backfilled"
+)
+ALLOW_DETACH_ENV = "AICAM_DOWNGRADE_DETACH_FOREIGN_ORDERS"
+# Người dùng hệ thống đứng tên hồ sơ `LEGACY_HOLD` do lùi tạo (DEC-338 — cùng id với 0004, không đăng nhập được).
+SYSTEM_USER_ID = "00000000-0000-7000-8000-00000000a1c0"
+SYSTEM_USER_NAME = "Hệ thống (bảo vệ bằng chứng Phase 2)"
+# BR-39 (DEC-491): lý do hủy loại phiên khỏi bằng chứng tự chọn — hằng như `claims.EXCLUDED_CANCEL_REASONS`.
+EXCLUDED_CANCEL_REASONS = ("WRONG_SCAN", "NOT_A_RETURN")
+# Shop Shopee còn kết nối trừ shop `CONNECTED` mới nhất — Phase 2 chỉ dùng một shop (DEC-12) → bị ngắt khi lùi.
+_EXTRA_SHOPEE_SQL = (
+    "SELECT id FROM shop WHERE platform = 'SHOPEE' AND auth_status <> 'DISCONNECTED' AND id <> COALESCE(("
+    "  SELECT id FROM shop WHERE platform = 'SHOPEE' AND auth_status = 'CONNECTED' "
+    "  ORDER BY created_at DESC, id DESC LIMIT 1), '00000000-0000-0000-0000-000000000000')"
+)
+# Đơn ngoài (DEC-509): đơn của shop TikTok + đơn của shop Shopee sẽ bị ngắt — J-06 Phase 2 không lọc shop.
+_FOREIGN_ORDERS_SQL = (
+    'SELECT o.id FROM "order" o JOIN shop s ON s.id = o.shop_id '
+    f"WHERE s.platform = 'TIKTOK' OR s.id IN ({_EXTRA_SHOPEE_SQL})"
+)
 # Cột mới của bảng cũ (khóa `id`) — mất khi drop cột nếu không chép: (bảng archive, nguồn, SELECT).
 COLUMN_ARCHIVES: tuple[tuple[str, str, str], ...] = (
     ("shop_cols", "shop", f"SELECT id, {_SHOP_COLS} FROM shop WHERE platform = 'SHOPEE'"),
@@ -176,11 +199,11 @@ COLUMN_ARCHIVES: tuple[tuple[str, str, str], ...] = (
         "claim",
         "SELECT id, submitted_at, result_at FROM claim WHERE num_nonnulls(submitted_at, result_at) > 0",
     ),
+    # Nguyên dòng (dòng đã bỏ bị xóa ở bước 5 — nâng cấp lại chèn lại theo cặp; dòng 4b giữ cờ `backfilled`).
     (
         "claim_evidence_cols",
         "claim_evidence",
-        "SELECT id, removed_at, removed_by, removed_reason, backfilled FROM claim_evidence "
-        "WHERE removed_at IS NOT NULL OR backfilled",
+        f"SELECT {_EVIDENCE_COLS} FROM claim_evidence WHERE removed_at IS NOT NULL OR backfilled",
     ),
     (
         "session_cols",
@@ -196,6 +219,9 @@ ROW_ARCHIVES: tuple[tuple[str, str], ...] = (
         "order_shop",
         "SELECT o.id, o.shop_id FROM \"order\" o JOIN shop s ON s.id = o.shop_id WHERE s.platform = 'TIKTOK'",
     ),
+    # Cặp do backfill 4b thêm — nâng cấp lại không thêm lại cặp người dùng đã bỏ khi chạy Phase 2 (DEC-498).
+    ("backfill_prior_pairs", "SELECT claim_id, session_id FROM claim_evidence WHERE backfilled"),
+    ("missing_clips", "SELECT id FROM clip WHERE status = 'MISSING'"),
 )
 
 
@@ -769,6 +795,62 @@ def _backfill_claim_times(bind: sa.Connection) -> dict[str, int]:
     }
 
 
+def _excluded_session_sql(alias: str) -> str:
+    """Vị từ "phiên bị loại khỏi bằng chứng tự chọn" (BR-39) — hằng trong migration, cùng luật code."""
+    reasons = ", ".join(f"'{r}'" for r in EXCLUDED_CANCEL_REASONS)
+    return f"COALESCE({alias}.cancel_reason, '') IN ({reasons})"
+
+
+def _archive_exists(bind: sa.Connection) -> bool:
+    return _scalar(bind, f"SELECT to_regclass('{ARCHIVE}.meta')") is not None
+
+
+def _backfill_prior_sessions(bind: sa.Connection) -> dict[str, int]:
+    """Bước 4b (BR-39 v0.3, DEC-498): hồ sơ khiếu nại mở từ Phase 2 thêm phiên mở hoàn đã hủy / bỏ dở có clip
+    của kiện / hồ sơ hàng hoàn (trừ phiên bị loại) — `auto = true`, `backfilled = true`, `ON CONFLICT DO
+    NOTHING`. Nâng cấp lại: bỏ qua cặp (hồ sơ, phiên) do 4b lần trước thêm mà người dùng đã bỏ khi chạy Phase 2.
+    Audit `CLAIM_EVIDENCE_UPDATE` một dòng / hồ sơ (`reason = BACKFILL_BR39`, người dùng null); `version + 1`."""
+    skip = "true"
+    if _archive_exists(bind):
+        skip = (
+            f"NOT EXISTS (SELECT 1 FROM {ARCHIVE}.backfill_prior_pairs b WHERE b.claim_id = c.id "
+            "AND b.session_id = s.id)"
+        )
+    rows = bind.execute(
+        sa.text(
+            "WITH added AS ("
+            "  INSERT INTO claim_evidence (id, claim_id, kind, session_id, auto, added_by, added_at, backfilled) "
+            "  SELECT gen_random_uuid(), c.id, 'SESSION', s.id, true, NULL, now(), true "
+            "  FROM claim c JOIN session s ON s.type = 'RETURN' AND s.status IN ('CANCELLED', 'ABANDONED') AND ("
+            "    s.package_id = c.package_id"
+            "    OR (c.return_case_id IS NOT NULL AND s.return_case_id = c.return_case_id)"
+            "    OR s.package_id IN (SELECT rcp.package_id FROM return_case_package rcp "
+            "                        WHERE rcp.return_case_id = c.return_case_id))"
+            "  WHERE c.status <> 'CLOSED' AND c.source <> 'LEGACY_HOLD'"
+            "    AND EXISTS (SELECT 1 FROM clip k WHERE k.session_id = s.id AND k.status <> 'DELETED')"
+            f"   AND NOT ({_excluded_session_sql('s')}) AND {skip}"
+            "  ON CONFLICT (claim_id, session_id) DO NOTHING"
+            "  RETURNING claim_id, session_id"
+            ") SELECT claim_id, array_agg(session_id::text ORDER BY session_id) FROM added GROUP BY claim_id"
+        )
+    ).all()
+    for claim_id, session_ids in rows:
+        bind.execute(
+            sa.text(
+                "INSERT INTO audit_log (user_id, action, object_type, object_id, at, data) VALUES "
+                "(NULL, 'CLAIM_EVIDENCE_UPDATE', 'CLAIM', :id, now(), jsonb_build_object('reason', 'BACKFILL_BR39', "
+                "'session_ids', CAST(:sids AS jsonb)))"
+            ),
+            {"id": str(claim_id), "sids": json.dumps(list(session_ids))},
+        )
+    if rows:
+        bind.execute(
+            sa.text("UPDATE claim SET version = version + 1 WHERE id = ANY(:ids)"),
+            {"ids": [r[0] for r in rows]},
+        )
+    return {"prior_rows": sum(len(r[1]) for r in rows), "prior_claims": len(rows)}
+
+
 # ---------------------------------------------------------------- nâng cấp lại (bước 6) — phase3_archive
 
 
@@ -862,6 +944,8 @@ def _restore_phase3(bind: sa.Connection) -> dict[str, int]:
     out["claim_evidence_cols"] = _update_from(
         bind, "claim_evidence_cols", "claim_evidence", "removed_at, removed_by, removed_reason, backfilled"
     )
+    out.update(_restore_removed_evidence(bind))
+    out.update(_restore_detached(bind))
     out["session_cols"] = _update_from(bind, "session_cols", "session", _SESSION_COLS)
     out["setting_cols"] = _update_from(bind, "setting_cols", "setting", _SETTING_COLS)
     for table in RESTORE_ORDER:
@@ -876,6 +960,85 @@ def _restore_phase3(bind: sa.Connection) -> dict[str, int]:
         log.warning("0006: số dòng khôi phục khác lúc chép (chép, khôi phục) %s", short)
     op.execute(f"DROP SCHEMA {ARCHIVE} CASCADE")
     return out
+
+
+def _restore_removed_evidence(bind: sa.Connection) -> dict[str, int]:
+    """Nâng cấp lại: dòng đã bỏ (xóa ở bước 5 lúc lùi) chèn lại vào hồ sơ gốc — trừ khi (hồ sơ, phiên) /
+    (hồ sơ, ảnh) đã có dòng (người dùng thêm lại khi chạy Phase 2 → giữ dòng hiện có, log
+    `restore_removed_conflict`); hồ sơ hệ thống `LEGACY_HOLD` do lùi tạo còn nguyên → xóa, đã bị đổi → giữ."""
+    conflicts = bind.execute(
+        sa.text(
+            f"SELECT a.claim_id::text, COALESCE(a.session_id, a.snapshot_id)::text FROM {ARCHIVE}.claim_evidence_cols a "
+            "WHERE a.removed_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM claim_evidence e WHERE e.id = a.id) "
+            "AND EXISTS (SELECT 1 FROM claim_evidence e WHERE e.claim_id = a.claim_id "
+            "AND (e.session_id = a.session_id OR e.snapshot_id = a.snapshot_id))"
+        )
+    ).all()
+    for claim_id, target in conflicts:
+        log.warning(
+            "restore_removed_conflict claim_id=%s target=%s — giữ dòng người dùng thêm lại", claim_id, target
+        )
+    reinserted = bind.execute(
+        sa.text(
+            f"INSERT INTO claim_evidence ({_EVIDENCE_COLS}) SELECT {_EVIDENCE_COLS} FROM {ARCHIVE}.claim_evidence_cols a "
+            "WHERE a.removed_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM claim_evidence e WHERE e.id = a.id) "
+            "AND EXISTS (SELECT 1 FROM claim c WHERE c.id = a.claim_id) "
+            "AND NOT EXISTS (SELECT 1 FROM claim_evidence e WHERE e.claim_id = a.claim_id "
+            "AND (e.session_id = a.session_id OR e.snapshot_id = a.snapshot_id))"
+        )
+    ).rowcount
+    unchanged = (
+        f"SELECT d.claim_id FROM {ARCHIVE}.downgrade_removed_claims d JOIN claim c ON c.id = d.claim_id "
+        "WHERE c.updated_at = d.updated_at AND c.version = d.version "
+        "AND (SELECT count(*) FROM claim_evidence e WHERE e.claim_id = c.id) = d.evidence_count "
+        "AND (SELECT count(*) FROM claim_note n WHERE n.claim_id = c.id) = d.note_count"
+    )
+    kept = bind.execute(
+        sa.text(
+            f"SELECT c.code FROM {ARCHIVE}.downgrade_removed_claims d JOIN claim c ON c.id = d.claim_id "
+            f"WHERE d.claim_id NOT IN ({unchanged})"
+        )
+    ).all()
+    if kept:
+        log.warning(
+            "0006: giữ %s hồ sơ LEGACY_HOLD do lùi tạo vì đã bị sửa khi chạy Phase 2: %s",
+            len(kept),
+            ", ".join(r[0] for r in kept),
+        )
+    dropped = bind.execute(sa.text(f"DELETE FROM claim WHERE id IN ({unchanged})")).rowcount
+    with bind.begin_nested() as sp:  # người dùng hệ thống còn được tham chiếu (0004, hồ sơ giữ lại) → giữ
+        try:
+            bind.execute(sa.text('DELETE FROM "user" WHERE id = CAST(:u AS uuid)'), {"u": SYSTEM_USER_ID})
+        except sa.exc.IntegrityError:
+            sp.rollback()
+    return {
+        "removed_evidence_reinserted": int(reinserted or 0),
+        "removed_evidence_conflicts": len(conflicts),
+        "legacy_hold_claims_dropped": int(dropped or 0),
+    }
+
+
+def _restore_detached(bind: sa.Connection) -> dict[str, int]:
+    """Nâng cấp lại: kiện của đơn ngoài gắn lại đơn nếu vẫn chưa gắn; clip `MISSING` lúc lùi (thành `FAILED`)
+    trả `MISSING` nếu vẫn `FAILED`."""
+    reattached = bind.execute(
+        sa.text(
+            f"UPDATE package p SET order_id = d.order_id FROM {ARCHIVE}.detached_packages d "
+            'WHERE p.id = d.package_id AND p.order_id IS NULL AND EXISTS (SELECT 1 FROM "order" o WHERE o.id = d.order_id)'
+        )
+    ).rowcount
+    total = int(_scalar(bind, f"SELECT count(*) FROM {ARCHIVE}.detached_packages"))
+    if total != reattached:
+        log.warning(
+            "0006: %s kiện của đơn ngoài đã được gắn đơn khác khi chạy Phase 2 — giữ như hiện tại",
+            total - int(reattached or 0),
+        )
+    missing = bind.execute(
+        sa.text(
+            f"UPDATE clip c SET status = 'MISSING' FROM {ARCHIVE}.missing_clips m WHERE c.id = m.id AND c.status = 'FAILED'"
+        )
+    ).rowcount
+    return {"detached_reattached": int(reattached or 0), "missing_clips": int(missing or 0)}
 
 
 # ---------------------------------------------------------------- downgrade (02a §3, DEC-475) — chép trước, xóa sau
@@ -915,9 +1078,14 @@ def _archive_phase3(bind: sa.Connection) -> dict[str, int]:
     # Bước 3 (chép trước): shop Shopee sẽ bị ngắt — Phase 2 chỉ dùng shop CONNECTED mới nhất (DEC-12).
     op.execute(
         f"CREATE TABLE {ARCHIVE}.reconnected_shops AS SELECT id, auth_status, access_token_enc FROM shop "
-        "WHERE platform = 'SHOPEE' AND auth_status <> 'DISCONNECTED' AND id <> COALESCE(("
-        "  SELECT id FROM shop WHERE platform = 'SHOPEE' AND auth_status = 'CONNECTED' "
-        "  ORDER BY created_at DESC, id DESC LIMIT 1), '00000000-0000-0000-0000-000000000000')"
+        f"WHERE id IN ({_EXTRA_SHOPEE_SQL})"
+    )
+    op.execute(
+        f"CREATE TABLE {ARCHIVE}.detached_packages (package_id uuid PRIMARY KEY, order_id uuid NOT NULL)"
+    )
+    op.execute(
+        f"CREATE TABLE {ARCHIVE}.downgrade_removed_claims (claim_id uuid PRIMARY KEY, "
+        "updated_at timestamptz NOT NULL, version int NOT NULL, evidence_count int NOT NULL, note_count int NOT NULL)"
     )
     names = [
         *NEW_TABLES,
@@ -936,6 +1104,247 @@ def _archive_phase3(bind: sa.Connection) -> dict[str, int]:
     )
     log.info("0006 downgrade: chép sang %s %s", ARCHIVE, json.dumps(counts, ensure_ascii=False))
     return counts
+
+
+def _guard_foreign_orders(bind: sa.Connection) -> None:
+    """Bước 1b (DEC-509): còn kiện của đơn ngoài (shop TikTok / shop Shopee sẽ bị ngắt) → J-06 Phase 2 gọi Shopee
+    bằng mã đơn lạ, có thể kẹt cả lô → từ chối, in số kiện theo trạng thái; cờ cho phép → tách kiện (bước 4)."""
+    rows = bind.execute(
+        sa.text(
+            "SELECT p.warehouse_status, count(*) FROM package p "
+            f"WHERE p.order_id IN ({_FOREIGN_ORDERS_SQL}) GROUP BY 1 ORDER BY 1"
+        )
+    ).all()
+    if rows and os.environ.get(ALLOW_DETACH_ENV) != "1":
+        listed = ", ".join(f"{status}: {n}" for status, n in rows)
+        raise RuntimeError(
+            f"Không downgrade 0006: còn kiện của đơn TikTok / shop Shopee sẽ bị ngắt ({listed}) — bản Phase 2 tra "
+            "vận chuyển mọi kiện bằng token một shop Shopee. Chấp nhận tách các kiện này khỏi đơn trong thời gian chạy "
+            f"Phase 2 thì đặt {ALLOW_DETACH_ENV}=1 (nâng cấp lại gắn lại). Không có gì bị thay đổi. Xem docs/ops.md §7.2."
+        )
+
+
+def _detach_foreign_packages(bind: sa.Connection) -> int:
+    """Bước 4: kiện của đơn ngoài → `order_id = NULL` (J-06 Phase 2 join `order` → bỏ qua; J-05 chỉ lấy kiện
+    chưa xác minh → không tra). Đơn giữ dòng để nâng cấp lại gắn lại."""
+    bind.execute(
+        sa.text(
+            f"INSERT INTO {ARCHIVE}.detached_packages (package_id, order_id) "
+            f"SELECT p.id, p.order_id FROM package p WHERE p.order_id IN ({_FOREIGN_ORDERS_SQL})"
+        )
+    )
+    return int(
+        bind.execute(
+            sa.text(
+                f"UPDATE package p SET order_id = NULL FROM {ARCHIVE}.detached_packages d WHERE p.id = d.package_id"
+            )
+        ).rowcount
+        or 0
+    )
+
+
+def _keep_days(bind: sa.Connection) -> int:
+    floor = int(os.environ.get("RETENTION_CLIP_MIN_DAYS", "60"))
+    return max(int(_scalar(bind, "SELECT retention_clip_days FROM setting WHERE id = 1") or 0), floor)
+
+
+# Bằng chứng đã bỏ còn trong hạn giữ BR-38 (tập `B`): clip không `DELETED` / ảnh `READY` của dòng đã bỏ mà
+# max(lúc kết thúc / lúc chụp, lúc bỏ) + số ngày giữ > bây giờ.
+_HELD_CLIPS_SQL = (
+    "SELECT k.id, k.session_id, ce.id AS evidence_id, ce.claim_id, ce.removed_at, "
+    "GREATEST(k.end_at, ce.removed_at) + (:days * interval '1 day') AS keep_until "
+    "FROM claim_evidence ce JOIN clip k ON k.session_id = ce.session_id AND k.status <> 'DELETED' "
+    "WHERE ce.removed_at IS NOT NULL AND GREATEST(k.end_at, ce.removed_at) + (:days * interval '1 day') > now()"
+)
+_HELD_SNAPSHOTS_SQL = (
+    "SELECT sn.id, sn.session_id, ce.id AS evidence_id, ce.claim_id, ce.removed_at, "
+    "GREATEST(sn.taken_at, ce.removed_at) + (:days * interval '1 day') AS keep_until "
+    "FROM claim_evidence ce JOIN snapshot sn ON sn.id = ce.snapshot_id AND sn.status = 'READY' "
+    "WHERE ce.removed_at IS NOT NULL AND GREATEST(sn.taken_at, ce.removed_at) + (:days * interval '1 day') > now()"
+)
+# Luật bảo vệ của Phase 2 (`media.protection` ở `main`, chép như 0004 `PROTECTED_SESSIONS_SQL` — không import code).
+_PHASE2_PROTECTED_SESSIONS_SQL = """
+WITH cases AS (
+    SELECT rc.id, rcp.package_id
+    FROM return_case rc JOIN return_case_package rcp ON rcp.return_case_id = rc.id
+    WHERE rc.status IN ('EXPECTED', 'INSPECTING', 'PARTIALLY_RECEIVED', 'MISSING')
+       OR (rc.status IN ('RECEIVED_OK', 'RECEIVED_ISSUE')
+           AND COALESCE(rc.received_at, rc.updated_at) > now() - interval '7 days')
+       OR (rc.status = 'NO_PARCEL' AND COALESCE(rc.reported_at, rc.created_at) > now() - interval '30 days')
+)
+SELECT ce.session_id
+FROM claim_evidence ce JOIN claim c ON c.id = ce.claim_id
+WHERE ce.kind = 'SESSION' AND (c.status <> 'CLOSED' OR c.closed_at >= now() - :days * interval '1 day')
+UNION
+SELECT s.id FROM session s
+WHERE s.package_id IN (SELECT package_id FROM cases)
+  AND (s.type = 'RETURN'
+       OR (s.type = 'PACK' AND s.status = 'COMPLETED' AND NOT EXISTS (
+           SELECT 1 FROM session s2
+           WHERE s2.package_id = s.package_id AND s2.type = 'PACK' AND s2.status = 'COMPLETED'
+             AND (s2.ended_at > s.ended_at OR (s2.ended_at = s.ended_at AND s2.id > s.id)))))
+UNION
+SELECT s.id FROM session s WHERE s.return_case_id IN (SELECT id FROM cases)
+"""
+_PHASE2_EVIDENCE_SNAPSHOTS_SQL = (
+    "SELECT ce.snapshot_id FROM claim_evidence ce JOIN claim c ON c.id = ce.claim_id "
+    "WHERE ce.kind = 'SNAPSHOT' AND (c.status <> 'CLOSED' OR c.closed_at >= now() - :days * interval '1 day')"
+)
+
+
+def _tz() -> ZoneInfo:
+    return ZoneInfo(os.environ.get("TZ_DISPLAY", "Asia/Ho_Chi_Minh"))
+
+
+def _hold_removed_evidence(bind: sa.Connection, days: int) -> tuple[set[str], set[str]]:
+    """Bước 5 (DEC-497): bằng chứng đã bỏ còn hạn giữ → mỗi kiện một hồ sơ hệ thống `LEGACY_HOLD` `CLOSED`
+    (`closed_at` = lúc bỏ muộn nhất) — luật Phase 2 (`closed_at ≥ now − số ngày giữ`) giữ đúng hạn BR-38 cho cả
+    clip lẫn ảnh rồi tự hết. Xóa dòng đã bỏ (đã chép ở bước 2). Trả tập `B` (id clip, id ảnh)."""
+    clips = bind.execute(sa.text(_HELD_CLIPS_SQL), {"days": days}).mappings().all()
+    snaps = bind.execute(sa.text(_HELD_SNAPSHOTS_SQL), {"days": days}).mappings().all()
+    held_clips = {str(r["id"]) for r in clips}
+    held_snaps = {str(r["id"]) for r in snaps}
+    if clips or snaps:
+        bind.execute(
+            sa.text(
+                'INSERT INTO "user" (id, username, display_name, role, password_hash, is_active) VALUES '
+                "(CAST(:u AS uuid), 'system_phase2_hold', :name, 'SUPERVISOR', '!', false) ON CONFLICT (id) DO NOTHING"
+            ),
+            {"u": SYSTEM_USER_ID, "name": SYSTEM_USER_NAME},
+        )
+    info = {
+        str(r.id): r
+        for r in bind.execute(
+            sa.text(
+                "SELECT ce.id, ce.removed_at, ce.removed_reason, c.code, c.package_id FROM claim_evidence ce "
+                "JOIN claim c ON c.id = ce.claim_id WHERE ce.removed_at IS NOT NULL"
+            )
+        ).all()
+    }
+    groups: dict[str, dict[str, Any]] = {}
+    for kind, rows in (("SESSION", clips), ("SNAPSHOT", snaps)):
+        for r in rows:
+            row = info[str(r["evidence_id"])]
+            g = groups.setdefault(
+                str(row.package_id),
+                {"closed_at": row.removed_at, "keep_until": r["keep_until"], "sessions": set(), "snapshots": set(),
+                 "notes": {}},
+            )  # fmt: skip
+            g["closed_at"] = max(g["closed_at"], row.removed_at)
+            g["keep_until"] = max(g["keep_until"], r["keep_until"])
+            (g["sessions"] if kind == "SESSION" else g["snapshots"]).add(
+                str(r["session_id"] if kind == "SESSION" else r["id"])
+            )
+            g["notes"].setdefault(str(r["evidence_id"]), (row, r["keep_until"]))
+    tz = _tz()
+    for package_id, g in sorted(groups.items()):
+        claim_id = str(uuid.uuid4())
+        keep_label = g["keep_until"].astimezone(tz).strftime("%d/%m/%Y")
+        bind.execute(
+            sa.text(
+                "INSERT INTO claim (id, package_id, type, counterparty, status, source, deadline_at, deadline_source, "
+                "close_reason, closed_at, created_by, created_at, updated_at, version) VALUES (CAST(:id AS uuid), "
+                "CAST(:pkg AS uuid), 'OTHER', 'PLATFORM', 'CLOSED', 'LEGACY_HOLD', :closed, 'DEFAULT', :reason, :closed, "
+                "CAST(:u AS uuid), now(), now(), 1)"
+            ),
+            {
+                "id": claim_id,
+                "pkg": package_id,
+                "closed": g["closed_at"],
+                "reason": f"Bằng chứng đã bỏ — giữ tới {keep_label}",
+                "u": SYSTEM_USER_ID,
+            },
+        )
+        for sid in sorted(g["sessions"]):
+            bind.execute(
+                sa.text(
+                    "INSERT INTO claim_evidence (id, claim_id, kind, session_id, auto, added_by, added_at) VALUES "
+                    "(gen_random_uuid(), CAST(:c AS uuid), 'SESSION', CAST(:s AS uuid), false, NULL, now())"
+                ),
+                {"c": claim_id, "s": sid},
+            )
+        for snap in sorted(g["snapshots"]):
+            bind.execute(
+                sa.text(
+                    "INSERT INTO claim_evidence (id, claim_id, kind, snapshot_id, auto, added_by, added_at) VALUES "
+                    "(gen_random_uuid(), CAST(:c AS uuid), 'SNAPSHOT', CAST(:s AS uuid), false, NULL, now())"
+                ),
+                {"c": claim_id, "s": snap},
+            )
+        for row, keep in sorted(g["notes"].values(), key=lambda v: (v[0].removed_at, str(v[0].id))):
+            text = (
+                f"Bằng chứng đã bỏ khỏi {row.code} lúc {row.removed_at.astimezone(tz).strftime('%H:%M %d/%m/%Y')} "
+                f"(lý do: {row.removed_reason}) — giữ tới {keep.astimezone(tz).strftime('%d/%m/%Y')}"
+            )
+            bind.execute(
+                sa.text(
+                    "INSERT INTO claim_note (id, claim_id, kind, text, author_user_id, at) VALUES "
+                    "(gen_random_uuid(), CAST(:c AS uuid), 'SYSTEM', :t, NULL, now())"
+                ),
+                {"c": claim_id, "t": text},
+            )
+        bind.execute(
+            sa.text(
+                f"INSERT INTO {ARCHIVE}.downgrade_removed_claims SELECT c.id, c.updated_at, c.version, "
+                "(SELECT count(*) FROM claim_evidence e WHERE e.claim_id = c.id), "
+                "(SELECT count(*) FROM claim_note n WHERE n.claim_id = c.id) FROM claim c WHERE c.id = CAST(:c AS uuid)"
+            ),
+            {"c": claim_id},
+        )
+    removed = bind.execute(sa.text("DELETE FROM claim_evidence WHERE removed_at IS NOT NULL")).rowcount
+    log.info(
+        "0006 downgrade: %s dòng bằng chứng đã bỏ; %s clip + %s ảnh còn hạn giữ → %s hồ sơ LEGACY_HOLD đã đóng",
+        removed,
+        len(held_clips),
+        len(held_snaps),
+        len(groups),
+    )
+    return held_clips, held_snaps
+
+
+def _check_subset(bind: sa.Connection, held_clips: set[str], held_snaps: set[str], days: int) -> None:
+    """Bước 6 (như 0004 `_check_subset`): mọi clip / ảnh của `B` thuộc tập được bảo vệ theo luật Phase 2 sau
+    bước 5; thiếu → `raise` (cả transaction lùi)."""
+    protected_clips = {
+        str(r[0])
+        for r in bind.execute(
+            sa.text(
+                f"SELECT k.id FROM clip k WHERE k.held OR k.session_id IN ({_PHASE2_PROTECTED_SESSIONS_SQL})"
+            ),
+            {"days": days},
+        ).all()
+    }
+    protected_snaps = {
+        str(r[0])
+        for r in bind.execute(
+            sa.text(
+                f"SELECT sn.id FROM snapshot sn WHERE sn.session_id IN ({_PHASE2_PROTECTED_SESSIONS_SQL}) "
+                f"OR sn.id IN ({_PHASE2_EVIDENCE_SNAPSHOTS_SQL})"
+            ),
+            {"days": days},
+        ).all()
+    }
+    missing = sorted((held_clips - protected_clips) | (held_snaps - protected_snaps))
+    log.info(
+        "0006 downgrade: |B| = %s, được bảo vệ sau = %s clip + %s ảnh, thiếu = %s",
+        len(held_clips) + len(held_snaps),
+        len(protected_clips),
+        len(protected_snaps),
+        len(missing),
+    )
+    if missing:
+        raise RuntimeError(
+            f"0006 downgrade: {len(missing)} clip / ảnh bằng chứng đã bỏ còn hạn giữ không được luật Phase 2 bảo vệ "
+            f"({', '.join(missing[:5])}) — dừng, không đổi dữ liệu (DEC-497)."
+        )
+
+
+def _missing_to_phase2(bind: sa.Connection) -> int:
+    """Bước 7: Phase 2 không có `MISSING` → clip `FAILED` (J-11 Phase 2 chỉ đẩy lại J-01 — vô hại; D2 đếm
+    `CLIP_FAILED`); danh sách ở `missing_clips`, nâng cấp lại trả `MISSING`."""
+    return int(
+        bind.execute(sa.text("UPDATE clip SET status = 'FAILED' WHERE status = 'MISSING'")).rowcount or 0
+    )
 
 
 def _prepare_phase2(bind: sa.Connection) -> None:
@@ -968,6 +1377,7 @@ def upgrade() -> None:
     _add_columns()
     _add_checks()
     stats = _backfill(bind)
+    stats.update(_backfill_prior_sessions(bind))
     restored = _restore_phase3(bind)
     _create_indexes()
     stats["seconds"] = round(time.monotonic() - started, 1)
@@ -988,7 +1398,14 @@ def downgrade() -> None:
     bind = op.get_bind()
     op.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
     _guard_active_shares(bind)
+    _guard_foreign_orders(bind)
     _archive_phase3(bind)
+    detached = _detach_foreign_packages(bind)
+    days = _keep_days(bind)
+    held_clips, held_snaps = _hold_removed_evidence(bind, days)
+    _check_subset(bind, held_clips, held_snaps, days)
+    missing = _missing_to_phase2(bind)
+    log.info("0006 downgrade: tách %s kiện của đơn ngoài, %s clip MISSING → FAILED", detached, missing)
     _prepare_phase2(bind)
     op.drop_index("ix_status_history_to_status_at", table_name="status_history")
     op.drop_index(op.f("ix_shop_platform_grant_ref"), table_name="shop")

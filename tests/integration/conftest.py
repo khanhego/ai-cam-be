@@ -33,6 +33,7 @@ async def _reset_schema(url: str) -> None:
     try:
         async with engine.connect() as conn:
             await conn.execute(text("DROP SCHEMA IF EXISTS phase2_archive CASCADE"))
+            await conn.execute(text("DROP SCHEMA IF EXISTS phase3_archive CASCADE"))  # 0006 downgrade (T-202)
             await conn.execute(text("DROP SCHEMA public CASCADE"))
             await conn.execute(text("CREATE SCHEMA public"))
     finally:
