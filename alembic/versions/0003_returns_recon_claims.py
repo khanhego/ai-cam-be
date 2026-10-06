@@ -775,10 +775,19 @@ def _guard_no_active_return_session(bind: sa.Connection) -> None:
         "SELECT count(*) FROM clip c JOIN session s ON s.id = c.session_id "
         "WHERE s.type = 'RETURN' AND c.status IN ('PENDING', 'FAILED')",
     )
-    if uncut and os.environ.get(ALLOW_UNCUT_ENV) != "1":
+    # Phiên RETURN đã kết thúc mà J-01 chưa tạo dòng clip nào (J-01 tạo dòng mọi vai trong một transaction trước khi cắt):
+    # job còn trong hàng đợi / chờ settle → worker cũ bỏ qua nó sau downgrade, mất clip (G5 BUG-G5-P2-2).
+    unbuilt = _scalar(
+        bind,
+        "SELECT count(*) FROM session s WHERE s.type = 'RETURN' AND s.ended_at IS NOT NULL "
+        "AND s.status IN ('COMPLETED', 'CANCELLED', 'ABANDONED', 'SUPERSEDED') "
+        "AND NOT EXISTS (SELECT 1 FROM clip c WHERE c.session_id = s.id)",
+    )
+    if (uncut or unbuilt) and os.environ.get(ALLOW_UNCUT_ENV) != "1":
         raise RuntimeError(
-            f"Không downgrade 0003: {uncut} clip phiên nhận hàng hoàn chưa cắt được (PENDING / FAILED) — code cũ "
-            "không giữ video thô cho chúng. Bấm Thử lại (API-46) và chờ READY rồi chạy lại; chấp nhận mất thì đặt "
+            f"Không downgrade 0003: {uncut} clip phiên nhận hàng hoàn chưa cắt được (PENDING / FAILED), {unbuilt} "
+            "phiên đã kết thúc chưa được tạo clip (J-01 còn trong hàng đợi) — code cũ không giữ video thô cho chúng. "
+            "Chạy worker tới khi hàng đợi `video` rỗng, bấm Thử lại (API-46) và chờ READY rồi chạy lại; chấp nhận mất thì đặt "
             f"{ALLOW_UNCUT_ENV}=1. Không có gì bị thay đổi. Xem docs/ops.md mục Rollback Phase 2."
         )
 

@@ -153,7 +153,8 @@ nâng cấp ngoài giờ đóng gói; 0005 ~1,3 giây (index tạo không `CONCU
 "Giữ" của clip đã chuyển thành hồ sơ `LEGACY_HOLD`; J-02 của image Phase 1 (02:00 giờ VN) nếu còn chạy chỉ biết cờ
 này → xóa đúng các clip bằng chứng đó. 0004 tự từ chối khi còn kết nối khác vào DB và có clip đang giữ (log
 `0004: còn N kết nối khác…`); từ Phase 2, api / worker / beat / vision so phiên bản schema với image lúc khởi động
-và **thoát** (log `schema_version_mismatch`, mã 78) nếu lệch, J-02 kiểm lại ngay trước khi xóa.
+và **thoát** (log `schema_version_mismatch`; worker / beat / vision mã 78, api mã 3 vì uvicorn bọc lỗi lifespan
+thành `Application startup failed` — đo ở G5) nếu lệch, J-02 kiểm lại ngay trước khi xóa.
 
 ```sh
 dc exec backup /bin/sh /pg-backup.sh once                  # 1. sao lưu DB + snapshot volume video (NAS / RAID)
@@ -167,6 +168,10 @@ dc exec postgres psql -U aicam -d aicam -c 'VACUUM ANALYZE package'   # 6. dọn
 dc up -d                                                   # 7. mọi service image mới
 dc ps                                                      # 8. api healthy; worker, worker-sync, worker-export, beat, vision Up
 ```
+
+Mạng compose của bản Phase 1 chưa có `ip_range` (thêm ở G5 item 02 — giữ `CADDY_IP` không bị container khác chiếm):
+bước 7 lần đầu báo lỗi tạo lại mạng ("has active endpoints") → thay bước 7 bằng `dc down` (**không** `-v`, giữ
+volume) rồi `dc up -d`.
 
 1. Sàn giữ clip: `RETENTION_CLIP_MIN_DAYS` (mặc định 60, đặt trong `docker/.env`). 0003 nâng `retention_clip_days`
    dưới sàn lên sàn + audit `RETENTION_RAISED_TO_MINIMUM`.
@@ -199,7 +204,10 @@ dc exec backup /bin/sh /pg-backup.sh once                  # 1. sao lưu (bắt 
 # 2. Hoàn tất / hủy mọi phiên nhận hàng hoàn đang mở ở station (downgrade từ chối nếu còn — không đổi gì).
 #    Phiên hoàn có clip "Không cắt được" / đang cắt: bấm Thử lại (API-46), chờ READY — downgrade TỪ CHỐI nếu còn
 #    (image cũ không giữ video thô cho chúng); chấp nhận mất: AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS=1 (dc run -e).
-dc stop api vision worker worker-sync worker-export beat   # 3. dừng dịch vụ (không để job ghi giữa chừng)
+dc stop api vision worker-sync worker-export beat          # 3a. dừng nhận việc mới; worker còn chạy để cắt clip
+dc exec redis redis-cli llen video                         # 3b. chờ tới khi in 0 (J-01 phiên vừa đóng đã chạy xong —
+#    downgrade TỪ CHỐI nếu còn phiên hoàn đã kết thúc chưa có clip, BUG-G5-P2-2)
+dc stop worker                                             # 3c. dừng worker
 dc run --rm migrate alembic downgrade 0002                 # 4. bằng IMAGE MỚI (0005, 0004 rồi 0003, một transaction)
 dc run --rm migrate alembic current                        #    phải in 0002
 # 5. Log bước 4: "0004 downgrade: đặt held cho N clip…", "0003 downgrade: chép sang phase2_archive {…số dòng…}"
@@ -260,6 +268,7 @@ Log Docker giới hạn 20 MB × 5 file / service. Khung **Sức khỏe hệ th�
 | Live view không lên hình (ICE `failed`) | `LAN_IP` đúng IP server? 8189/udp mở? | Sửa `LAN_IP` → `dc up -d mediamtx`; mở tường lửa |
 | Đăng nhập báo "Thử lại sau ít phút" cho mọi người | 30 lần sai / 5 phút theo IP | Chờ 5 phút. Nếu mọi máy bị chung một IP → kiểm `FORWARDED_ALLOW_IPS` = `CADDY_IP` (mục 11) |
 | `api` không khởi động: "cần đặt secret thật" | `dc logs api` | Điền secret thật trong `docker/.env` |
+| `caddy` đứng ở `Created`, `dc up` báo "Address already in use" | `docker network inspect <dự án>_aicam` — container khác đang giữ `CADDY_IP` | Mạng tạo từ bản compose chưa có `ip_range` (trước G5 item 02): `dc down` (**không** `-v`) rồi `dc up -d` để tạo lại mạng với `AICAM_IP_RANGE`. Gấp: `dc restart <container đang giữ IP>` rồi `dc up -d caddy` |
 
 ## 11. Checklist bảo mật trước khi đưa vào dùng (DEC-53)
 

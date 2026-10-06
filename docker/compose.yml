@@ -252,6 +252,10 @@ networks:
     ipam:
       config:
         - subnet: ${AICAM_SUBNET:-172.30.10.0/24}
+          # IP cấp động chỉ lấy từ nửa trên của dải (G5 item 02): IP tĩnh CADDY_IP (.10) nằm ngoài dải này nên
+          # container khác không chiếm được khi caddy được tạo lại sau (lỗi "Address already in use" → caddy không
+          # lên). Đổi AICAM_SUBNET thì đổi AICAM_IP_RANGE cùng dải, CADDY_IP ngoài AICAM_IP_RANGE.
+          ip_range: ${AICAM_IP_RANGE:-172.30.10.128/25}
 
 # Video: đặt Docker data-root trên ổ dữ liệu lớn, hoặc gắn volume `video` vào NAS / RAID bằng compose.override.yml
 # (docs/ops.md §2). Xóa volume = mất bằng chứng — không chạy `down -v` ở production.

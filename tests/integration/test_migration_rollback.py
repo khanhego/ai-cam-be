@@ -207,7 +207,11 @@ def seed_phase2() -> None:
             f"return_case_id, operator_name{extra_cols}) VALUES ('{sid}', 'RETURN', '{pkg}', '{ST1}', '{status}', "
             f"now() - interval '1 day 5 minutes', now() - interval '1 day', 'SPXRTRB', '{case}', 'Lan'{extra_vals})"
         )
-    for sid in (R1, R2):
+    for sid in (
+        R1,
+        R2,
+        R3,
+    ):  # J-01 cắt cả phiên hủy (BUG-G5-P2-2: phiên kết thúc không có clip → downgrade từ chối)
         stmts.append(
             "INSERT INTO clip (id, session_id, camera_role, status, start_at, end_at, path, sha256) VALUES "
             f"('{_clip_id(sid, 'CAM1')}', '{sid}', 'CAM1', 'READY', now() - interval '1 day 5 minutes', "
@@ -351,7 +355,7 @@ def test_round_trip_with_phase2_data(mig_db: None) -> None:
     assert counts == {
         "return_case": 3, "return_case_package": 3, "inspection_line": 1, "snapshot": 4, "claim": 2,
         "claim_evidence": 4, "claim_note": 2, "evidence_pack": 1, "recon_alert": 3, "return_session": 3,
-        "return_session_event": 1, "return_clip": 2, "return_approval_request": 1, "return_export": 1,
+        "return_session_event": 1, "return_clip": 3, "return_approval_request": 1, "return_export": 1,
         "placeholder_package": 1, "return_status_history": 5, "session_cols": 1, "station_cols": 1,
         "setting_cols": 1, "shop_cols": 1, "legacy_claims": 1, "legacy_claim_evidence": 1,
         "legacy_claim_notes": 2, "legacy_evidence_packs": 1, "legacy_alert_claims": 1,
@@ -511,6 +515,27 @@ def test_downgrade_refuses_uncut_return_clip(mig_db: None, monkeypatch: pytest.M
     monkeypatch.setenv("AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS", "1")
     command.downgrade(cfg, "0002")
     assert run("SELECT status FROM phase2_archive.return_clip WHERE status = 'FAILED'") == [("FAILED",)]
+
+
+def test_downgrade_refuses_return_session_without_clip_rows(
+    mig_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """BUG-G5-P2-2: phiên RETURN đã đóng nhưng J-01 còn trong hàng đợi (chưa có dòng clip) → từ chối như clip chưa
+    cắt (worker cũ sẽ bỏ qua job → mất clip); env cho phép."""
+    cfg = alembic_config()
+    seed_phase1()
+    command.upgrade(cfg, "head")
+    seed_phase2()
+    run(
+        f"DELETE FROM clip WHERE session_id = (SELECT session_id FROM clip WHERE id = '{_clip_id(R2, 'CAM1')}')"
+    )
+    before = dump()
+    with pytest.raises(RuntimeError, match="1 phiên đã kết thúc chưa được tạo clip"):
+        command.downgrade(cfg, "0002")
+    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+    assert dump() == before
+    monkeypatch.setenv("AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS", "1")
+    command.downgrade(cfg, "0002")
 
 
 def test_downgrade_holds_in_system_name_and_reports_deleted_evidence(mig_db: None) -> None:
