@@ -55,6 +55,10 @@ class Claim(UUIDPk, Base):
         Index(None, "status", "deadline_at"),
         Index(None, "owner_user_id", "status"),
         Index(None, "package_id"),
+        # 0006: báo cáo API-151 (BR-41).
+        Index(None, "created_at"),
+        Index(None, "submitted_at"),
+        Index(None, "result_at"),
         CheckConstraint("recovered_amount >= 0", name="recovered_amount_non_negative"),
         enum_check("type", CLAIM_TYPES),
         enum_check("counterparty", COUNTERPARTIES),
@@ -84,6 +88,9 @@ class Claim(UUIDPk, Base):
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow, server_default=func.now())
     closed_at: Mapped[datetime | None]
     version: Mapped[int] = mapped_column(default=1, server_default="1")
+    # 0006 (BR-41, DEC-461): lần đầu sang `SUBMITTED`; lần cuối sang `WON` / `LOST`.
+    submitted_at: Mapped[datetime | None]
+    result_at: Mapped[datetime | None]
 
 
 class ClaimEvidence(UUIDPk, Base):
@@ -96,6 +103,13 @@ class ClaimEvidence(UUIDPk, Base):
         CheckConstraint("(kind = 'SESSION') = (session_id IS NOT NULL)", name="session_matches_kind"),
         CheckConstraint("(kind = 'SNAPSHOT') = (snapshot_id IS NOT NULL)", name="snapshot_matches_kind"),
         enum_check("kind", EVIDENCE_KINDS),
+        # 0006 (BR-38, DEC-449): bỏ mềm — lý do bắt buộc khi bỏ.
+        CheckConstraint("(removed_at IS NULL) = (removed_reason IS NULL)", name="removed_reason_matches"),
+        Index(
+            "ix_claim_evidence_removed_at",
+            "removed_at",
+            postgresql_where=text("removed_at IS NOT NULL"),
+        ),
     )
 
     claim_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("claim.id", ondelete="CASCADE"))
@@ -105,6 +119,12 @@ class ClaimEvidence(UUIDPk, Base):
     auto: Mapped[bool] = mapped_column(default=False, server_default="false")
     added_by: Mapped[uuid.UUID | None]
     added_at: Mapped[datetime] = mapped_column(default=utcnow)
+    # 0006 (BR-38): bỏ khỏi hồ sơ nhưng giữ dòng — bảo vệ clip / ảnh thêm `removed_at + số ngày giữ`.
+    removed_at: Mapped[datetime | None]
+    removed_by: Mapped[uuid.UUID | None]
+    removed_reason: Mapped[str | None] = mapped_column(Text)
+    # Dòng do backfill 0006 bước 4b thêm (BR-39 phiên trước — DEC-498).
+    backfilled: Mapped[bool] = mapped_column(default=False, server_default="false")
 
 
 class ClaimNote(UUIDPk, Base):

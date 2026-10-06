@@ -8,7 +8,19 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from aicam.core.db import Base, UUIDPk, enum_check, utcnow
 
-PLATFORMS = ("SHOPEE",)
+PLATFORMS = ("SHOPEE", "TIKTOK")  # 0006 (ADR-011)
+# Nhóm trạng thái đơn chung mọi sàn (02 §5.2, BR-30) — lõi chỉ đọc nhóm;
+# ánh xạ chữ sàn ở `platforms/<sàn>/mapping`.
+ORDER_STATUS_GROUPS = (
+    "UNPAID",
+    "AWAITING_SHIPMENT",
+    "SHIPPED",
+    "DELIVERED",
+    "CANCEL_REQUESTED",
+    "CANCELLED",
+    "RETURNING",
+    "UNKNOWN",
+)
 AUTH_STATUSES = ("CONNECTED", "EXPIRED", "DISCONNECTED")
 ORDER_SOURCES = ("API", "CSV")
 # 02 §5 (MISMATCH là trạng thái phiên, không phải kiện — DEC-24).
@@ -35,6 +47,7 @@ class Shop(UUIDPk, Base):
     __tablename__ = "shop"
     __table_args__ = (
         UniqueConstraint("platform", "platform_shop_id"),
+        Index(None, "platform", "grant_ref"),
         enum_check("platform", PLATFORMS),
         enum_check("auth_status", AUTH_STATUSES),
     )
@@ -51,16 +64,37 @@ class Shop(UUIDPk, Base):
     last_error: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     last_return_cursor: Mapped[datetime | None]  # J-13 (0003)
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
+    # 0006 (02a §3): nhiều shop cùng một ủy quyền (TikTok `open_id`; Shopee = `platform_shop_id`) — DEC-433.
+    grant_ref: Mapped[str | None] = mapped_column(Text)
+    # TikTok: tham số `shop_cipher` của API cấp shop, vùng. Không trả API.
+    shop_cipher: Mapped[str | None] = mapped_column(Text)
+    region: Mapped[str | None] = mapped_column(Text)
+    # [{code, message, at, tracking_number?}] ≤ 20, mới nhất trước (service cắt).
+    sync_warnings: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )
+    error_since: Mapped[datetime | None]  # N06 (DEC-467)
+    disconnected_at: Mapped[datetime | None]
+    disconnected_by: Mapped[uuid.UUID | None]
 
 
 class Order(UUIDPk, Base):
     __tablename__ = "order"
-    __table_args__ = (enum_check("source", ORDER_SOURCES),)
+    __table_args__ = (
+        enum_check("source", ORDER_SOURCES),
+        enum_check("platform_status_group", ORDER_STATUS_GROUPS),
+        Index(None, "platform_status_group"),
+        Index(None, "shop_id"),
+        # Tra theo mã khi unique không còn toàn cục (0007) — 0006 tạo trước.
+        Index("ix_order_platform_order_sn", "platform_order_sn"),
+    )
 
     shop_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("shop.id", ondelete="SET NULL"))
     # MVP một shop: mã đơn duy nhất toàn cục (DEC-12).
     platform_order_sn: Mapped[str] = mapped_column(Text, unique=True)
     platform_status: Mapped[str | None] = mapped_column(Text)
+    # 0006 (BR-30): ghi cùng `platform_status`, chỉ qua `orders.set_platform_status` (DEC-508).
+    platform_status_group: Mapped[str] = mapped_column(Text, default="UNKNOWN", server_default="UNKNOWN")
     buyer_note: Mapped[str | None] = mapped_column(Text)
     source: Mapped[str] = mapped_column(Text, default="API", server_default="API")
     csv_import_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("csv_import.id", ondelete="SET NULL"))
@@ -105,9 +139,27 @@ class Package(UUIDPk, Base):
     is_placeholder: Mapped[bool] = mapped_column(default=False, server_default="false")
 
 
+class PackageOrder(Base):
+    """Kiện gộp (FR-05.22): đơn **thêm** cùng mã vận đơn; đơn chính vẫn là `package.order_id` (0006)."""
+
+    __tablename__ = "package_order"
+    __table_args__ = (Index(None, "order_id"),)
+
+    package_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("package.id", ondelete="CASCADE"), primary_key=True
+    )
+    order_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("order.id", ondelete="CASCADE"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=func.now())
+
+
 class StatusHistory(UUIDPk, Base):
     __tablename__ = "status_history"
-    __table_args__ = (Index(None, "package_id", "at"), enum_check("source", HISTORY_SOURCES))
+    __table_args__ = (
+        Index(None, "package_id", "at"),
+        # Báo cáo "kiện chuyển trạng thái trong kỳ" (0006, API-150..152).
+        Index("ix_status_history_to_status_at", "to_status", "at"),
+        enum_check("source", HISTORY_SOURCES),
+    )
 
     package_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("package.id", ondelete="CASCADE"))
     source: Mapped[str] = mapped_column(Text)

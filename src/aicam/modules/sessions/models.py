@@ -39,6 +39,10 @@ SESSION_FLAGS = (
 # Kết luận phiên hoàn / tình trạng dòng (02 §5.2).
 INSPECTION_CONCLUSIONS = ("OK", "DAMAGED", "MISSING_ITEM", "WRONG_ITEM", "EMPTY_BOX", "OTHER")
 INSPECTION_LINES_MODES = ("FULL", "REFERENCE")
+# 0006 (DEC-521): mã lý do Supervisor chọn khi hủy phiên RETURN qua API-21 (`cancel_reason` giữ `SUPERVISOR`).
+CANCEL_CAUSES = ("WRONG_SCAN", "NOT_A_RETURN", "OTHER")
+# 0006 (DEC-515): mã đánh dấu quét nhầm qua API-189.
+WRONG_SCAN_CODES = ("WRONG_SCAN", "NOT_A_RETURN")
 
 _ACTIVE_SQL = "status IN ('OPEN', 'MISMATCH', 'WAITING_APPROVAL')"
 
@@ -62,6 +66,18 @@ class PackSession(UUIDPk, Base):
         enum_check("inspection_conclusion", INSPECTION_CONCLUSIONS),
         enum_check("inspection_lines_mode", INSPECTION_LINES_MODES),
         CheckConstraint("type = 'RETURN' OR return_case_id IS NULL", name="return_case_only_return"),
+        # 0006
+        enum_check("cancel_cause", CANCEL_CAUSES),
+        enum_check("wrong_scan_code", WRONG_SCAN_CODES),
+        CheckConstraint(
+            "(wrong_scan_at IS NULL) = (wrong_scan_code IS NULL)", name="wrong_scan_matches_code"
+        ),
+        Index(
+            "ix_session_wrong_scan_package_id",
+            "package_id",
+            postgresql_where=text("wrong_scan_at IS NOT NULL"),
+        ),
+        Index("ix_session_type_status_ended", "type", "status", "ended_at"),
     )
 
     type: Mapped[str] = mapped_column(Text, default="PACK", server_default="PACK")
@@ -98,6 +114,16 @@ class PackSession(UUIDPk, Base):
     inspection_corrections: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
     # Độ lệch giờ camera chụp lúc đóng phiên (PACK + RETURN) cho `info.json` (DEC-261).
     camera_clock: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    # 0006 — BR-39 (DEC-515, 516, 521, 529): mã lý do Supervisor hủy; đánh dấu quét nhầm;
+    # xác nhận phiên hoàn thật.
+    cancel_cause: Mapped[str | None] = mapped_column(Text)
+    wrong_scan_at: Mapped[datetime | None]
+    wrong_scan_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user.id", ondelete="SET NULL"))
+    wrong_scan_code: Mapped[str | None] = mapped_column(Text)
+    wrong_scan_note: Mapped[str | None] = mapped_column(Text)
+    review_confirmed_at: Mapped[datetime | None]
+    review_confirmed_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("user.id", ondelete="SET NULL"))
+    review_confirmed_note: Mapped[str | None] = mapped_column(Text)
 
 
 class SessionEvent(UUIDPk, Base):

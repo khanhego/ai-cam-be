@@ -10,11 +10,12 @@ from sqlalchemy.orm import Mapped, mapped_column
 from aicam.core.db import Base, UUIDPk, enum_check, utcnow
 
 CAMERA_ROLES = ("CAM1", "CAM2")
-CLIP_STATUSES = ("PENDING", "READY", "FAILED", "DELETED")
+# `MISSING` (0006): DB có dòng nhưng máy chủ không có tệp (EX-K8, EX-K9 — DEC-520, 524).
+CLIP_STATUSES = ("PENDING", "READY", "FAILED", "DELETED", "MISSING")
 EXPORT_LAYOUTS = ("CAM1", "CAM2", "SIDE_BY_SIDE")
 EXPORT_STATUSES = ("QUEUED", "RUNNING", "READY", "FAILED")
 SNAPSHOT_KINDS = ("MANUAL", "PACK_CLOSE")
-SNAPSHOT_STATUSES = ("READY", "DELETED")
+SNAPSHOT_STATUSES = ("READY", "DELETED", "MISSING")
 
 
 class VideoSegment(UUIDPk, Base):

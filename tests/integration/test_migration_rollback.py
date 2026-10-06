@@ -21,6 +21,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from aicam.core.schema_guard import SCHEMA_HEAD
 from aicam.core.settings import get_settings
 
 from .conftest import ROOT, TEST_DATABASE_URL, _ensure_database, _reset_schema, alembic_config
@@ -177,6 +178,8 @@ def seed_phase2() -> None:
         f"('{PT}', 'TAM-' || lpad(nextval('placeholder_code_seq')::text, 6, '0'), 'RETURN_RECEIVED_OK', false, true)",
         "INSERT INTO return_case_package (return_case_id, package_id) VALUES "
         f"('{RC1}', '{P[1]}'), ('{RC2}', '{P[2]}'), ('{RC3}', '{PT}')",
+        # Ở head (Phase 3) hồ sơ gắn shop của đơn (0006 backfill bản lùi / lên lại cùng giá trị).
+        'UPDATE return_case rc SET shop_id = o.shop_id FROM "order" o WHERE o.id = rc.order_id',
         f"UPDATE package SET warehouse_status = 'RETURN_RECEIVED_ISSUE' WHERE id = '{P[1]}'",
         f"UPDATE package SET warehouse_status = 'RETURN_EXPECTED' WHERE id = '{P[2]}'",
     ]
@@ -240,6 +243,8 @@ def seed_phase2() -> None:
         f"'DAMAGED', 'PLATFORM', 'NEW', 'AUTO_RETURN', '{U2}', now() + interval '5 days', 'DEFAULT', NULL)",
         "INSERT INTO claim (id, package_id, type, counterparty, status, source, created_by, platform_claim_ref) "
         f"VALUES ('{C2}', '{P[3]}', 'BUYER_CLAIM', 'PLATFORM', 'SUBMITTED', 'MANUAL', '{U2}', 'SHP-123')",
+        # Ở head (Phase 3) code đặt `submitted_at` khi gửi; 0006 backfill bản lùi / lên lại cùng giá trị (DEC-461).
+        f"UPDATE claim SET submitted_at = updated_at WHERE id = '{C2}'",
         "INSERT INTO claim_evidence (id, claim_id, kind, session_id, snapshot_id, auto, added_by, added_at) VALUES "
         f"('{i(0xA101)}', '{C1}', 'SESSION', '{R1}', NULL, true, NULL, now()), "
         f"('{i(0xA102)}', '{C1}', 'SESSION', '{S[1]}', NULL, true, NULL, now()), "
@@ -429,14 +434,14 @@ def test_downgrade_refused_with_open_return_session(mig_db: None) -> None:
     with pytest.raises(RuntimeError, match="1 phiên nhận hàng hoàn đang mở"):
         command.downgrade(cfg, "0002")
 
-    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+    assert run("SELECT version_num FROM alembic_version") == [(SCHEMA_HEAD,)]
     assert dump() == before
     assert run("SELECT to_regnamespace('phase2_archive')") == [(None,)]
 
 
 def test_old_image_refuses_new_database(mig_db: None, tmp_path: Path) -> None:
     """TC-MG.06 (mô phỏng): image Phase 1 chỉ có 0001 / 0002 → `alembic upgrade head` của service `migrate` lỗi
-    revision lạ trên DB head (0005) → `api` (depends_on migrate completed_successfully) không khởi động."""
+    revision lạ trên DB head (`SCHEMA_HEAD`) → `api` (depends_on migrate completed_successfully) không khởi động."""
     command.upgrade(alembic_config(), "head")
     scripts = tmp_path / "alembic"
     (scripts / "versions").mkdir(parents=True)
@@ -447,9 +452,9 @@ def test_old_image_refuses_new_database(mig_db: None, tmp_path: Path) -> None:
     old = alembic_config()
     old.set_main_option("script_location", str(scripts))
 
-    with pytest.raises(CommandError, match="0005"):
+    with pytest.raises(CommandError, match=SCHEMA_HEAD):
         command.upgrade(old, "head")
-    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+    assert run("SELECT version_num FROM alembic_version") == [(SCHEMA_HEAD,)]
 
 
 # ---------------------------------------------------------------- G3 Phase 2 (M-F1, M-F4, M-F5, M-F7, M-F9)
@@ -497,7 +502,7 @@ def test_upgrade_0004_refuses_with_other_connections(mig_db: None, monkeypatch: 
     monkeypatch.setenv("AICAM_MIGRATE_ALLOW_ACTIVE_CONNECTIONS", "1")
     with _OtherConnection("psql"):
         command.upgrade(cfg, "head")
-    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+    assert run("SELECT version_num FROM alembic_version") == [(SCHEMA_HEAD,)]
 
 
 def test_downgrade_refuses_uncut_return_clip(mig_db: None, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -510,7 +515,7 @@ def test_downgrade_refuses_uncut_return_clip(mig_db: None, monkeypatch: pytest.M
     before = dump()
     with pytest.raises(RuntimeError, match="1 clip phiên nhận hàng hoàn chưa cắt được"):
         command.downgrade(cfg, "0002")
-    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+    assert run("SELECT version_num FROM alembic_version") == [(SCHEMA_HEAD,)]
     assert dump() == before
     monkeypatch.setenv("AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS", "1")
     command.downgrade(cfg, "0002")
@@ -532,7 +537,7 @@ def test_downgrade_refuses_return_session_without_clip_rows(
     before = dump()
     with pytest.raises(RuntimeError, match="1 phiên đã kết thúc chưa được tạo clip"):
         command.downgrade(cfg, "0002")
-    assert run("SELECT version_num FROM alembic_version") == [("0005",)]
+    assert run("SELECT version_num FROM alembic_version") == [(SCHEMA_HEAD,)]
     assert dump() == before
     monkeypatch.setenv("AICAM_DOWNGRADE_ALLOW_UNCUT_RETURN_CLIPS", "1")
     command.downgrade(cfg, "0002")

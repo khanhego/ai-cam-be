@@ -230,6 +230,23 @@ mới không trùng mã cũ. Kiểm log migrate: `0003: khôi phục từ phase2
 bị xóa…` + audit `EVIDENCE_CLIP_DELETED_DURING_ROLLBACK` (báo CSKH). Mã `TAM-` bị kiện khác dùng trong lúc chạy
 Phase 1 → 0003 dừng với danh sách mã (đổi mã kiện kia rồi chạy lại).
 
+### 7.2 Phase 3 (TikTok Shop, báo cáo, sao lưu cloud, link chia sẻ, thông báo): nâng cấp và lùi về Phase 2
+
+> Đang soạn theo từng task của item 03 — runbook đủ bước (dừng `worker-sync-long worker-backup worker-notify`,
+> `aicam fix-cancel-requests`, lùi có cờ) hoàn thiện ở T-230.
+
+Phase 3 thêm 2 migration: **0006** (9 bảng mới, cột mới, CHECK mở rộng `TIKTOK` / `MISSING`, backfill nhóm trạng thái
+đơn / yêu cầu trả theo bảng Shopee, `return_case.shop_id`, `shop.grant_ref`, `claim.submitted_at` / `result_at` từ
+audit, index báo cáo) và **0007** (mã đơn / mã yêu cầu trả unique theo shop). Cả hai là một transaction, như 7.1:
+**dừng mọi service ứng dụng trước khi migrate**.
+
+Thời gian đo trên máy dev (Docker Desktop, không phải server kho — T-201,
+`RUN_PERF=1 uv run pytest -m perf tests/integration/test_perf_migration_0006.py -s`): 1 triệu đơn + 1 triệu kiện /
+phiên đóng gói / dòng lịch sử, 20.000 hồ sơ hàng hoàn, 5.000 hồ sơ khiếu nại → `alembic upgrade` 0005 → 0006
+**~20 giây** (khóa các bảng bị sửa suốt thời gian đó). Log migrate in `0006: backfill {…}` (số dòng từng phần) và
+cảnh báo `0006: đơn có trạng thái sàn chưa ánh xạ → nhóm UNKNOWN` kèm 20 chữ trạng thái nhiều nhất nếu có. Sau
+nâng cấp: `VACUUM ANALYZE "order"` (cập nhật cột nhóm trạng thái).
+
 ## 8. Xem log, giám sát
 
 ```sh

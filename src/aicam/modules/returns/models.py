@@ -24,6 +24,8 @@ RETURN_CASE_STATUSES = (
 # Hồ sơ "mở": mỗi đơn tối đa một (DEC-248, partial unique).
 OPEN_CASE_STATUSES = ("EXPECTED", "INSPECTING", "PARTIALLY_RECEIVED", "MISSING")
 RETURN_SOURCES = ("PLATFORM", "WAREHOUSE")
+# Nhóm trạng thái yêu cầu trả chung mọi sàn (02 §5.2, BR-31) — 0006.
+RETURN_STATUS_GROUPS = ("REQUESTED", "ACCEPTED", "CANCELLED", "DONE", "CLOSED")
 
 _OPEN_SQL = "status IN ('EXPECTED', 'INSPECTING', 'PARTIALLY_RECEIVED', 'MISSING')"
 
@@ -51,6 +53,11 @@ class ReturnCase(UUIDPk, Base):
         enum_check("kind", RETURN_KINDS),
         enum_check("status", RETURN_CASE_STATUSES),
         enum_check("source", RETURN_SOURCES),
+        # 0006
+        enum_check("platform_status_group", RETURN_STATUS_GROUPS),
+        Index(None, "shop_id"),
+        Index(None, "created_at"),
+        Index(None, "received_at"),
     )
 
     code: Mapped[str] = mapped_column(Text, server_default=text(RETURN_CASE_CODE_DEFAULT))
@@ -86,6 +93,9 @@ class ReturnCase(UUIDPk, Base):
     pending_merge_order_id: Mapped[uuid.UUID | None]
     # Chốt lúc mở phiên đầu (R3-10).
     single_session: Mapped[bool | None]
+    # 0006: shop của yêu cầu trả (unique theo shop ở 0007); backfill từ `order.shop_id`.
+    shop_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("shop.id", ondelete="SET NULL"))
+    platform_status_group: Mapped[str | None] = mapped_column(Text)
 
 
 class ReturnCasePackage(Base):

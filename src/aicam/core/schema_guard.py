@@ -21,7 +21,7 @@ from aicam.core.settings import Settings
 
 # Head Alembic đóng gói trong image — cập nhật cùng migration mới (tests/unit/test_schema_guard.py so với
 # thư mục `alembic/versions`).
-SCHEMA_HEAD = "0005"
+SCHEMA_HEAD = "0006"
 EXIT_CODE = 78  # EX_CONFIG
 
 log = structlog.get_logger()
