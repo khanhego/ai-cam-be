@@ -13,12 +13,12 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 import respx
-from structlog.testing import capture_logs
 
 from aicam.core import clock
 from aicam.core.logging import install_stdlib_redaction, redact_query
 from aicam.modules.platforms import budget
 from aicam.modules.platforms.base import PlatformAuthError, PlatformError, ShopCredentials
+from aicam.modules.platforms.tiktok import client as tiktok_client
 from aicam.modules.platforms.tiktok.adapter import TikTokAdapter
 from aicam.modules.platforms.tiktok.client import TikTokClient, TikTokRequestError, expires_at, sign
 
@@ -26,6 +26,27 @@ API = "https://open-api.tiktok.test"
 AUTH = "https://auth.tiktok.test"
 NOW = datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)  # epoch 1700000000
 SECRET = "tst_secret_123"
+
+
+class _Logs:
+    """Bản ghi log structlog của client (logger đã cache sau lần dùng đầu — `capture_logs` không bắt được khi
+    cả bộ test chạy chung tiến trình): ghi nguyên kwargs trước mọi processor (kiểm che chặt hơn)."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    def __getattr__(self, level: str) -> Any:
+        def _log(event: str, **kw: Any) -> None:
+            self.events.append({"event": event, "level": level, **kw})
+
+        return _log
+
+
+@pytest.fixture
+def logs(monkeypatch: pytest.MonkeyPatch) -> _Logs:
+    rec = _Logs()
+    monkeypatch.setattr(tiktok_client, "log", rec)
+    return rec
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +116,7 @@ async def test_call_signs_query_and_sends_token_header() -> None:
 
 
 @respx.mock
-async def test_retry_on_429_uses_retry_after_then_succeeds() -> None:
+async def test_retry_on_429_uses_retry_after_then_succeeds(logs: _Logs) -> None:
     """AC-43: quá tần suất → thử lại giãn cách theo `Retry-After`; mỗi lần gọi có log `tiktok_call`."""
     slept: list[float] = []
     respx.get(f"{API}/x").mock(
@@ -105,10 +126,9 @@ async def test_retry_on_429_uses_retry_after_then_succeeds() -> None:
             ok({"v": 1}),
         ]
     )
-    with capture_logs() as logs:
-        assert await _client(slept=slept).call("GET", "/x") == {"v": 1}
+    assert await _client(slept=slept).call("GET", "/x") == {"v": 1}
     assert slept == [3.0, 1.0]  # Retry-After, rồi giãn cách mũ (0,5 × 2¹)
-    calls = [e for e in logs if e["event"] == "tiktok_call"]
+    calls = [e for e in logs.events if e["event"] == "tiktok_call"]
     assert [(e["attempt"], e.get("http_status"), e.get("code")) for e in calls] == [
         (1, 429, 36009004), (2, 200, 36009003), (3, 200, 0),
     ]  # fmt: skip
@@ -244,7 +264,7 @@ def test_expires_at_epoch_or_seconds() -> None:
 
 
 @respx.mock
-async def test_logs_hide_token_sign_and_app_secret(caplog: pytest.LogCaptureFixture) -> None:
+async def test_logs_hide_token_sign_and_app_secret(caplog: pytest.LogCaptureFixture, logs: _Logs) -> None:
     """Log client không có query / header; kể cả khi bật INFO cho httpx, `sign`, `app_secret`, `auth_code`,
     `refresh_token` trong URL bị che."""
     # alembic `env.py` (`fileConfig`) tắt logger đã có khi test migration chạy trước trong cùng tiến trình
@@ -257,11 +277,11 @@ async def test_logs_hide_token_sign_and_app_secret(caplog: pytest.LogCaptureFixt
     respx.get(f"{API}/authorization/202309/shops").mock(return_value=ok({"shops": [{"id": "1"}]}))
     adapter = TikTokAdapter(_client(), authorize_url="a", service_id="9")
     try:
-        with capture_logs() as logs:
-            await adapter.exchange_code("AUTH-CODE-SECRET", None)
+        await adapter.exchange_code("AUTH-CODE-SECRET", None)
     finally:
         logging.getLogger("httpx").setLevel(logging.WARNING)
-    text = caplog.text + json.dumps(logs, default=str)
+    assert [e["path"] for e in logs.events] == ["/api/v2/token/get", "/authorization/202309/shops"]
+    text = caplog.text + json.dumps(logs.events, default=str)
     for secret in (SECRET, "AUTH-CODE-SECRET", "TTP_acc", "sign="):
         assert secret not in text, secret
     assert "HTTP Request" in caplog.text
