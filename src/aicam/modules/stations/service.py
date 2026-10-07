@@ -364,8 +364,9 @@ async def apply_camera_health(session: AsyncSession, path: str, status: str) -> 
     if camera is None or camera.status == status:
         return None
     camera.status = status
-    if status == "ONLINE":
-        camera.last_seen_at = clock.now()
+    # ONLINE: lúc có lại tín hiệu; OFFLINE: lúc mất tín hiệu = lần cuối còn thấy (N01 "mất > 60 giây",
+    # dedupe `cam:{id}:{last_seen_at}`, "(đã có lại HH:MM)" — DEC-732).
+    camera.last_seen_at = clock.now()
     await commit(session)
     return camera
 

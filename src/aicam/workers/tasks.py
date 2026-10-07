@@ -19,6 +19,8 @@ from aicam.modules.claims import service as claims
 from aicam.modules.imports import service as imports
 from aicam.modules.media import exports, jobs, snapshots
 from aicam.modules.media import service as media
+from aicam.modules.notify import dispatch as notify_dispatch
+from aicam.modules.notify import summary as notify_summary
 from aicam.modules.platforms import budget
 from aicam.modules.platforms import dispatch as platform_dispatch
 from aicam.modules.platforms import sync as platform_sync
@@ -154,6 +156,7 @@ def housekeeping() -> dict[str, int]:
             "scan_dedup": await sessions.purge_scan_dedup(db, timedelta(minutes=10)),
             "imports_expired": await imports.expire_previews(db),
             "import_files": await imports.purge_old_files(db, settings.import_root),
+            **await notify_dispatch.purge(db),  # tin / sự kiện thông báo > 30 ngày (02a J-11, DEC-473)
         }
         await db.commit()
         missing = await media.sessions_missing_clips(db, timedelta(minutes=5), timedelta(days=1))
@@ -332,3 +335,24 @@ def share_cleanup(share_id: str | None = None) -> dict[str, Any]:
 
     sid = uuid.UUID(share_id) if share_id else None
     return _run(lambda db: share_cleanup_job.cleanup(db, get_settings(), sid))
+
+
+# ---------------------------------------------------------------- Thông báo (M17 — 02a §7 J-26..J-28)
+
+
+@app.task(name="notify.scan", soft_time_limit=25, time_limit=28)  # type: ignore[untyped-decorator]
+def notify_scan() -> dict[str, Any]:
+    """J-26 (30 giây): điều kiện N01..N09 → `notify_event` (bỏ trùng theo mã + đối tượng + đợt)."""
+    return _run(lambda db: notify_dispatch.scan(db, get_settings()))
+
+
+@app.task(name="notify.dispatch", soft_time_limit=25, time_limit=28)  # type: ignore[untyped-decorator]
+def notify_dispatch_task() -> dict[str, Any]:
+    """J-27 (15 giây): gom 2 phút, trần 30 tin / giờ / kênh, giờ yên lặng, gửi + thử lại 24 giờ (BR-36)."""
+    return _run(lambda db: notify_dispatch.dispatch(db, get_settings()))
+
+
+@app.task(name="notify.daily_summary", soft_time_limit=60)  # type: ignore[untyped-decorator]
+def notify_daily_summary() -> dict[str, Any]:
+    """J-28 (18:00 VN): tóm tắt ngày N10 (FR-06.11)."""
+    return _run(lambda db: notify_summary.daily_summary(db, get_settings()))

@@ -54,6 +54,11 @@ app.conf.update(
         "j23-backup-prune": {"task": "backup.prune", "schedule": crontab(hour=20, minute=0)},
         # Link chia sẻ: hết hạn (≤ 1 giờ sau hạn — BR-34), thu hồi khi kho mất mạng thử lại mỗi phút (EX-S7).
         "j25-share-cleanup": {"task": "shares.cleanup", "schedule": 60.0},
+        # Thông báo (02a §7, NFR-43: 30 giây + gom 2 phút + 15 giây ≈ ≤ 2,9 phút).
+        "j26-notify-scan": {"task": "notify.scan", "schedule": 30.0},
+        "j27-notify-dispatch": {"task": "notify.dispatch", "schedule": 15.0},
+        # 18:00 giờ VN = 11:00 UTC (FR-06.11).
+        "j28-notify-daily-summary": {"task": "notify.daily_summary", "schedule": crontab(hour=11, minute=0)},
     },
 )
 

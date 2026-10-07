@@ -139,8 +139,8 @@ def channel_error(code: str, message: str, provider_code: str | None) -> dict[st
 
 def message_label(msg: NotifyMessage) -> str:
     """Tin tóm tắt (gộp nhiều mã sự kiện khi thả `HELD` — DEC-472) có nhãn riêng."""
-    codes = {i.get("code") for i in msg.items if isinstance(i, dict)}
-    if len(codes) > 1:
+    items = [i for i in msg.items if isinstance(i, dict)]
+    if len({i.get("code") for i in items}) > 1 or any(i.get("summary") for i in items):
         return SUMMARY_LABEL
     return catalog.label(msg.event_code)
 
