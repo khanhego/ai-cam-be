@@ -438,6 +438,11 @@ async def phase_full(src: object, work: Path, store: object, seeded: dict[str, o
             await db.commit()
             changed_id, changed_path = next((i, p) for i, p in ready if i != bad_id)
             (dst.video_root / changed_path).write_bytes(b"sua-sau-khoi-phuc")
+            # G3-BK-9: ghi rõ bước giả lập vào biên bản — verify "lệch 1" dưới là do bước này, không phải lỗi.
+            say(
+                f"Giả lập tệp bị sửa sau khôi phục: ghi đè CLIP {changed_id} ({changed_path}) "
+                "→ verify kế tiếp phải báo lệch 1 (CLIP này)"
+            )
             ver = await restore.verify(dst, db)
             for line in ver.lines:
                 say(f"  verify: {line}")
