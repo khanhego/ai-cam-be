@@ -1,5 +1,6 @@
 """API-180..188 — sao lưu cloud (02 §6.2). Chỉ ADMIN."""
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query
@@ -69,3 +70,11 @@ async def list_issues(
 async def reupload_old_key(p: AdminOnly, db: DbSession, settings: AppSettings) -> s.ReuploadOut:
     """API-187 (EX-K7): tải lại bằng chứng còn ở kho đang mã hóa bằng khóa cũ."""
     return await service.reupload_old_key(db, p, settings)
+
+
+@router.post("/backup/issues/{object_id}/resolve", response_model=s.IssueOut)
+async def resolve_issue(
+    object_id: uuid.UUID, body: s.ResolveIn, p: AdminOnly, db: DbSession, settings: AppSettings
+) -> s.IssueOut:
+    """API-188 (EX-K6, EX-K9): vẫn sao lưu / bỏ qua tệp lệch mã băm; thử lại ngay / bỏ qua tệp không thấy."""
+    return await service.resolve_issue(db, object_id, body, p, settings)

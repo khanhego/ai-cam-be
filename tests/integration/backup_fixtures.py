@@ -185,3 +185,9 @@ async def world(db: AsyncSession, redis_client: object, tmp_path: Path, memory_s
     snap = await db.scalar(select(Snapshot).where(Snapshot.session_id == protected.id))
     assert snap is not None
     return World(settings, protected, loose, clips, snap, files)
+
+
+def use_settings(api: AsyncClient, settings: Settings) -> None:
+    """API trong test dùng settings của `world` (video_root, khóa)."""
+    app = api._transport.app  # type: ignore[attr-defined]
+    app.dependency_overrides[get_settings] = lambda: settings

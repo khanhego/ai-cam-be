@@ -1220,6 +1220,14 @@ CONTRACT: tuple[Api, ...] = (
     Api("API-184", "POST", "/backup/run-db", 202, ("run_id",)),
     Api("API-187", "POST", "/backup/reupload-old-key", 202, ("queued", "bytes")),
     Api(
+        "API-188",
+        "POST",
+        "/backup/issues/{object_id}/resolve",
+        200,
+        BACKUP_ISSUE_FIELDS,
+        request_fields=("action", "note"),
+    ),
+    Api(
         "API-185",
         "GET",
         "/backup/issues",

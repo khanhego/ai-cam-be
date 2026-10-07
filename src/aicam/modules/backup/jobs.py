@@ -537,14 +537,19 @@ async def _upload_one(
         return SOURCE_MISSING
     actual, size = await asyncio.to_thread(transfer.sha256_file, path)
     expected = source.sha256
-    if expected and actual != expected and not obj.hash_override:
+    # "Vẫn sao lưu" (API-188 / --accept) chấp nhận **đúng nội dung** lệch đã xem (`sha256_actual`); tệp đổi
+    # tiếp
+    # sau quyết định → lệch mới, phải xem lại (DEC-660).
+    accepted = obj.hash_override and (obj.sha256_actual is None or obj.sha256_actual == actual)
+    if expected and actual != expected and not accepted:
         obj.status, obj.sha256_actual, obj.updated_at = "HASH_MISMATCH", actual, now
-        obj.last_error = None
+        obj.last_error, obj.hash_override = None, False
+        obj.resolution_action = obj.resolution_note = obj.resolved_by = obj.resolved_at = None
         await db.commit()
         log.warning("backup_hash_mismatch", object_id=str(obj.id), sha_db=expected, sha_file=actual)
         return "HASH_MISMATCH"
     meta = {"sha256": actual, "kind": obj.kind, "id": str(source.id), "relpath": source.path}
-    if obj.hash_override and expected and actual != expected:
+    if accepted and expected and actual != expected:
         meta.update({"sha256-expected": expected, "integrity": "MISMATCH_ACCEPTED"})
     stop = asyncio.Event()
     beat = asyncio.create_task(_heartbeat(db, obj.id, stop))

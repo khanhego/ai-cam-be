@@ -7155,19 +7155,6 @@
         "title": "ResolutionOut",
         "type": "object"
       },
-      "ResolveIn": {
-        "properties": {
-          "note": {
-            "title": "Note",
-            "type": "string"
-          }
-        },
-        "required": [
-          "note"
-        ],
-        "title": "ResolveIn",
-        "type": "object"
-      },
       "ResolvedBy": {
         "properties": {
           "display_name": {
@@ -11047,6 +11034,30 @@
         "title": "EvidenceOut",
         "type": "object"
       },
+      "aicam__modules__backup__schemas__ResolveIn": {
+        "description": "API-188.",
+        "properties": {
+          "action": {
+            "enum": [
+              "UPLOAD_ANYWAY",
+              "IGNORE",
+              "RETRY"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "note"
+        ],
+        "title": "ResolveIn",
+        "type": "object"
+      },
       "aicam__modules__backup__schemas__SettingsOut": {
         "properties": {
           "all_pack_clips": {
@@ -11174,6 +11185,19 @@
           }
         },
         "title": "Counts",
+        "type": "object"
+      },
+      "aicam__modules__reconciliation__schemas__ResolveIn": {
+        "properties": {
+          "note": {
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note"
+        ],
+        "title": "ResolveIn",
         "type": "object"
       },
       "aicam__modules__reports__service__Counts": {
@@ -11999,6 +12023,60 @@
           }
         },
         "summary": "List Issues",
+        "tags": [
+          "backup"
+        ]
+      }
+    },
+    "/api/v1/backup/issues/{object_id}/resolve": {
+      "post": {
+        "description": "API-188 (EX-K6, EX-K9): vẫn sao lưu / bỏ qua tệp lệch mã băm; thử lại ngay / bỏ qua tệp không thấy.",
+        "operationId": "resolve_issue_api_v1_backup_issues__object_id__resolve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "object_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Object Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/aicam__modules__backup__schemas__ResolveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Issue",
         "tags": [
           "backup"
         ]
@@ -14127,7 +14205,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ResolveIn"
+                "$ref": "#/components/schemas/aicam__modules__reconciliation__schemas__ResolveIn"
               }
             }
           },

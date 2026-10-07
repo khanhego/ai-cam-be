@@ -30,6 +30,7 @@ from aicam.modules.backup.schemas import (
     KeyOut,
     OldKeyOut,
     ResolutionOut,
+    ResolveIn,
     ReuploadOut,
     RunNowOut,
     SettingsOut,
@@ -810,3 +811,93 @@ async def stale_attention(db: AsyncSession, settings: Settings) -> list[dict[str
         if count:
             items.append({"kind": "BACKUP_STALE", "reason": reason, "count": count})
     return items
+
+
+# ---------------------------------------------------------------- API-188 xử lý vấn đề
+
+ACTION_INVALID_MESSAGES = {
+    "UPLOAD_ANYWAY": '"Vẫn sao lưu" chỉ dùng cho tệp lệch mã băm.',
+    "RETRY": '"Thử lại ngay" chỉ dùng cho tệp không thấy tại kho.',
+}
+
+
+def _note_error() -> AppError:
+    message = "Nhập lý do (5–500 ký tự)."
+    return AppError("VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": {"note": message}})
+
+
+async def _source_file_exists(db: AsyncSession, obj: BackupObject, settings: Settings) -> bool:
+    from aicam.modules.backup.jobs import _file_of, _source
+
+    source = await _source(db, obj)
+    if source is None:
+        return False
+    return await asyncio.to_thread(_file_of, settings, source) is not None
+
+
+async def resolve_issue(
+    db: AsyncSession, object_id: uuid.UUID, data: ResolveIn, p: Principal, settings: Settings
+) -> IssueOut:
+    """API-188 (EX-K6, EX-K9; DEC-496, 517): `UPLOAD_ANYWAY` (chỉ `HASH_MISMATCH`) → `PENDING` +
+    `hash_override`;
+    `RETRY` (chỉ `FAILED SOURCE_MISSING`) → thử lại ngay; `IGNORE` (cả hai) → `IGNORED` (cuối). Không còn
+    là vấn
+    đề → 409 `BACKUP_ISSUE_RESOLVED`; sai cặp → 409 `BACKUP_ISSUE_ACTION_INVALID`. Lý do 5–500 + audit."""
+    from sqlalchemy.exc import NoResultFound
+
+    note = data.note.strip()
+    if not 5 <= len(note) <= 500:
+        raise _note_error()
+    try:
+        obj = (
+            await db.execute(
+                select(BackupObject)
+                .where(BackupObject.id == object_id, BackupObject.kind.in_(EVIDENCE_KINDS))
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+    except NoResultFound as exc:
+        raise AppError("NOT_FOUND", "Không tìm thấy tệp sao lưu.", 404) from exc
+    is_hash = obj.status == "HASH_MISMATCH"
+    is_missing = obj.status == "FAILED" and obj.last_error == "SOURCE_MISSING"
+    if not (is_hash or is_missing):
+        raise AppError("BACKUP_ISSUE_RESOLVED", "Tệp này đã được xử lý hoặc không còn lỗi.", 409,
+                       {"status": obj.status})  # fmt: skip
+    if (data.action == "UPLOAD_ANYWAY" and not is_hash) or (data.action == "RETRY" and not is_missing):
+        raise AppError("BACKUP_ISSUE_ACTION_INVALID", ACTION_INVALID_MESSAGES[data.action], 409)
+    if data.action == "IGNORE" and is_missing and await _source_file_exists(db, obj, settings):
+        raise AppError("BACKUP_ISSUE_ACTION_INVALID", "Tệp đã có lại tại kho — bấm Thử lại ngay.", 409)
+    now = clock.now()
+    before = {"status": obj.status, "last_error": obj.last_error}
+    if data.action == "UPLOAD_ANYWAY":
+        obj.status, obj.hash_override, obj.attempts, obj.next_attempt_at = "PENDING", True, 0, now
+    elif data.action == "RETRY":
+        obj.attempts, obj.next_attempt_at = 0, now
+    else:
+        obj.status = "IGNORED"
+    obj.resolution_action, obj.resolution_note, obj.resolved_by, obj.resolved_at = (
+        data.action,
+        note,
+        p.user_id,
+        now,
+    )
+    obj.updated_at = now
+    expected = (await issue_out(db, obj)).sha256_expected
+    data_ = {
+        "object_id": str(obj.id),
+        "action": data.action,
+        "note": note,
+        "sha256_expected": expected,
+        "sha256_actual": obj.sha256_actual,
+        "last_error": before["last_error"],
+        "status_before": before["status"],
+    }
+    audit.record(db, "BACKUP_ISSUE_RESOLVE", user_id=p.user_id, object_type="BACKUP_OBJECT", object_id=obj.id,
+                 ip=p.ip, data=data_)  # fmt: skip
+    await db.flush()
+    out = await issue_out(db, obj)
+    _publish_after_commit(db, settings)
+    await commit(db)
+    log.info("backup_issue_resolved", object_id=str(obj.id), action=data.action)
+    return out
