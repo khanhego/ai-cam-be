@@ -403,3 +403,34 @@ async def test_roles(share_api: AsyncClient, db: AsyncSession, w: ShareWorld, sh
     assert station_user.role == "STATION"
     res = await share_api.get("/api/v1/shares")
     assert res.status_code == 401
+
+
+async def test_session_source_excluded_or_review_needed_409_g3_fe1(
+    share_api: AsyncClient, db: AsyncSession, w: ShareWorld, share_store: object
+) -> None:
+    """G3-FE-1: API-160 nguồn PHIÊN (D4) cho phiên RETURN bị loại BR-39 (hủy WRONG_SCAN / đánh dấu quét nhầm)
+    hoặc "Cần soát" → 409 `SESSION_EXCLUDED` `details.session_id`; xác nhận "Là phiên hoàn thật"
+    (`review_confirmed_at`) → tạo được. Nguồn hồ sơ giữ nguyên (thêm tay có chủ đích)."""
+    headers, _ = await login(share_api, db, "ADMIN")
+
+    def body(sid: Any) -> dict[str, Any]:
+        return {"source_type": "SESSION", "session_id": str(sid), "session_ids": [str(sid)], "layout": "CAM1",
+                "include_snapshots": False, "recipient": "Bưu cục Q7", "expires_days": 1}  # fmt: skip
+
+    for s in (w.wrong, w.review):
+        res = await share_api.post("/api/v1/shares", headers=headers, json=body(s.id))
+        assert res.status_code == 409, res.text
+        err = res.json()["error"]
+        assert (err["code"], err["details"]["session_id"]) == ("SESSION_EXCLUDED", str(s.id))
+    w.ret_a.wrong_scan_at, w.ret_a.wrong_scan_code = NOW, "WRONG_SCAN"  # API-189 MARK
+    await db.flush()
+    res = await share_api.post("/api/v1/shares", headers=headers, json=body(w.ret_a.id))
+    assert res.status_code == 409
+    for s in (w.wrong, w.review):
+        s.review_confirmed_at = NOW  # CONFIRM_RETURN
+    await db.flush()
+    for s in (w.wrong, w.review):
+        res = await share_api.post("/api/v1/shares", headers=headers, json=body(s.id))
+        assert res.status_code == 202, res.text
+    res = await share_api.post("/api/v1/shares", headers=headers, json=_body(w, [w.wrong.id]))
+    assert res.status_code == 202  # nguồn hồ sơ: phiên loại đã được thêm tay vào bằng chứng

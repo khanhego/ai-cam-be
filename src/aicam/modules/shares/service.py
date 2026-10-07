@@ -362,6 +362,20 @@ async def create(db: AsyncSession, body: ShareCreateIn, p: Principal, settings: 
     if not cloud.share_configured(settings):
         raise AppError("CLOUD_NOT_CONFIGURED", "Chưa cấu hình kho lưu cloud. Admin: Cài đặt → Sao lưu.", 503)
     chosen = [c for c in src.candidates if c.session.id in set(ids)]  # thứ tự nguồn: phiên chính trước
+    if src.claim is None:
+        # G3-FE-1: nguồn PHIÊN (D4) — phiên RETURN bị loại theo BR-39 (đánh dấu quét nhầm / hủy WRONG_SCAN /
+        # NOT_A_RETURN chưa xác nhận) hoặc "Cần soát" (`review_needed`) có thể là video kiện khác → không gửi
+        # như bằng chứng của kiện này tới khi được xác nhận / gỡ đánh dấu (API-189). Nguồn HỒ SƠ: phiên loại
+        # chỉ có trong `evidence[]` khi người dùng thêm tay có chủ đích (BR-39) — giữ nguyên.
+        for c in chosen:
+            if c.held_back:
+                raise AppError(
+                    "SESSION_EXCLUDED",
+                    "Phiên mở hoàn này bị loại khỏi bằng chứng (quét nhầm / cần soát) — xác nhận ở hồ sơ "
+                    "khiếu nại trước khi gửi link.",
+                    409,
+                    {"session_id": str(c.session.id)},
+                )
     for c in chosen:
         if not c.selectable:
             raise AppError(
