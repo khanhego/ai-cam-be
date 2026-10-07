@@ -25,7 +25,6 @@ from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package, Shop
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms.base import (
-    CANCEL_GROUPS,
     PlatformAdapter,
     PlatformAuthError,
     PlatformError,
@@ -201,7 +200,7 @@ async def _order_return_signal(session: AsyncSession, order: Order, data: Platfo
     khi ĐVVC lấy hàng, boom COD — DEC-258). Người gọi đã khóa `order:{sn}`."""
     if data.status_group == "RETURNING":
         wanted: tuple[str, ...] = _TO_RETURN_FROM
-    elif data.is_cancelled:
+    elif data.is_cancelled:  # chỉ nhóm CANCELLED (đang yêu cầu hủy không phải giao thất bại — DEC-494)
         wanted = ("HANDED_OVER",)
     else:
         return False
@@ -450,10 +449,11 @@ async def _apply_shipping(session: AsyncSession, package_id: Any, order_id: Any,
     package = locked[0]
     package.platform_logistics_status = st.raw_status or package.platform_logistics_status
     if st.order_status:
-        order.platform_status = st.order_status
-        order.platform_status_group = st.order_status_group or "UNKNOWN"
-        if order.platform_status_group in CANCEL_GROUPS:
-            changed = await orders.apply_platform_cancel(session, package)
+        old_group, group = orders.set_platform_status(order, st.order_status, st.order_status_group)
+        # BR-21 làm rõ (DEC-494): chỉ nhóm CANCELLED là hủy; CANCEL_REQUESTED chỉ gắn cờ phiên đang đóng, kiện
+        # vẫn theo vận chuyển như thường (sàn có thể từ chối yêu cầu hủy).
+        changed = await orders.apply_status_effects(session, order, old_group, only_package_ids=[package.id])
+        if group == "CANCELLED":
             if package.warehouse_status == "HANDED_OVER":
                 changed = await _failed_delivery(session, order, [package], st.updated_at) or changed
             return changed

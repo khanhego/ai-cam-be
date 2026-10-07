@@ -35,6 +35,8 @@ SESSION_FLAGS = (
     "UNANNOUNCED",
     "UNIDENTIFIED",
     "INSPECTION_CORRECTED",
+    # Phase 3 (02 §5.1 SESSION, DEC-494): người mua đang xin hủy khi phiên PACK mở.
+    "ORDER_CANCEL_REQUESTED",
 )
 # Kết luận phiên hoàn / tình trạng dòng (02 §5.2).
 INSPECTION_CONCLUSIONS = ("OK", "DAMAGED", "MISSING_ITEM", "WRONG_ITEM", "EMPTY_BOX", "OTHER")

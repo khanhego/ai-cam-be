@@ -5,7 +5,8 @@ biết chữ trạng thái. Quét mọi chuỗi hằng (AST) trong `src/aicam` c
 yêu cầu trả của Shopee hay TikTok (02 §5.3), trừ chữ trùng tên một giá trị enum nội bộ (nhóm chung, trạng
 thái kho, phiên, hồ sơ… — vd `CANCELLED`, `SHIPPED`, `DELIVERED`, `COMPLETED`, `CLOSED`). Danh sách điểm đã
 biết (02a §5 BR-30) phải sạch: `reconciliation/rules.py`, `returns/service.py`, `sessions/return_scan.py`,
-`platforms/sync.py`, `platforms/base.py`. Gán `platform_status` ngoài helper (test AST đủ) — T-278.
+`platforms/sync.py`, `platforms/base.py`. Gán `platform_status`
+ngoài helper: test AST `test_platform_status_written_only_by_helpers` (T-278).
 """
 
 import ast
@@ -87,3 +88,66 @@ def test_no_platform_status_collections_in_core() -> None:
         if name in path.read_text(encoding="utf-8")
     ]
     assert hits == []
+
+
+# ---------------------------------------------------------------- DEC-508 (T-278): một chỗ ghi
+
+
+FIELDS = {"platform_status", "platform_status_group"}
+HELPERS = {
+    ("modules/orders/service.py", "set_platform_status"),
+    ("modules/returns/service.py", "set_platform_status"),
+}
+
+
+def _writes(path: Path, rel: str | None = None) -> list[str]:
+    """Gán `x.platform_status(_group) = …` / `Order(…, platform_status=…)` / `.values(platform_status=…)`
+    ngoài hai helper."""
+    rel = rel or str(path.relative_to(SRC))
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    hits: list[str] = []
+
+    def visit(node: ast.AST, func: str | None) -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            func = node.name
+        allowed = (rel, func) in HELPERS
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, ast.AugAssign | ast.AnnAssign):
+            targets = [node.target]
+        for target in targets:
+            for t in ast.walk(target):
+                if isinstance(t, ast.Attribute) and t.attr in FIELDS and not allowed:
+                    hits.append(f"{rel}:{t.lineno} gán .{t.attr} trong {func}")
+        if isinstance(node, ast.Call):
+            name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+            if name in ("Order", "ReturnCase", "values"):
+                hits.extend(
+                    f"{rel}:{node.lineno} {name}({k.arg}=…)" for k in node.keywords if k.arg in FIELDS
+                )
+            if name == "setattr" and len(node.args) > 1:
+                arg = node.args[1]
+                if isinstance(arg, ast.Constant) and arg.value in FIELDS:
+                    hits.append(f"{rel}:{node.lineno} setattr {arg.value}")
+        for child in ast.iter_child_nodes(node):
+            visit(child, func)
+
+    visit(tree, None)
+    return hits
+
+
+def test_platform_status_written_only_by_helpers() -> None:
+    hits = [h for path in SRC.rglob("*.py") for h in _writes(path)]
+    assert hits == []
+
+
+def test_ast_check_catches_a_write(tmp_path: Path) -> None:
+    """Bộ quét bắt được cả 3 dạng (không thì test trên xanh giả)."""
+    bad = tmp_path / "bad.py"
+    bad.write_text(
+        "def f(o, s):\n    o.platform_status = 'x'\n    Order(platform_status_group='y')\n"
+        "    s.execute(update(Order).values(platform_status='z'))\n",
+        encoding="utf-8",
+    )
+    assert len(_writes(bad, "modules/orders/service.py")) == 3

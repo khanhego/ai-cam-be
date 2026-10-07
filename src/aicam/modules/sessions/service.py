@@ -1120,30 +1120,40 @@ async def check_timeouts(session: AsyncSession, settings: Settings) -> dict[str,
 # ---------------------------------------------------------------- BR-21 đơn hủy khi đang đóng (T-117)
 
 
-async def flag_order_cancelled(session: AsyncSession, package_id: uuid.UUID, settings: Settings) -> str:
+async def flag_order_cancelled(
+    session: AsyncSession, package_id: uuid.UUID, settings: Settings, *, kind: str = "CANCELLED"
+) -> str:
     """Task riêng sau J-04 / J-06 thấy đơn hủy khi kiện `PACKING` (BR-21, DEC-266, R3-8).
 
     Khóa `order:{sn}` → station của phiên → kiện. Phiên còn hoạt động → cờ `ORDER_CANCELLED` + WS-01
     `alert ORDER_CANCELLED_DURING_SESSION` + `station.state`; phiên đã đóng trước khi task chạy (kiện
-    `PACKED`) → `PACKED → CANCELLED_AFTER_PACK`. Trả kết quả (log / test)."""
+    `PACKED`) → `PACKED → CANCELLED_AFTER_PACK`. Trả kết quả (log / test).
+
+    `kind = CANCEL_REQUESTED` (DEC-494): người mua đang xin hủy → chỉ cờ phiên `ORDER_CANCEL_REQUESTED` +
+    `station.state` (S2 banner vàng); phiên đóng bình thường, trạng thái kho **không** đổi; đơn đã rời nhóm
+    `CANCEL_REQUESTED` lúc task chạy → không làm gì."""
     for _ in range(2):  # phiên vừa mở giữa bước đọc và bước khóa → làm lại với đúng station
-        result = await _flag_order_cancelled_once(session, package_id, settings)
+        result = await _flag_order_cancelled_once(session, package_id, settings, kind)
         if result != "retry":
             return result
     return "noop"
 
 
-async def _flag_order_cancelled_once(session: AsyncSession, package_id: uuid.UUID, settings: Settings) -> str:
+async def _flag_order_cancelled_once(
+    session: AsyncSession, package_id: uuid.UUID, settings: Settings, kind: str = "CANCELLED"
+) -> str:
     from aicam.realtime import publish
 
     package = await session.get(Package, package_id)
     if package is None:
         await rollback(session)
         return "missing"
+    order: Order | None = None
     if package.order_id is not None:
         order = await session.get(Order, package.order_id)
         if order is not None:
             await orders.lock_orders(session, [order.platform_order_sn])
+            order = await session.get(Order, order.id, populate_existing=True)
     active = await active_session_of_package(session, package_id)
     if active is not None:
         await lock_station(session, active.station_id)
@@ -1157,6 +1167,8 @@ async def _flag_order_cancelled_once(session: AsyncSession, package_id: uuid.UUI
         await rollback(session)
         return "retry"
     package = await _lock_package(session, package_id)
+    if kind == "CANCEL_REQUESTED":
+        return await _flag_cancel_requested(session, pack, order, package, settings)
     if pack is not None:
         if pack.type != "PACK" or "ORDER_CANCELLED" in pack.flags:
             await rollback(session)
@@ -1192,6 +1204,30 @@ async def _flag_order_cancelled_once(session: AsyncSession, package_id: uuid.UUI
         return "cancelled_after_pack"
     await rollback(session)
     return "noop"
+
+
+async def _flag_cancel_requested(
+    session: AsyncSession, pack: PackSession | None, order: Order | None, package: Package, settings: Settings
+) -> str:
+    """BR-21 làm rõ: cờ `ORDER_CANCEL_REQUESTED` trên phiên PACK đang mở (đã khóa station → phiên → kiện)."""
+    if (
+        pack is None
+        or pack.type != "PACK"
+        or order is None
+        or order.platform_status_group != "CANCEL_REQUESTED"
+        or "ORDER_CANCEL_REQUESTED" in pack.flags
+    ):
+        await rollback(session)
+        return "noop"
+    set_flag(pack, "ORDER_CANCEL_REQUESTED")
+    record_event(session, pack, "ORDER_CANCEL_REQUESTED")
+    await session.flush()
+    station = await stations.get_station(session, pack.station_id)
+    state = await build_state(session, station, settings) if station else None
+    notify_after_commit(session, pack.station_id, state)
+    await commit(session)
+    log.info("order_cancel_requested_during_session", session_id=str(pack.id), package_id=str(package.id))
+    return "flagged"
 
 
 # ---------------------------------------------------------------- cờ phiên (T-14)

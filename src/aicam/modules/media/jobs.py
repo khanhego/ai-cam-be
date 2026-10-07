@@ -76,11 +76,15 @@ def enqueue_capture_pack_snapshot(session: AsyncSession, session_id: uuid.UUID) 
     after_commit(session, _send)
 
 
-def enqueue_flag_order_cancelled(session: AsyncSession, package_id: uuid.UUID) -> None:
-    """BR-21 (DEC-266): đơn hủy khi kiện `PACKING` → task riêng gắn cờ phiên, sau commit của job đồng bộ."""
+def enqueue_flag_order_cancelled(
+    session: AsyncSession, package_id: uuid.UUID, *, kind: str = "CANCELLED"
+) -> None:
+    """BR-21 (DEC-266): đơn hủy (`kind = CANCELLED`) / đang yêu cầu hủy (`CANCEL_REQUESTED` — DEC-494) khi
+    kiện `PACKING` → task riêng gắn cờ phiên, sau commit của job đồng bộ."""
+    args = [str(package_id)] if kind == "CANCELLED" else [str(package_id), kind]  # message cũ chỉ 1 tham số
 
     async def _send() -> None:
-        await send(FLAG_ORDER_CANCELLED, [str(package_id)], "default")
+        await send(FLAG_ORDER_CANCELLED, args, "default")
 
     after_commit(session, _send)
 

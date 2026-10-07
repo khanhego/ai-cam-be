@@ -50,7 +50,8 @@ class PlatformOrder:
 
     @property
     def is_cancelled(self) -> bool:
-        return self.status_group in CANCEL_GROUPS
+        """Đơn **đã hủy** trên sàn (BR-21 làm rõ — DEC-494): chỉ nhóm `CANCELLED`, không gồm yêu cầu hủy."""
+        return self.status_group == "CANCELLED"
 
 
 # Nhóm trạng thái yêu cầu trả chung (02 §5.2, BR-31): chữ lạ → None (không chờ duyệt, không kết thúc).

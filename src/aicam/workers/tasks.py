@@ -78,9 +78,11 @@ def check_claim_deadlines() -> int:
 
 
 @app.task(name="sessions.flag_order_cancelled", soft_time_limit=60)  # type: ignore[untyped-decorator]
-def flag_order_cancelled(package_id: str) -> str:
+def flag_order_cancelled(package_id: str, kind: str = "CANCELLED") -> str:
     """BR-21 (02a §5, DEC-266): đơn hủy khi kiện đang đóng → gắn cờ phiên / hủy sau khi đóng (R3-8)."""
-    return _run(lambda db: sessions.flag_order_cancelled(db, uuid.UUID(package_id), get_settings()))
+    return _run(
+        lambda db: sessions.flag_order_cancelled(db, uuid.UUID(package_id), get_settings(), kind=kind)
+    )
 
 
 @app.task(  # type: ignore[untyped-decorator]

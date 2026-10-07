@@ -326,10 +326,18 @@ async def _apply_platform_fields(session: AsyncSession, case: ReturnCase, ret: P
         case.expected_since = clock.now()  # G3 C3: sàn vừa chấp nhận trả → đồng hồ BR-12 bắt đầu từ đây
 
 
+def set_platform_status(case: ReturnCase, raw: str | None, group: str | None) -> str | None:
+    """**Nơi duy nhất** ghi `return_case.platform_status` + `platform_status_group` (BR-30 / BR-31, DEC-508 —
+    test AST). Chữ lạ → nhóm None (như `OPEN` cũ). Trả nhóm cũ."""
+    old = case.platform_status_group
+    case.platform_status = raw
+    case.platform_status_group = group
+    return old
+
+
 async def _set_platform_fields(session: AsyncSession, case: ReturnCase, ret: PlatformReturn) -> None:
     case.platform_return_sn = ret.return_sn
-    case.platform_status = ret.status
-    case.platform_status_group = ret.status_group  # BR-31: lõi đọc nhóm (T-278 gom vào helper)
+    set_platform_status(case, ret.status, ret.status_group)
     case.needs_parcel = ret.needs_parcel
     case.return_tracking_number = ret.return_tracking_number or case.return_tracking_number
     case.reason = ret.reason

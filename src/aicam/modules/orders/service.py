@@ -173,6 +173,64 @@ async def create_unverified_package(session: AsyncSession, code: str) -> Package
     return package
 
 
+def set_platform_status(order: Order, raw: str | None, group: str | None) -> tuple[str, str]:
+    """**Nơi duy nhất** ghi `order.platform_status` + `platform_status_group` (BR-30, DEC-508 — test AST).
+    Trả (nhóm cũ, nhóm mới); người gọi áp hệ quả qua `apply_status_effects` (BR-21)."""
+    old = order.platform_status_group or "UNKNOWN"
+    order.platform_status = raw
+    order.platform_status_group = group or "UNKNOWN"
+    return old, order.platform_status_group
+
+
+async def apply_status_effects(
+    session: AsyncSession,
+    order: Order,
+    old_group: str,
+    extra_package_ids: Sequence[uuid.UUID] = (),
+    *,
+    only_package_ids: Sequence[uuid.UUID] | None = None,
+) -> bool:
+    """BR-21 làm rõ (DEC-494) theo nhóm **mới** của đơn (người gọi giữ khóa `order:{sn}`):
+
+    - `CANCELLED` → luật hủy kiện như Phase 2 (`apply_platform_cancel`: NEW → CANCELLED, PACKED →
+      CANCELLED_AFTER_PACK, PACKING → cờ phiên `ORDER_CANCELLED`). Đơn hủy thường không còn mã vận đơn trong
+      dữ liệu sàn → xét mọi kiện đã gắn đơn (EX-P10); khóa kiện (id tăng) + đọc lại (G3 SM-F4).
+    - `CANCEL_REQUESTED` (người mua xin hủy, Shopee `IN_CANCEL`) → **không** hủy kiện; kiện `PACKING` → cờ
+      phiên `ORDER_CANCEL_REQUESTED` (task riêng, DEC-266); kiện NEW / PACKED giữ nguyên (quét mới bị BR-01
+      chặn).
+    - Rời `CANCEL_REQUESTED` sang nhóm khác → trả lại kiện hủy oan (lưới an toàn — T-285).
+
+    Kiện gộp (đơn chính khác — `package_order`) không đổi theo đơn phụ. `only_package_ids` (J-06): chỉ xét
+    các kiện này. Trả True nếu có kiện đổi trạng thái."""
+    group = order.platform_status_group
+    if group not in ("CANCELLED", "CANCEL_REQUESTED"):
+        return False
+    if only_package_ids is not None:
+        ids = sorted(set(only_package_ids))
+    else:
+        ids = sorted(set(extra_package_ids) | set(
+            (await session.scalars(select(Package.id).where(Package.order_id == order.id))).all()
+        ))  # fmt: skip
+    if not ids:
+        return False
+    locked = (
+        await session.scalars(
+            select(Package)
+            .where(Package.id.in_(ids))
+            .order_by(Package.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    changed = False
+    for package in locked:
+        if group == "CANCELLED":
+            changed = await apply_platform_cancel(session, package) or changed
+        elif package.warehouse_status == "PACKING":
+            jobs.enqueue_flag_order_cancelled(session, package.id, kind="CANCEL_REQUESTED")
+    return changed
+
+
 async def apply_platform_cancel(session: AsyncSession, package: Package) -> bool:
     """Sàn hủy đơn: kiện NEW → CANCELLED, PACKED → CANCELLED_AFTER_PACK (EX-P10); trạng thái khác giữ.
 
@@ -345,8 +403,8 @@ async def upsert_platform_order(
         )
         order.source = "API"
     order.shop_id = shop_id or order.shop_id
-    order.platform_status = data.status
-    order.platform_status_group = data.status_group  # BR-30: lõi chỉ đọc nhóm (T-278 gom vào helper)
+    old_group = order.platform_status_group if not created else "UNKNOWN"
+    set_platform_status(order, data.status, data.status_group)
     order.buyer_note = data.buyer_note
     order.created_at_platform = data.created_at
     order.raw_payload = data.raw
@@ -386,25 +444,7 @@ async def upsert_platform_order(
             package.order_id = order.id
             package.verified = True
         packages.append(package)
-    if data.is_cancelled:
-        # Đơn hủy trên sàn thường không còn mã vận đơn trong dữ liệu sàn → xét mọi kiện đã gắn đơn (EX-P10).
-        # G3 SM-F4: khóa kiện (theo id) + đọc lại trước khi quyết — quét PACK vừa chuyển NEW → PACKING thì
-        # nhánh PACKING (đánh cờ phiên) chạy, không ghi đè PACKING bằng CANCELLED. Kiện gộp (đơn chính khác)
-        # không đổi theo đơn phụ.
-        ids = sorted({p.id for p in packages if p.order_id == order.id} | set(
-            (await session.scalars(select(Package.id).where(Package.order_id == order.id))).all()
-        ))  # fmt: skip
-        locked = (
-            await session.scalars(
-                select(Package)
-                .where(Package.id.in_(ids))
-                .order_by(Package.id)
-                .with_for_update()
-                .execution_options(populate_existing=True)
-            )
-        ).all()
-        for package in locked:
-            await apply_platform_cancel(session, package)
+    await apply_status_effects(session, order, old_group, [p.id for p in packages if p.order_id == order.id])
     await session.flush()
     return UpsertResult(order=order, created=created, packages=packages)
 

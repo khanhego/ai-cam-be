@@ -76,9 +76,11 @@ def test_migration_0006_backfill_matches_shopee_mapping() -> None:
 
 @pytest.mark.parametrize("group", ORDER_STATUS_GROUPS)
 def test_is_cancelled_reads_group_not_status(group: str) -> None:
-    """BR-01: chặn theo nhóm (Shopee `IN_CANCEL` → `CANCEL_REQUESTED` vẫn chặn như Phase 2)."""
+    """BR-21 làm rõ (T-278, DEC-494): "đơn đã hủy" chỉ nhóm `CANCELLED`; BR-01 chặn mở phiên vẫn theo
+    `CANCEL_GROUPS` (gồm `CANCEL_REQUESTED`) ở `orders.is_cancelled`."""
     order = PlatformOrder("SN", "WHATEVER", (), (), status_group=group)
-    assert order.is_cancelled is (group in CANCEL_GROUPS)
+    assert order.is_cancelled is (group == "CANCELLED")
+    assert ("CANCEL_REQUESTED" in CANCEL_GROUPS) is True
     assert (
         PlatformOrder("SN", "CANCELLED", (), ()).is_cancelled is False
     )  # chữ không quyết, nhóm mặc định UNKNOWN
