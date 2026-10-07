@@ -293,10 +293,21 @@ class S3Store:
                         for v in (*page.get("Versions", []), *page.get("DeleteMarkers", []))
                     ]
                     for i in range(0, len(items), 1000):
-                        self._client.delete_objects(
+                        response = self._client.delete_objects(
                             Bucket=self.bucket, Delete={"Objects": items[i : i + 1000], "Quiet": True}
                         )
+                        # G3-SH-3: `delete_objects` trả 200 kể cả khi từng đối tượng lỗi (`Errors[]`).
+                        errors = (response or {}).get("Errors") or []
+                        if errors:
+                            raise CloudError(
+                                ERROR,
+                                f"Không xóa được {len(errors)} đối tượng ({errors[0].get('Code', '?')}).",
+                            )
                         deleted += len(items[i : i + 1000])
+                # G3-SH-3: kiểm lại theo phiên bản (list_objects_v2 không thấy phiên bản cũ / delete marker).
+                left = self._client.list_object_versions(Bucket=self.bucket, Prefix=prefix, MaxKeys=1)
+                if left.get("Versions") or left.get("DeleteMarkers"):
+                    raise CloudError(ERROR, "Còn phiên bản chưa xóa dưới thư mục link — thử lại lượt sau.")
                 return deleted
             for info in self.list(prefix):
                 self._client.delete_object(Bucket=self.bucket, Key=info.key)

@@ -111,3 +111,51 @@ def test_log_redaction_hides_s3_presign_params() -> None:
     out = redact_query(url)
     assert "abc123" not in out
     assert "AK%2F" not in out
+
+
+class _FakeS3:
+    """Client boto3 giả cho `S3Store.delete_prefix(all_versions=True)` (G3-SH-3)."""
+
+    def __init__(self, errors: list[dict[str, str]], left: bool) -> None:
+        self.errors, self.left = errors, left
+        self.deleted: list[str] = []
+
+    def get_paginator(self, _name: str) -> "_FakeS3":
+        return self
+
+    def paginate(self, **_: object) -> list[dict[str, object]]:
+        return [{"Versions": [{"Key": "share/x/v1.mp4", "VersionId": "1"}],
+                 "DeleteMarkers": [{"Key": "share/x/v1.mp4", "VersionId": "2"}]}]  # fmt: skip
+
+    def delete_objects(self, **kw: object) -> dict[str, object]:
+        self.deleted.extend(o["VersionId"] for o in kw["Delete"]["Objects"])  # type: ignore[index]
+        return {"Errors": self.errors} if self.errors else {}
+
+    def list_object_versions(self, **_: object) -> dict[str, object]:
+        return {"Versions": [{"Key": "share/x/v1.mp4", "VersionId": "3"}]} if self.left else {}
+
+
+@pytest.mark.parametrize(
+    ("errors", "left", "ok"),
+    [
+        ([], False, True),
+        ([{"Key": "share/x/v1.mp4", "Code": "AccessDenied"}], False, False),
+        ([], True, False),
+    ],
+)
+def test_s3_delete_prefix_checks_errors_and_versions(
+    errors: list[dict[str, str]], left: bool, ok: bool
+) -> None:
+    """G3-SH-3: `Errors[]` trong phản hồi `delete_objects` hoặc còn phiên bản sau khi xóa → `CloudError` (J-25
+    để `pending`, không đặt `cloud_deleted_at`)."""
+    from aicam.modules.cloud.store import CloudError, S3Store
+
+    s3 = S3Store.__new__(S3Store)
+    s3.bucket = "share-test"
+    fake = _FakeS3(errors, left)
+    s3._client = fake
+    if ok:
+        assert s3.delete_prefix("share/x/", all_versions=True) == 2
+    else:
+        with pytest.raises(CloudError):
+            s3.delete_prefix("share/x/", all_versions=True)
