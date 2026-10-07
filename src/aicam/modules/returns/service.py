@@ -726,16 +726,23 @@ async def resolve_code(session: AsyncSession, code: str) -> Resolution:
             return Resolution("FOUND", package, unidentified, await _order_of(session, package))
     # 1. Mã vận đơn chiều về (ưu tiên hồ sơ chưa kết thúc; hồ sơ đã hủy không dùng — G3 SM-F1, EX-R7: xử lý
     #    như hàng hoàn không báo trước).
-    case = await session.scalar(
-        select(ReturnCase)
-        .where(func.upper(ReturnCase.return_tracking_number) == code)
-        .order_by(
-            ReturnCase.status.in_(OPEN_CASE_STATUSES).desc(),
-            ReturnCase.status.in_(RECEIVED_CASE_STATUSES).desc(),
-            ReturnCase.created_at.desc(),
+    #    §5.1 #15 (v0.3 — DEC-523, T-288): mã chiều về **không unique** → lấy mọi hồ sơ khớp; ≥ 2 hồ sơ chưa
+    # kết    thúc thuộc ≥ 2 đơn khác nhau → cho chọn đơn (`MULTIPLE_ORDERS`); còn lại thứ tự Phase 2.
+    by_return_code = (
+        await session.scalars(
+            select(ReturnCase)
+            .where(func.upper(ReturnCase.return_tracking_number) == code)
+            .order_by(
+                ReturnCase.status.in_(OPEN_CASE_STATUSES).desc(),
+                ReturnCase.status.in_(RECEIVED_CASE_STATUSES).desc(),
+                ReturnCase.created_at.desc(),
+            )
         )
-        .limit(1)
-    )
+    ).all()
+    ambiguous = await _orders_of_open_cases(session, by_return_code)
+    if len(ambiguous) >= 2:
+        return Resolution("MULTIPLE_ORDERS", orders=tuple(ambiguous))
+    case = by_return_code[0] if by_return_code else None
     if (
         case is not None
         and case.merged_into_id is None
@@ -953,6 +960,36 @@ async def apply_close_to_packages(
 # ---------------------------------------------------------------- gộp hồ sơ chưa xác định (DEC-269, R3-2)
 
 
+async def _orders_of_open_cases(session: AsyncSession, cases: Sequence[ReturnCase]) -> list[Order]:
+    """Đơn (khác nhau) của các hồ sơ **chưa kết thúc** trong `cases` (§5.1 #15)."""
+    ids = list(
+        dict.fromkeys(
+            c.order_id
+            for c in cases
+            if c.status in OPEN_CASE_STATUSES and c.merged_into_id is None and c.order_id is not None
+        )
+    )
+    return [o for oid in ids if (o := await session.get(Order, oid)) is not None]
+
+
+async def ambiguous_return_code(session: AsyncSession, code: str) -> list[uuid.UUID]:
+    """Id hồ sơ mở mang mã chiều về `code` khi chúng thuộc ≥ 2 đơn khác nhau (rỗng = không mơ hồ)."""
+    cases = (
+        await session.scalars(
+            select(ReturnCase)
+            .where(
+                func.upper(ReturnCase.return_tracking_number) == code.strip().upper(),
+                ReturnCase.status.in_(OPEN_CASE_STATUSES),
+                ReturnCase.merged_into_id.is_(None),
+            )
+            .order_by(ReturnCase.id)
+        )
+    ).all()
+    if len({c.order_id for c in cases if c.order_id is not None}) < 2:
+        return []
+    return [c.id for c in cases]
+
+
 async def _unidentified_candidates(
     session: AsyncSession, codes: Sequence[str]
 ) -> list[tuple[ReturnCase, str]]:
@@ -991,6 +1028,15 @@ async def merge_unidentified_by_code(session: AsyncSession, order: Order) -> lis
         codes.append(open_case.return_tracking_number)  # J-13: mã chiều về của yêu cầu mới (02 §6.3 #6)
     merged: list[uuid.UUID] = []
     for candidate, code in await _unidentified_candidates(session, codes):
+        # §5.1 #15 (DEC-523): mã quét của hồ sơ chưa xác định khớp mã chiều về của ≥ 2 hồ sơ mở thuộc đơn khác
+        # nhau → không tự gộp (không đoán đơn); giữ `UNIDENTIFIED`, gộp tay API-112.
+        ambiguous = await ambiguous_return_code(session, code)
+        if ambiguous:
+            log.warning(
+                "unidentified_merge_ambiguous", code=code, case_ids=[str(i) for i in ambiguous],
+                unidentified_case_id=str(candidate.id),
+            )  # fmt: skip
+            continue
         await orders.lock_orders(session, [order.platform_order_sn])
         case = await lock_case(session, candidate.id)
         if case is None or case.status == "CANCELLED" or case.order_id is not None:
