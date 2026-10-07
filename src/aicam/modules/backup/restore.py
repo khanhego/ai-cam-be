@@ -35,6 +35,13 @@ EXIT_OK = 0
 EXIT_VERIFY_FAILED = 1
 EXIT_REFUSED = 2  # khóa DB sai / DB đích không trống / không có bản DB — không ghi gì
 EXIT_PARTIAL = 3  # có đối tượng bằng chứng giải mã lỗi / thiếu khóa — đã làm hết phần còn lại
+EXIT_CORRUPT = 4  # bản DB chỉ định hỏng / không giải mã được (G3-BK-2) — không ghi gì
+EXIT_RESTORE_FAILED = 5  # pg_restore lỗi giữa chừng — DB đích dở dang, KHÔNG `dc up -d` (G3-BK-2)
+LATEST_TRIES = 3  # `--db latest`: bản mới nhất hỏng → thử tối đa 3 bản hoàn tất kế tiếp (G3-BK-3)
+
+
+class RestoreFailed(RuntimeError):
+    """`pg_restore` lỗi sau khi đã bắt đầu ghi DB đích."""
 
 
 @dataclass
@@ -51,10 +58,52 @@ def read_key_files(paths: list[Path]) -> list[bytes]:
     return [crypto.parse_key(p.read_text().strip()) for p in paths]
 
 
+@dataclass(frozen=True)
+class DumpInfo:
+    key: str
+    size: int
+    last_modified: Any
+    complete: bool  # có bản file nhập cùng lượt (J-20 chỉ tải file nhập sau khi bản DB đã kiểm đọc lại đạt)
+
+
+def db_dumps(store: ObjectStore) -> list[DumpInfo]:
+    """Bản DB trên kho, mới nhất trước (tên = dấu thời gian UTC của lượt). `complete` = lượt J-20 đi qua bước
+    kiểm đọc lại bản DB (G3-BK-3): bản DB của lượt `FAILED` trước bước đó / lượt mồ côi (worker chết) không có
+    bản file nhập cùng lượt."""
+    imports = {o.key for o in store.list(IMPORTS_PREFIX)}
+    dumps = [o for o in store.list(DB_PREFIX) if o.key.endswith(".dump.enc")]
+    return [
+        DumpInfo(o.key, o.size, o.last_modified, imports_key_for(o.key) in imports)
+        for o in sorted(dumps, key=lambda o: o.key, reverse=True)
+    ]
+
+
 def latest_db_key(store: ObjectStore) -> str | None:
-    """`--db latest`: khóa đối tượng có tên (dấu thời gian UTC) lớn nhất dưới `backup/db/`."""
-    keys = sorted(o.key for o in store.list(DB_PREFIX) if o.key.endswith(".dump.enc"))
-    return keys[-1] if keys else None
+    """`--db latest`: bản DB **hoàn tất** mới nhất (bỏ qua bản của lượt lỗi / mồ côi — G3-BK-3)."""
+    return next((d.key for d in db_dumps(store) if d.complete), None)
+
+
+def list_dumps(settings: Settings, *, store: ObjectStore | None = None) -> Report:
+    """`aicam backup-restore --list` (G3-BK-3): bản DB trên kho, mới nhất trước, đánh dấu bản `--db latest` sẽ
+    chọn và bản bị bỏ qua (lượt chưa hoàn tất)."""
+    report = Report()
+    store = store or cloud.backup_store(settings)
+    try:
+        dumps = db_dumps(store)
+    except CloudError as exc:
+        report.say(f"Lỗi kho lưu: {exc.message}")
+        report.exit_code = EXIT_REFUSED
+        return report
+    if not dumps:
+        report.say("Không có bản sao DB nào dưới backup/db/ trên kho lưu.")
+        return report
+    latest = latest_db_key(store)
+    report.say("Bản sao DB trên kho (mới nhất trước) — dùng: aicam backup-restore --db <khóa đối tượng>")
+    for d in dumps:
+        mark = " ← --db latest" if d.key == latest else ""
+        state = "hoàn tất" if d.complete else "CHƯA HOÀN TẤT (lượt lỗi / dừng giữa chừng — latest bỏ qua)"
+        report.say(f"  {d.key}  {d.size:,} byte  {d.last_modified:%Y-%m-%d %H:%M} UTC  {state}{mark}")
+    return report
 
 
 async def _db_is_empty(settings: Settings) -> bool:
@@ -82,7 +131,25 @@ async def _pg_restore(settings: Settings, dump: Path, *, force: bool) -> None:
         _, err = await proc.communicate()
     if proc.returncode != 0:
         tail = (err or b"").decode(errors="replace").strip().splitlines()[-3:]
-        raise RuntimeError("pg_restore lỗi: " + " | ".join(tail))
+        raise RestoreFailed("pg_restore lỗi: " + " | ".join(tail))
+
+
+async def _mark_pending_if_possible(settings: Settings) -> bool:
+    """Sau `pg_restore` lỗi: bảng `setting` (dòng 1) đã có → tắt sao lưu + chờ kiểm. Lỗi gì cũng không ném."""
+    engine = create_async_engine(settings.database_url)
+    try:
+        async with engine.begin() as conn:
+            if await conn.scalar(text("SELECT to_regclass('public.setting')")) is None:
+                return False
+            res = await conn.execute(
+                text("UPDATE setting SET backup_enabled = false, backup_restore_pending = true WHERE id = 1")
+            )
+            return bool(res.rowcount)
+    except Exception:  # bảng dở dang (thiếu cột) / mất kết nối
+        log.exception("backup_restore_mark_pending_failed")
+        return False
+    finally:
+        await engine.dispose()
 
 
 async def mark_restore_pending(db: AsyncSession) -> None:
@@ -92,6 +159,48 @@ async def mark_restore_pending(db: AsyncSession) -> None:
         update(Setting).where(Setting.id == 1).values(backup_enabled=False, backup_restore_pending=True)
     )
     await db.commit()
+
+
+class _Corrupt(Exception):
+    """Bản DB hỏng (header / khối không giải mã được, lệch SHA-256) — `latest` thử bản kế."""
+
+
+class _KeyMismatch(Exception):
+    def __init__(self, fingerprint: str) -> None:
+        super().__init__(fingerprint)
+        self.fingerprint = fingerprint
+
+
+async def _fetch_dump(
+    store: ObjectStore, object_key: str, keys: dict[str, bytes], dump: Path
+) -> tuple[crypto.Header, crypto.Result]:
+    """Tải + giải mã một bản DB vào `dump` (kiểm SHA-256 với metadata). Khóa không có → `_KeyMismatch`; hỏng →
+    `_Corrupt`; không thấy đối tượng → `CloudError`."""
+    head = await asyncio.to_thread(store.head, object_key)
+    if head is None:
+        raise CloudError("CLOUD_ERROR", f"Không thấy đối tượng {object_key}.")
+
+    def _peek() -> crypto.Header:
+        with store.get_stream(object_key) as body:
+            return crypto.read_header(body)
+
+    try:
+        header = await asyncio.to_thread(_peek)
+    except crypto.CryptoError as exc:
+        raise _Corrupt(str(exc)) from exc
+    if header.fingerprint not in keys:
+        raise _KeyMismatch(header.fingerprint)
+    try:
+        result = await asyncio.to_thread(transfer.download_decrypt_to, store, object_key, dump, keys)
+    except crypto.WrongKeyError as exc:
+        raise _KeyMismatch(header.fingerprint) from exc
+    except crypto.CryptoError as exc:
+        raise _Corrupt(str(exc)) from exc
+    expected = head.metadata.get("sha256")
+    if expected and expected != result.sha256:
+        await asyncio.to_thread(dump.unlink, missing_ok=True)
+        raise _Corrupt("lệch SHA-256 với metadata")
+    return header, result
 
 
 async def restore_db(
@@ -104,27 +213,24 @@ async def restore_db(
     store: ObjectStore,
 ) -> bool:
     """(1) Tải + giải mã DB dump (tệp tạm, kiểm SHA-256 với metadata) → `pg_restore` vào DB trống. Khóa không
-    khớp / DB không trống → từ chối, **không ghi** gì (mã 2)."""
-    object_key = latest_db_key(store) if db_key == "latest" else db_key
-    if object_key is None:
-        report.say("Không tìm thấy bản sao DB nào dưới backup/db/ trên kho lưu.")
-        report.exit_code = EXIT_REFUSED
-        return False
-    head = await asyncio.to_thread(store.head, object_key)
-    if head is None:
-        report.say(f"Không thấy đối tượng {object_key}.")
-        report.exit_code = EXIT_REFUSED
-        return False
+    khớp / DB không trống → từ chối, **không ghi** gì (mã 2). Bản chỉ định hỏng → mã 4 (G3-BK-2).
 
-    def _peek() -> crypto.Header:
-        with store.get_stream(object_key) as body:
-            return crypto.read_header(body)
-
-    header = await asyncio.to_thread(_peek)
-    if header.fingerprint not in keys:
-        report.say(f"Khóa giải mã không khớp (dấu vân tay {header.fingerprint}) — không ghi gì.")
-        report.exit_code = EXIT_REFUSED
-        return False
+    `--db latest` (G3-BK-3): chỉ xét bản của lượt hoàn tất (bỏ qua lượt lỗi / mồ côi, in rõ); bản mới nhất
+    hỏng → thử tối đa `LATEST_TRIES` bản kế, in bản đã dùng. Khóa không khớp **không** lùi bản (tránh âm thầm
+    khôi phục dữ liệu cũ hơn chỉ vì thiếu khóa mới)."""
+    if db_key == "latest":
+        dumps = db_dumps(store)
+        for d in dumps:
+            if not d.complete:
+                report.say(f"Bỏ qua {d.key}: lượt sao lưu chưa hoàn tất (không có bản file nhập cùng lượt).")
+        candidates = [d.key for d in dumps if d.complete][:LATEST_TRIES]
+        if not candidates:
+            report.say("Không tìm thấy bản sao DB hoàn tất nào dưới backup/db/ trên kho lưu "
+                       "(xem `aicam backup-restore --list`, chọn bản bằng --db <khóa>).")  # fmt: skip
+            report.exit_code = EXIT_REFUSED
+            return False
+    else:
+        candidates = [db_key]
     if not force and not await _db_is_empty(settings):
         report.say("DB đích không trống — từ chối khôi phục (dùng --force để ghi đè có chủ đích).")
         report.exit_code = EXIT_REFUSED
@@ -132,12 +238,27 @@ async def restore_db(
     tmp = Path(tempfile.mkdtemp(prefix="aicam-restore-", dir=_tmp_root(settings)))
     try:
         dump = tmp / "aicam.dump"
-        result = await asyncio.to_thread(transfer.download_decrypt_to, store, object_key, dump, keys)
-        expected = head.metadata.get("sha256")
-        if expected and expected != result.sha256:
-            report.say("Bản DB tải về lệch SHA-256 với metadata — dừng, không ghi DB.")
-            report.exit_code = EXIT_REFUSED
+        fetched: tuple[crypto.Header, crypto.Result] | None = None
+        object_key = candidates[0]
+        for object_key in candidates:
+            try:
+                fetched = await _fetch_dump(store, object_key, keys, dump)
+                break
+            except _KeyMismatch as exc:
+                report.say(f"Khóa giải mã không khớp (dấu vân tay {exc.fingerprint}) — không ghi gì.")
+                report.exit_code = EXIT_REFUSED
+                return False
+            except _Corrupt as exc:
+                report.say(f"Bản DB {object_key} hỏng / không giải mã được ({exc}) — không ghi gì.")
+        if fetched is None:
+            if db_key == "latest":
+                report.say(f"{len(candidates)} bản DB hoàn tất mới nhất đều hỏng — chọn bản khác bằng --db "
+                           "(xem --list).")  # fmt: skip
+            report.exit_code = EXIT_CORRUPT
             return False
+        header, result = fetched
+        if object_key != candidates[0]:
+            report.say(f"DÙNG BẢN KẾ: {object_key} (bản mới hơn hỏng — xem dòng trên).")
         started = clock.now()
         await _pg_restore(settings, dump, force=force)
         report.say(
@@ -249,9 +370,24 @@ async def restore(
     started = clock.now()
     try:
         restore_dump = db_key is not None and not evidence_only
-        if restore_dump and not await restore_db(
-            settings, report, db_key=db_key or "latest", keys=keys, force=force, store=store
-        ):
+        try:
+            if restore_dump and not await restore_db(
+                settings, report, db_key=db_key or "latest", keys=keys, force=force, store=store
+            ):
+                return report
+        except RestoreFailed as exc:
+            # G3-BK-2: DB đích dở dang — vẫn cố tắt sao lưu (nếu bảng `setting` đã có) để máy này không chạy
+            # J-20..J-23 trên dữ liệu dở; KHÔNG `dc up -d`.
+            report.say(f"KHÔI PHỤC DB LỖI GIỮA CHỪNG: {exc}")
+            marked = await _mark_pending_if_possible(settings)
+            report.say(
+                "Đã tắt sao lưu tự động (Chờ kiểm khôi phục) trên DB dở dang."
+                if marked
+                else "DB dở dang chưa có bảng setting — không cần tắt sao lưu."
+            )
+            report.say("KHÔNG chạy `dc up -d`. Xóa / tạo lại DB đích (ops §6.2) rồi chạy lại backup-restore "
+                       "(bản khác: --db <khóa>, xem --list).")  # fmt: skip
+            report.exit_code = EXIT_RESTORE_FAILED
             return report
         init_engine(settings.database_url)
         try:
@@ -276,6 +412,10 @@ async def restore(
     except CloudError as exc:
         report.say(f"Lỗi kho lưu: {exc.message}")
         report.exit_code = EXIT_REFUSED
+        return report
+    except crypto.CryptoError as exc:  # G3-BK-2: không văng traceback
+        report.say(f"Bản sao hỏng / không giải mã được: {exc}")
+        report.exit_code = EXIT_CORRUPT
         return report
     report.say(f"Xong sau {(clock.now() - started).total_seconds():.1f} giây.")
     log.info("backup_restore", exit_code=report.exit_code)

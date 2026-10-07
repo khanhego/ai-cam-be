@@ -228,6 +228,10 @@ async def backup_restore(args: argparse.Namespace) -> int:
 
     from aicam.modules.backup import restore
 
+    if args.list:  # G3-BK-3: xem các bản DB trên kho trước khi chọn --db
+        listed = await asyncio.to_thread(restore.list_dumps, get_settings())
+        print("\n".join(listed.lines))
+        return listed.exit_code
     report = await restore.restore(
         get_settings(),
         db_key=None if args.evidence_only else args.db,
@@ -293,7 +297,12 @@ def main(argv: list[str] | None = None) -> int:
     rst = sub.add_parser(
         "backup-restore", help="Khôi phục DB (+ bằng chứng) từ kho lưu cloud (docs/ops.md §6.2)"
     )
-    rst.add_argument("--db", default="latest", help="latest (mặc định) hoặc khóa đối tượng backup/db/…")
+    rst.add_argument(
+        "--db",
+        default="latest",
+        help="latest (mặc định: bản hoàn tất mới nhất, hỏng thì thử bản kế) hoặc khóa đối tượng backup/db/…",
+    )
+    rst.add_argument("--list", action="store_true", help="chỉ liệt kê bản DB trên kho (không khôi phục)")
     rst.add_argument("--evidence", action="store_true", help="khôi phục cả bằng chứng (hồ sơ mở trước)")
     rst.add_argument("--evidence-only", action="store_true", help="không đụng DB — chỉ phần bằng chứng")
     rst.add_argument(
@@ -303,7 +312,11 @@ def main(argv: list[str] | None = None) -> int:
     rst.add_argument(
         "--key-file", action="append", default=[], help="tệp chứa một khóa cũ (base64), lặp được"
     )
-    rst.add_argument("--force", action="store_true", help="cho phép ghi đè DB đích không trống")
+    rst.add_argument(
+        "--force",
+        action="store_true",
+        help="cho phép ghi đè DB đích không trống — dừng worker-backup + beat trước (ops §6.2)",
+    )
     ver = sub.add_parser(
         "backup-verify", help="Kiểm SHA-256 clip / ảnh sau khôi phục; đạt → gỡ 'Chờ kiểm khôi phục'"
     )

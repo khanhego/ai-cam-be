@@ -181,12 +181,28 @@ dc run --rm api aicam backup-restore --db latest --evidence  # tải + giải m�
 #    bản dump) vẫn được tải về, in "ngoài DB". In: tải N / thiếu N / ngoài DB N / giải mã lỗi N / thiếu khóa N.
 #    Chỉ DB trước, bằng chứng sau: bỏ --evidence rồi chạy lại với --evidence-only.
 #    khóa không khớp → "Khóa giải mã không khớp (dấu vân tay …)", mã 2, KHÔNG ghi gì → tìm đúng khóa
-#    DB không trống → từ chối (mã 2); cố ý ghi đè: --force
+#    DB không trống → từ chối (mã 2); cố ý ghi đè: --force (xem "Ghi đè DB đang chạy" dưới)
 #    thêm khóa cũ: --key-file /đường/dẫn/khoa-cu.txt (lặp được)
+#    --db latest = bản của lượt sao lưu HOÀN TẤT mới nhất (bỏ qua bản của lượt lỗi / dừng giữa chừng, in "Bỏ qua …");
+#    bản đó hỏng → tự thử tối đa 3 bản hoàn tất kế tiếp, in "DÙNG BẢN KẾ: …" (khóa không khớp thì KHÔNG lùi bản).
+#    Xem trước / chọn bản: dc run --rm api aicam backup-restore --list  →  --db backup/db/…/aicam-….dump.enc
+# CHỈ chạy 2 lệnh dưới khi backup-restore thoát mã 0 (hoặc 3 — bằng chứng thiếu một phần, xem "Lối ra"):
 dc run --rm api alembic upgrade head                          # bản dump cũ hơn image → nâng schema
 dc up -d
 dc run --rm api aicam backup-verify                           # đạt (mã 0) → gỡ "Chờ kiểm khôi phục"
 ```
+
+**Mã thoát `backup-restore`**: 0 xong · 2 từ chối, **không ghi gì** (khóa sai / DB không trống / không có bản hoàn
+tất / lỗi kho lưu) · 3 xong DB, có đối tượng bằng chứng lỗi (bảng "Lối ra") · 4 bản DB hỏng / không giải mã được,
+**không ghi gì** → `--list`, chọn bản khác bằng `--db` · 5 **`pg_restore` lỗi giữa chừng — DB đích dở dang**: lệnh
+đã cố tắt sao lưu trên DB dở dang (nếu bảng `setting` đã có). **KHÔNG `dc up -d`** (worker-backup / beat sẽ chạy
+trên dữ liệu dở). Xóa và tạo lại DB đích (`dc exec postgres dropdb -U aicam aicam && dc exec postgres createdb -U
+aicam aicam`), đọc 3 dòng lỗi cuối của `pg_restore` (thiếu chỗ đĩa, sai phiên bản Postgres…), rồi chạy lại
+`backup-restore` (bản khác: `--db`).
+
+**Ghi đè DB đang chạy (`--force`)** — chỉ khi chủ ý quay về bản cũ trên máy đang dùng: **dừng trước**
+`dc stop api vision worker worker-sync worker-sync-long worker-notify worker-export worker-backup beat` (J-20..J-23 không được chạy giữa lúc `pg_restore --clean`
+xóa / tạo lại bảng), chạy `backup-restore --force`, rồi làm tiếp như trên (mã 0 mới `dc up -d`).
 
 Sau `backup-restore` sao lưu tự động **tắt** (D23 "Chờ kiểm khôi phục", J-20..J-23 không chạy — máy mới không tự xóa
 bản cloud nào) tới khi `backup-verify` đạt; Admin bật lại ở D23.

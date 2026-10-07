@@ -163,3 +163,19 @@ def test_backup_verify_cli_parses_options(monkeypatch: pytest.MonkeyPatch) -> No
         True,
         ["k1", "k2"],
     )
+
+
+def test_backup_restore_cli_list(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    """G3-BK-3: `aicam backup-restore --list` chỉ liệt kê (không khôi phục)."""
+    from aicam.modules.backup import restore
+
+    def fake_list(_settings: object) -> restore.Report:
+        return restore.Report(lines=["  backup/db/x.dump.enc  hoàn tất ← --db latest"])
+
+    async def no_restore(*_: object, **__: object) -> restore.Report:  # pragma: no cover - không được gọi
+        raise AssertionError("--list không được khôi phục")
+
+    monkeypatch.setattr(restore, "list_dumps", fake_list)
+    monkeypatch.setattr(restore, "restore", no_restore)
+    assert cli.main(["backup-restore", "--list"]) == 0
+    assert "← --db latest" in capsys.readouterr().out
