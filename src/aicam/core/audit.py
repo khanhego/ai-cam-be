@@ -61,6 +61,9 @@ ACTIONS = frozenset(
         "SHARE_CREATE",
         "SHARE_REVOKE",
         "SHARE_EXPIRE",  # J-25 (người dùng null)
+        # Thiếu tệp (02 API-92 v0.4 — DEC-530, T-291).
+        "MEDIA_MARK_MISSING",
+        "MEDIA_MISSING_RECOVERED",
         # Sao lưu cloud (02 §6.2 API-180..188, API-186 CLI — M15).
         "BACKUP_TEST",
         "BACKUP_SETTINGS_UPDATE",

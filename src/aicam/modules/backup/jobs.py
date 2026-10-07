@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import clock
 from aicam.core.settings import Settings
-from aicam.modules.backup import service, transfer
+from aicam.modules.backup import media_state, service, transfer
 from aicam.modules.backup.models import BackupObject, BackupRun
 from aicam.modules.cloud import config as cloud
 from aicam.modules.cloud import crypto
@@ -531,14 +531,26 @@ async def _upload_one(
             await db.commit()
             return "SOURCE_DELETED"
         first = obj.last_error != SOURCE_MISSING
+        if first:
+            # `attempts` đếm lần thử **liền** không thấy tệp (giãn cách 5 / 15 / 60 tính từ lần đầu; đặt
+            # `MISSING` ở lần thứ `BACKUP_SOURCE_MISSING_MARK_AFTER` — DEC-679).
+            obj.attempts = 0
         _fail(obj, now, SOURCE_MISSING)
+        marked = False
+        if source.status == "READY" and obj.attempts >= settings.backup_source_missing_mark_after:
+            marked = await media_state.mark_missing(db, obj, settings, cause=SOURCE_MISSING, user_id=None)
         if obj.resolution_action == "RETRY":
             # "Thử lại ngay" mà tệp vẫn không có → vấn đề còn nguyên, hiện lại như mới (dấu vết ở audit —
             # DEC-662).
             obj.resolution_action = obj.resolution_note = obj.resolved_by = obj.resolved_at = None
         await db.commit()
         log.warning(
-            "backup_source_missing", object_id=str(obj.id), kind=obj.kind, attempts=obj.attempts, first=first
+            "backup_source_missing",
+            object_id=str(obj.id),
+            kind=obj.kind,
+            attempts=obj.attempts,
+            first=first,
+            marked_missing=marked,
         )
         return SOURCE_MISSING
     actual, size = await asyncio.to_thread(transfer.sha256_file, path)
@@ -554,6 +566,10 @@ async def _upload_one(
         await db.commit()
         log.warning("backup_hash_mismatch", object_id=str(obj.id), sha_db=expected, sha_file=actual)
         return "HASH_MISMATCH"
+    if source.status == "MISSING":
+        # Tệp có lại, băm khớp (hoặc đúng bản lệch đã chấp nhận) → nguồn về `READY` (02a §5.2 #16, DEC-530).
+        await media_state.recover(db, obj, accepted_mismatch=bool(expected and actual != expected))
+        await db.commit()
     if accepted and expected and actual != expected and obj.cloud_present:
         # Bản cloud hiện có là bản tải lên trước đây (đã qua kiểm mã băm = bản gốc): KHÔNG ghi đè bản gốc
         # bằng bản

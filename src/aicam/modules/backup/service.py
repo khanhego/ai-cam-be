@@ -876,6 +876,22 @@ async def resolve_issue(
         obj.attempts, obj.next_attempt_at = 0, now
     else:
         obj.status = "IGNORED"
+        if is_missing:
+            # v0.4 (DEC-530): Admin xác nhận tệp mất hẳn → nguồn `READY` → `MISSING` ngay (khóa nguồn sau
+            # `backup_object`, kiểm tệp lần cuối dưới khóa).
+            from aicam.modules.backup import media_state
+
+            source = await media_state.lock_source(db, obj)
+            if (
+                source is not None
+                and await asyncio.to_thread(media_state.file_of, settings, source) is not None
+            ):
+                raise AppError(
+                    "BACKUP_ISSUE_ACTION_INVALID", "Tệp đã có lại tại kho — bấm Thử lại ngay.", 409
+                )
+            await media_state.mark_missing(
+                db, obj, settings, cause="BACKUP_IGNORE", user_id=p.user_id, ip=p.ip
+            )
     obj.resolution_action, obj.resolution_note, obj.resolved_by, obj.resolved_at = (
         data.action,
         note,
