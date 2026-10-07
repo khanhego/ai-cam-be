@@ -477,3 +477,42 @@ async def test_confirm_return_restores_soft_removed_row(api: AsyncClient, db: As
     assert ev["id"] == str(row_id)  # cùng dòng, không thêm dòng mới
     assert _primary(res.json()) == [str(g.id)]
     assert res.json()["removed_evidence"] == []
+
+
+async def test_mark_rereads_claims_under_session_lock_g3_ev2(
+    api: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-EV-2: hồ sơ khác thêm phiên vào bằng chứng **sau** lần đọc `others` đầu (trước khi MARK khóa) → MARK
+    đọc lại dưới khóa phiên, khóa thêm hồ sơ đó và bỏ mềm luôn (link nguồn hồ sơ không còn lấy phiên này)."""
+    from aicam.modules.claims import review
+
+    station, package, case, _ = await _setup(db, 47)
+    a = await _return(db, station, package, case, T0, "ABANDONED")
+    headers, p = await _login(api, db, "CSKH")
+    c1 = await _manual(db, p, package, case, "EMPTY_BOX")
+    c2 = await _manual(db, p, package, case, "DAMAGED")
+    row = await db.scalar(
+        select(ClaimEvidence).where(ClaimEvidence.claim_id == c2.id, ClaimEvidence.session_id == a.id)
+    )
+    assert row is not None
+    await db.delete(row)
+    await db.flush()
+    before = (await api.get(f"/api/v1/claims/{c1.id}", headers=headers)).json()
+    real = review.open_claims_using
+    calls: list[int] = []
+
+    async def racing(session: AsyncSession, session_id: uuid.UUID) -> list[uuid.UUID]:
+        out = await real(session, session_id)
+        calls.append(len(out))
+        if len(calls) == 1:  # API-134 của hồ sơ c2 vừa commit giữa lần đọc đầu và lúc khóa
+            session.add(ClaimEvidence(claim_id=c2.id, kind="SESSION", session_id=a.id, auto=False))
+            await session.flush()
+        return out
+
+    monkeypatch.setattr(review, "open_claims_using", racing)
+    res = await _review(api, headers, before, a.id, "MARK_WRONG_SCAN", reason_code="WRONG_SCAN")
+    assert res.status_code == 200, res.text
+    assert a.id not in await _active(db, c2.id)
+    assert calls[:2] == [1, 2]
+    await db.refresh(c2)
+    assert c2.version == 2

@@ -71,6 +71,27 @@ async def _lock_claims(db: AsyncSession, ids: Sequence[uuid.UUID]) -> dict[uuid.
     return {c.id: c for c in rows}
 
 
+MARK_LOCK_ATTEMPTS = 3
+
+
+async def open_claims_using(db: AsyncSession, session_id: uuid.UUID) -> list[uuid.UUID]:
+    """Hồ sơ chưa đóng đang dùng phiên (hoặc ảnh của phiên) làm bằng chứng."""
+    return list(
+        (
+            await db.scalars(
+                select(ClaimEvidence.claim_id)
+                .join(Claim, Claim.id == ClaimEvidence.claim_id)
+                .where(
+                    _evidence_of_session(session_id),  # type: ignore[arg-type]
+                    ClaimEvidence.removed_at.is_(None),
+                    Claim.status != "CLOSED",
+                )
+                .distinct()
+            )
+        ).all()
+    )
+
+
 def _evidence_of_session(session_id: uuid.UUID) -> object:
     """Dòng bằng chứng của phiên hoặc của ảnh thuộc phiên."""
     return or_(
@@ -101,40 +122,43 @@ async def review_return_session(
     if claim is None:
         raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ khiếu nại.", 404)
     # Ứng viên bỏ mềm (MARK): hồ sơ khác đang dùng phiên — đọc trước (không khóa) để khóa cả nhóm theo id
-    # tăng.
-    others: list[uuid.UUID] = []
-    if body.action == "MARK_WRONG_SCAN":
-        others = list(
-            (
-                await db.scalars(
-                    select(ClaimEvidence.claim_id)
-                    .join(Claim, Claim.id == ClaimEvidence.claim_id)
-                    .where(
-                        _evidence_of_session(session_id),  # type: ignore[arg-type]
-                        ClaimEvidence.removed_at.is_(None),
-                        Claim.status != "CLOSED",
-                    )
-                    .distinct()
-                )
-            ).all()
+    # tăng. G3-EV-2: đọc lại **dưới khóa phiên + clip của phiên** (API-134 khóa clip trước khi ghi bằng chứng
+    # — DEC-251): hồ sơ vừa thêm phiên giữa hai lần đọc → lùi savepoint (nhả khóa), khóa lại cả nhóm, tối
+    # đa 3 lần.
+    mark = body.action == "MARK_WRONG_SCAN"
+    others = await open_claims_using(db, session_id) if mark else []
+    for _attempt in range(MARK_LOCK_ATTEMPTS):
+        savepoint = await db.begin_nested() if mark else None
+        locked = await _lock_claims(db, [claim_id, *others])
+        claim = locked.get(claim_id)
+        if claim is None:
+            raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ khiếu nại.", 404)
+        if claim.version != body.version:
+            raise await version_conflict(claim_id)
+        if claim.status == "CLOSED":
+            raise AppError("CLAIM_CLOSED", "Hồ sơ đã đóng, chỉ thêm được ghi chú.", 409)
+        scope = await evidence_rules.scope_condition(db, claim.package_id, claim.return_case_id)
+        pack: PackSession | None = await db.scalar(
+            select(PackSession)
+            .where(PackSession.id == session_id, PackSession.type == "RETURN", scope)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-    locked = await _lock_claims(db, [claim_id, *others])
-    claim = locked.get(claim_id)
-    if claim is None:
-        raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ khiếu nại.", 404)
-    if claim.version != body.version:
-        raise await version_conflict(claim_id)
-    if claim.status == "CLOSED":
-        raise AppError("CLAIM_CLOSED", "Hồ sơ đã đóng, chỉ thêm được ghi chú.", 409)
-    scope = await evidence_rules.scope_condition(db, claim.package_id, claim.return_case_id)
-    pack: PackSession | None = await db.scalar(
-        select(PackSession)
-        .where(PackSession.id == session_id, PackSession.type == "RETURN", scope)
-        .with_for_update()
-        .execution_options(populate_existing=True)
-    )
-    if pack is None:
-        raise AppError("NOT_FOUND", "Phiên không thuộc kiện / hồ sơ hàng hoàn của hồ sơ này.", 404)
+        if pack is None:
+            raise AppError("NOT_FOUND", "Phiên không thuộc kiện / hồ sơ hàng hoàn của hồ sơ này.", 404)
+        if savepoint is None:
+            break
+        await lock_session_clips(db, [pack.id])
+        again = await open_claims_using(db, session_id)
+        if set(again) <= set(locked):
+            await savepoint.commit()  # RELEASE SAVEPOINT — khóa chuyển lên transaction ngoài
+            break
+        await savepoint.rollback()
+        others = sorted(set(others) | set(again))
+    else:
+        raise AppError(
+            "VERSION_CONFLICT", "Hồ sơ khác vừa thay đổi bằng chứng của phiên này — tải lại rồi thử lại.", 409
+        )
 
     touched: set[uuid.UUID] = {claim.id}
     affected: list[AffectedShare] = []
