@@ -167,5 +167,7 @@ class ShareOptions(BaseModel):
     source: ShareSource
     sessions: list[OptionSession]
     snapshot_count: int
+    # v0.4 (DEC-531): số phiên "Cần soát" của hồ sơ (= API-132 `review_sessions`); nguồn `SESSION` → 0.
+    review_pending_count: int = 0
     limits: OptionLimits
     default_expires_days: int

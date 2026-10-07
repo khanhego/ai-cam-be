@@ -111,6 +111,60 @@
         "title": "AdjustedPackage",
         "type": "object"
       },
+      "AffectedShare": {
+        "description": "API-189 `affected_shares[]` (v0.4 — DEC-531).",
+        "properties": {
+          "can_revoke": {
+            "title": "Can Revoke",
+            "type": "boolean"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "recipient": {
+            "title": "Recipient",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "CREATING",
+              "ACTIVE",
+              "FAILED",
+              "REVOKED",
+              "EXPIRED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "recipient",
+          "status",
+          "expires_at",
+          "created_by",
+          "can_revoke"
+        ],
+        "title": "AffectedShare",
+        "type": "object"
+      },
       "AlertOut": {
         "properties": {
           "code": {
@@ -8813,6 +8867,307 @@
         "title": "ReviewIn",
         "type": "object"
       },
+      "ReviewOut": {
+        "description": "API-189 200 = API-132 + `affected_shares[]` (v0.4 — DEC-531; khác `[]` chỉ khi `MARK_WRONG_SCAN`).",
+        "properties": {
+          "affected_shares": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/AffectedShare"
+            },
+            "title": "Affected Shares",
+            "type": "array"
+          },
+          "allowed_transitions": {
+            "items": {
+              "enum": [
+                "NEW",
+                "SUBMITTED",
+                "WAITING",
+                "WON",
+                "LOST",
+                "CLOSED"
+              ],
+              "type": "string"
+            },
+            "title": "Allowed Transitions",
+            "type": "array"
+          },
+          "close_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Close Reason"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "counterparty": {
+            "enum": [
+              "PLATFORM",
+              "CARRIER"
+            ],
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "deadline_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At"
+          },
+          "deadline_source": {
+            "anyOf": [
+              {
+                "enum": [
+                  "PLATFORM",
+                  "DEFAULT",
+                  "MANUAL",
+                  "DEFAULT_PLATFORM_PASSED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline Source"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/aicam__modules__claims__schemas__EvidenceOut"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "excluded_return_sessions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ExcludedReturnSession"
+            },
+            "title": "Excluded Return Sessions",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "missing": {
+            "items": {
+              "enum": [
+                "NO_PACK_CLIP",
+                "PACK_CLIP_DELETED",
+                "RETURN_CLIP_PENDING"
+              ],
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "notes": {
+            "items": {
+              "$ref": "#/components/schemas/NoteOut"
+            },
+            "title": "Notes",
+            "type": "array"
+          },
+          "order": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimOrder"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "other_sessions": {
+            "items": {
+              "$ref": "#/components/schemas/OtherSession"
+            },
+            "title": "Other Sessions",
+            "type": "array"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "package": {
+            "$ref": "#/components/schemas/ClaimPackage"
+          },
+          "platform_claim_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Claim Ref"
+          },
+          "prior_return_sessions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PriorReturnSession"
+            },
+            "title": "Prior Return Sessions",
+            "type": "array"
+          },
+          "recovered_amount": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovered Amount"
+          },
+          "removed_evidence": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/aicam__modules__claims__schemas__EvidenceOut"
+            },
+            "title": "Removed Evidence",
+            "type": "array"
+          },
+          "return_case": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClaimReturnCase"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "review_sessions": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ReviewSession"
+            },
+            "title": "Review Sessions",
+            "type": "array"
+          },
+          "shares": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ShareBrief"
+            },
+            "title": "Shares",
+            "type": "array"
+          },
+          "shares_active_count": {
+            "default": 0,
+            "title": "Shares Active Count",
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "AUTO_RETURN",
+              "MANUAL",
+              "RECON",
+              "LEGACY_HOLD"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "NEW",
+              "SUBMITTED",
+              "WAITING",
+              "WON",
+              "LOST",
+              "CLOSED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "DAMAGED",
+              "MISSING_ITEM",
+              "WRONG_ITEM",
+              "EMPTY_BOX",
+              "OTHER",
+              "BUYER_CLAIM",
+              "LOST_IN_TRANSIT"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "type",
+          "counterparty",
+          "status",
+          "source",
+          "version",
+          "package",
+          "order",
+          "return_case",
+          "owner",
+          "deadline_at",
+          "deadline_source",
+          "platform_claim_ref",
+          "recovered_amount",
+          "close_reason",
+          "created_at",
+          "closed_at",
+          "evidence",
+          "other_sessions",
+          "missing",
+          "notes",
+          "allowed_transitions"
+        ],
+        "title": "ReviewOut",
+        "type": "object"
+      },
       "ReviewSession": {
         "description": "API-132 `review_sessions[]` (v0.3): phiên \"Cần soát\" của kiện / hồ sơ hàng hoàn.",
         "properties": {
@@ -10008,6 +10363,11 @@
           },
           "limits": {
             "$ref": "#/components/schemas/OptionLimits"
+          },
+          "review_pending_count": {
+            "default": 0,
+            "title": "Review Pending Count",
+            "type": "integer"
           },
           "sessions": {
             "items": {
@@ -13735,7 +14095,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ClaimDetail"
+                  "$ref": "#/components/schemas/ReviewOut"
                 }
               }
             },

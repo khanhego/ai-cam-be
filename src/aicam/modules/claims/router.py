@@ -27,6 +27,7 @@ from aicam.modules.claims.schemas import (
     NoteIn,
     NoteOut,
     ReviewIn,
+    ReviewOut,
     UserBrief,
 )
 from aicam.modules.orders.refs import PlatformCode
@@ -120,10 +121,10 @@ async def set_evidence(
     return out
 
 
-@router.post("/claims/{claim_id}/return-sessions/{session_id}/review", response_model=ClaimDetail)
+@router.post("/claims/{claim_id}/return-sessions/{session_id}/review", response_model=ReviewOut)
 async def review_return_session(
     claim_id: uuid.UUID, session_id: uuid.UUID, body: ReviewIn, p: Staff, db: DbSession, settings: AppSettings
-) -> ClaimDetail:
+) -> ReviewOut:
     """API-189: đánh dấu / bỏ đánh dấu quét nhầm, xác nhận "Là phiên hoàn thật" (BR-39, EX-R21, D17)."""
 
     async def _conflict(cid: uuid.UUID) -> AppError:
@@ -135,8 +136,9 @@ async def review_return_session(
             {"current": current.model_dump(mode="json")},
         )
 
-    await review.review_return_session(db, claim_id, session_id, body, p, version_conflict=_conflict)
-    out = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
+    result = await review.review_return_session(db, claim_id, session_id, body, p, version_conflict=_conflict)
+    detail = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
+    out = ReviewOut(**detail.model_dump(), affected_shares=result.affected_shares)
     await commit(db)
     return out
 

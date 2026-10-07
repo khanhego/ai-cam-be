@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from aicam.core.pagination import Page
 from aicam.modules.orders.refs import ShopRef
-from aicam.modules.shares.schemas import ShareBrief
+from aicam.modules.shares.schemas import AffectedShare, ShareBrief
 
 ClaimType = Literal[
     "DAMAGED", "MISSING_ITEM", "WRONG_ITEM", "EMPTY_BOX", "OTHER", "BUYER_CLAIM", "LOST_IN_TRANSIT"
@@ -232,6 +232,12 @@ class ClaimDetail(BaseModel):
     missing: list[Missing]
     notes: list[NoteOut]
     allowed_transitions: list[ClaimStatus]
+
+
+class ReviewOut(ClaimDetail):
+    """API-189 200 = API-132 + `affected_shares[]` (v0.4 — DEC-531; khác `[]` chỉ khi `MARK_WRONG_SCAN`)."""
+
+    affected_shares: list[AffectedShare] = []
 
 
 class ReviewIn(BaseModel):

@@ -13,7 +13,7 @@ Thứ tự khóa (02a §4 API-189, DEC-251): hồ sơ (id tăng, gồm `{id}`) �
 
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import structlog
 from sqlalchemy import or_, select
@@ -29,6 +29,8 @@ from aicam.modules.claims.schemas import ReviewIn
 from aicam.modules.media.models import Snapshot
 from aicam.modules.media.protection import lock_session_clips
 from aicam.modules.sessions.models import PackSession
+from aicam.modules.shares import queries as share_queries
+from aicam.modules.shares.schemas import AffectedShare
 
 log = structlog.get_logger()
 
@@ -81,6 +83,8 @@ def _evidence_of_session(session_id: uuid.UUID) -> object:
 class ReviewResult:
     claim: Claim
     touched_claims: list[uuid.UUID]
+    # v0.4 (DEC-531): link `CREATING` / `ACTIVE` chứa phiên vừa đánh dấu — FE gợi ý thu hồi, không tự thu hồi.
+    affected_shares: list[AffectedShare] = field(default_factory=list)
 
 
 async def review_return_session(
@@ -133,8 +137,10 @@ async def review_return_session(
         raise AppError("NOT_FOUND", "Phiên không thuộc kiện / hồ sơ hàng hoàn của hồ sơ này.", 404)
 
     touched: set[uuid.UUID] = {claim.id}
+    affected: list[AffectedShare] = []
     if body.action == "MARK_WRONG_SCAN":
-        touched |= await _mark(db, pack, claim, locked, body.reason_code or "", note, p)
+        affected = await share_queries.affected_shares(db, pack.id, viewer=p.user_id, role=p.role)
+        touched |= await _mark(db, pack, claim, locked, body.reason_code or "", note, p, affected)
     elif body.action == "UNMARK_WRONG_SCAN":
         _unmark(db, pack, claim, note, p)
     else:
@@ -150,7 +156,7 @@ async def review_return_session(
     await db.flush()
     log.info("return_session_review", claim_id=str(claim.id), session_id=str(pack.id), action=body.action,
              touched=len(touched))  # fmt: skip
-    return ReviewResult(claim=claim, touched_claims=sorted(touched))
+    return ReviewResult(claim=claim, touched_claims=sorted(touched), affected_shares=affected)
 
 
 async def _mark(
@@ -161,6 +167,7 @@ async def _mark(
     code: str,
     note: str,
     p: Principal,
+    affected: list[AffectedShare],
 ) -> set[uuid.UUID]:
     if pack.status not in _REVIEWABLE:
         raise _not_eligible("Phiên đã có kết luận — sửa ở chi tiết đơn.")
@@ -216,7 +223,7 @@ async def _mark(
         data={
             "session_id": str(pack.id), "claim_id": str(claim.id), "reason_code": code, "note": note,
             "removed_from_claims": [str(c) for c in sorted(by_claim)],
-            "active_shares": [],  # link chia sẻ chứa phiên: T-292 (sau `shares`, T-224)
+            "active_shares": [str(s.id) for s in affected],  # DEC-531 (T-292)
         },
     )  # fmt: skip
     return set(by_claim)

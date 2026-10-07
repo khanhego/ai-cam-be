@@ -1052,11 +1052,16 @@ CONTRACT: tuple[Api, ...] = (
         request_fields=("version", "session_ids", "snapshot_ids", "note"),
     ),
     Api(
-        "API-189",  # Phase 3 v0.3 (T-281): soát phiên mở hoàn — 200 = API-132
+        "API-189",  # Phase 3 v0.3 (T-281): soát phiên mở hoàn — 200 = API-132 + affected_shares (v0.4, T-292)
         "POST",
         "/claims/{claim_id}/return-sessions/{session_id}/review",
         200,
-        CLAIM_DETAIL,
+        (
+            *CLAIM_DETAIL,
+            *(f"affected_shares[].{f}" for f in ("id", "recipient", "status", "expires_at", "can_revoke")),
+            "affected_shares[].created_by.id",
+            "affected_shares[].created_by.display_name",
+        ),
         CLAIM_DETAIL_ENUMS,
         request_fields=("version", "action", "reason_code", "note"),
     ),
@@ -1287,6 +1292,7 @@ CONTRACT: tuple[Api, ...] = (
             *(f"source.{f}" for f in SHARE_SOURCE),
             *(f"sessions[].{f}" for f in SHARE_OPTION_SESSION),
             "snapshot_count",
+            "review_pending_count",  # v0.4 (DEC-531, T-292)
             "limits.max_sessions",
             "limits.max_total_seconds",
             "limits.max_snapshots",

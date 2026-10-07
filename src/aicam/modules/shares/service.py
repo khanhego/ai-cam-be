@@ -313,8 +313,14 @@ async def options(
                 snapshot_count=len(c.snapshots),
             )
         )
+    review_pending = 0
+    if src.claim is not None:
+        review_pending = len(
+            await evidence_rules.review_sessions(db, src.claim.package_id, src.claim.return_case_id)
+        )
     return ShareOptions(
         storage_configured=cloud.share_configured(settings),
+        review_pending_count=review_pending,
         source=src.source,
         sessions=sessions,
         snapshot_count=sum(len(c.snapshots) for c in src.candidates if c.selectable),
