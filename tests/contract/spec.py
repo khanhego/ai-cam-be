@@ -345,7 +345,10 @@ CLAIM_ENUMS = {
     "source": _e("AUTO_RETURN", "MANUAL", "RECON", "LEGACY_HOLD"),
 }
 # `shares[]` API-31 / API-132 (02 §6.2 API-31 — M16, T-224).
-SHARE_BRIEF = ("id", "status", "recipient", "expires_at", "session_count", "url", "can_revoke")
+SHARE_BRIEF = (
+    "id", "status", "recipient", "expires_at", "session_count", "url", "can_revoke",
+    "revoke_pending",  # EX-S7 "Đang thu hồi — chờ Internet" (FE DEC-702, BE DEC-678)
+)  # fmt: skip
 SHARE_STATUSES = ("CREATING", "ACTIVE", "FAILED", "REVOKED", "EXPIRED")
 
 CLAIM_DETAIL = (

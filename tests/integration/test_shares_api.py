@@ -378,9 +378,18 @@ async def test_package_and_claim_shares_blocks(
     assert claim["shares_active_count"] == 4
     assert claim["shares"][0]["url"] == "https://s3.test.vn/x"
     assert claim["shares"][0]["can_revoke"] is True
+    assert all(x["revoke_pending"] is False for x in claim["shares"])
+    # EX-S7: thu hồi khi kho mất mạng → `revoke_pending` ở khối D4 / D17 (FE DEC-702) tới khi J-25 xóa xong.
+    res = await share_api.post(f"/api/v1/shares/{ids[4]}/revoke", headers=cskh)
+    assert res.status_code == 200
+    claim = (await share_api.get(f"/api/v1/claims/{w.claim.id}", headers=cskh)).json()
+    assert claim["shares"][0]["status"] == "REVOKED"
+    assert claim["shares"][0]["revoke_pending"] is True
+    assert claim["shares_active_count"] == 3
     package = (await share_api.get(f"/api/v1/packages/{w.package.id}", headers=cskh)).json()
+    assert package["shares"][0]["revoke_pending"] is True
     assert [s["id"] for s in package["shares"]] == [ids[4], ids[2], ids[1]]
-    assert package["shares_active_count"] == 4
+    assert package["shares_active_count"] == 3
 
 
 async def test_roles(share_api: AsyncClient, db: AsyncSession, w: ShareWorld, share_store: object) -> None:
