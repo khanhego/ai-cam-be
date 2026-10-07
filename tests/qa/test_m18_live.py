@@ -104,3 +104,16 @@ def test_tc_r3_03_old_shopee_route(client: httpx.Client, tokens: dict[str, dict[
         302, "/admin/settings/platforms?platform=shopee&result=connected&count=1",
     )  # fmt: skip
     assert {s["auth_status"] for s in p3.shops(client, tokens["ADMIN"]).values()} == {"CONNECTED"}
+
+
+def test_tc_05_03_shopee_not_configured_temp_api() -> None:
+    """TC-05.03 (hồi quy, API): stack QA bật Shopee mock nên nhánh "chưa cấu hình" chạy trên API tạm
+    `SHOPEE_ENABLED=false` (cùng DB) → API-71 503 `PLATFORM_NOT_CONFIGURED`; TikTok vẫn dùng được."""
+    with p3.temp_api({"SHOPEE_ENABLED": "false"}) as api:
+        admin = p3.login(api, "tst_admin")
+        res = api.post("/shops/shopee/auth-url", headers=admin)
+        assert p3.err(res) == (503, "PLATFORM_NOT_CONFIGURED"), res.text
+        platforms = {p["platform"]: p for p in api.get("/shops", headers=admin).json()["platforms"]}
+        assert platforms["SHOPEE"]["enabled"] is False
+        assert platforms["TIKTOK"]["enabled"] is True
+        assert api.post("/shops/tiktok/auth-url", headers=admin).status_code == 200
