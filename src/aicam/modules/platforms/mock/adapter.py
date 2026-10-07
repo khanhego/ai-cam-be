@@ -33,6 +33,7 @@ MOCK_SHOP_NAME = "TST Shop (mock)"
 MOCK_SHOP_B_NAME = "TST B"
 
 _BASE_TIME = datetime(2026, 10, 1, tzinfo=UTC)
+MOCK_DATA_SINCE = _BASE_TIME  # mốc `updated_at` cố định của dữ liệu mock Shopee Phase 1–2 (seed — DEC-821)
 RETURN_FIXTURES = Path(__file__).parent / "fixtures" / "returns"
 _ITEM = PlatformItem("Áo thun basic", 2, "AT-DEN-L", "Đen / L")
 # Hint vận chuyển giả (khóa = `self.shipping[mã]`), gồm tín hiệu hoàn (DEC-259).

@@ -25,7 +25,12 @@ from aicam.modules.orders.models import Shop
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms import sync
 from aicam.modules.platforms.base import PlatformAdapter, ShopCredentials
-from aicam.modules.platforms.mock.adapter import MOCK_SHOP_B_NAME, MOCK_SHOP_NAME, MockAdapter
+from aicam.modules.platforms.mock.adapter import (
+    MOCK_DATA_SINCE,
+    MOCK_SHOP_B_NAME,
+    MOCK_SHOP_NAME,
+    MockAdapter,
+)
 from aicam.modules.platforms.mock.tiktok import MOCK_OPEN_ID, MOCK_TT_SHOPS, MockTikTokAdapter, cipher_of
 
 SHOPEE_SHOPS = (("990001", MOCK_SHOP_NAME), ("990002", MOCK_SHOP_B_NAME))
@@ -76,8 +81,14 @@ async def seed_phase3(session: AsyncSession, settings: Settings) -> list[str]:
         targets.append((shop, tiktok))
         lines.append(f"{'+' if created else '='} shop TikTok {psid} {shop.name}")
     await session.commit()
+    # J-04 lần đầu của shop Shopee chỉ lùi `shopee_initial_sync_days` (3 ngày): dữ liệu mock Phase 1–2 có
+    # `updated_at` cố định 01/10/2026 → seed chạy sau ngày đó thì `990001` không nhận đơn nào (đơn Phase 1
+    # không shop, nhóm `UNKNOWN` → BR-01 / BR-21 không áp, vd. SPXTST0000009 hủy mà quét vẫn mở phiên —
+    # T-229, DEC-821). Seed lùi tới mốc dữ liệu mock.
+    lookback = max(settings.shopee_initial_sync_days, (clock.now() - MOCK_DATA_SINCE).days + 1)
     seed_settings = settings.model_copy(
         update={
+            "shopee_initial_sync_days": lookback,
             "shopee_enabled": True,
             "platform_adapter": "mock",
             "tiktok_enabled": True,

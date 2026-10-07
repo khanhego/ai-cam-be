@@ -278,3 +278,29 @@ async def test_seed_phase3_idempotent(db: AsyncSession, test_settings: Settings)
     assert counts == again
     assert counts[0] == 4
     assert any(line.startswith("= shop TikTok TTMOCKB") for line in lines)
+
+
+async def test_seed_phase3_claims_phase1_orders_long_after_mock_date(
+    db: AsyncSession, test_settings: Settings
+) -> None:
+    """T-229 (DEC-821): seed chạy lâu sau mốc dữ liệu mock (01/10) — J-04 của `990001` vẫn nhận đơn Phase 1
+    (seed-demo ghi trước, chưa shop, nhóm `UNKNOWN`) → có shop + nhóm trạng thái; đơn hủy → kiện `CANCELLED`
+    (BR-21) như QA live Phase 1 cần (TC-03.08)."""
+    clock.freeze(NOW + timedelta(days=30))
+    for order in MockAdapter().orders.values():  # như `aicam seed-demo` (chưa có shop, chưa nhóm)
+        await orders.upsert_platform_order(db, order)
+    await db.commit()
+    await seed_phase3(db, test_settings)
+    shop_a = await db.scalar(select(Shop).where(Shop.platform_shop_id == "990001"))
+    assert shop_a is not None
+    cancelled = await db.scalar(select(Order).where(Order.platform_order_sn == "2410TST00009"))
+    assert cancelled is not None
+    assert (cancelled.shop_id, cancelled.platform_status_group) == (shop_a.id, "CANCELLED")
+    package = await orders.find_package(db, "SPXTST0000009")
+    assert package is not None
+    assert package.warehouse_status == "CANCELLED"
+    unclaimed = await db.scalar(
+        select(func.count()).select_from(Order).where(Order.platform_order_sn.like("2410TST000%"),
+                                                       Order.shop_id.is_(None))
+    )  # fmt: skip
+    assert unclaimed == 0
