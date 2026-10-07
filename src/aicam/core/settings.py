@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     s3_access_key_id: str = ""
     s3_secret_access_key: str = ""
     s3_public_endpoint: str = ""  # rỗng = S3_ENDPOINT (host ký URL link)
+    share_build_timeout_s: int = 600  # J-24 dựng + tải link (02a §9); hết → `FAILED TIMEOUT`
     # Sao lưu (02a §9). Khóa base64 32 byte — không bao giờ vào DB / log / bản sao (FR-02.13, NFR-41).
     backup_encryption_key: str = ""
     backup_old_keys: str = ""  # khóa cũ (base64, cách dấu phẩy) chỉ để giải mã — DEC-495
@@ -221,6 +222,12 @@ class Settings(BaseSettings):
                 host = getattr(self, n).lower()
                 if "localhost" in host or "127.0.0.1" in host:
                     raise ValueError(f"Production không được dùng {n.upper()} trỏ localhost")
+            # NFR-42: link chia sẻ chỉ HTTPS — URL ký W1 đi qua Internet tới người ngoài.
+            public = (self.s3_public_endpoint.strip() or self.s3_endpoint.strip()).lower()
+            if not public.startswith("https://"):
+                raise ValueError(
+                    "Production: S3_PUBLIC_ENDPOINT (hoặc S3_ENDPOINT) phải là https:// (NFR-42)"
+                )
 
 
 def _key_bytes(value: str) -> bytes:

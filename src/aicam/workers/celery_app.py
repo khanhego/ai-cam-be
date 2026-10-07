@@ -28,6 +28,8 @@ app.conf.update(
         "claims.build_evidence_pack": {"queue": "export"},  # J-16 — cùng worker encode J-03
         "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12, J-13 (gọi Shopee) tách khỏi cắt clip
         "backup.*": {"queue": "backup"},  # J-20..J-23 (worker-backup -c 1 — 02a §7, DEC-434)
+        "shares.build": {"queue": "export"},  # J-24 — cùng worker encode J-03 / J-16 (02a §7)
+        "shares.cleanup": {"queue": "default"},  # J-25
     },
     beat_schedule={
         "j07-session-timeouts": {"task": "sessions.check_timeouts", "schedule": 30.0},
@@ -50,6 +52,8 @@ app.conf.update(
         "j22-backup-upload": {"task": "backup.upload_evidence", "schedule": 300.0},  # RPO bằng chứng ≤ 1 giờ
         # 03:00 giờ VN = 20:00 UTC — sau J-02 (02:00) để xóa bản cloud ≤ 24 giờ sau retention (FR-02.14).
         "j23-backup-prune": {"task": "backup.prune", "schedule": crontab(hour=20, minute=0)},
+        # Link chia sẻ: hết hạn (≤ 1 giờ sau hạn — BR-34), thu hồi khi kho mất mạng thử lại mỗi phút (EX-S7).
+        "j25-share-cleanup": {"task": "shares.cleanup", "schedule": 60.0},
     },
 )
 

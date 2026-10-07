@@ -308,3 +308,27 @@ def backup_upload_evidence() -> dict[str, Any]:
 def backup_prune() -> dict[str, Any]:
     """J-23 (03:00 VN): xóa bản cloud của bằng chứng bị retention xóa; chính sách bản DB (FR-02.14)."""
     return _run(lambda db: backup_jobs.prune(db, get_settings()))
+
+
+# ---------------------------------------------------------------- Link chia sẻ (M16 — 02a §7 J-24, J-25)
+
+
+@app.task(  # type: ignore[untyped-decorator]
+    name="shares.build",
+    soft_time_limit=get_settings().share_build_timeout_s + 30,
+    time_limit=get_settings().share_build_timeout_s + 90,
+)
+def share_build(share_id: str) -> str:
+    """J-24 (queue `export`, cùng worker J-03 / J-16): dựng video có chữ + ảnh + W1, tải lên bucket link."""
+    from aicam.modules.shares import build as share_jobs
+
+    return _run(lambda db: share_jobs.build(db, uuid.UUID(share_id), get_settings()))
+
+
+@app.task(name="shares.cleanup", soft_time_limit=240, time_limit=270)  # type: ignore[untyped-decorator]
+def share_cleanup(share_id: str | None = None) -> dict[str, Any]:
+    """J-25 (beat 60 giây + ngay sau API-163): hết hạn, link treo, xóa thư mục link trên cloud (≤ 60 giây)."""
+    from aicam.modules.shares import cleanup as share_cleanup_job
+
+    sid = uuid.UUID(share_id) if share_id else None
+    return _run(lambda db: share_cleanup_job.cleanup(db, get_settings(), sid))

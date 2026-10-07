@@ -66,6 +66,7 @@ class ObjectStore(Protocol):
         content_type: str = "application/octet-stream",
         metadata: dict[str, str] | None = None,
         throttle: Throttle | None = None,
+        cache_control: str | None = None,
     ) -> int:
         """Tải lên từ luồng đọc tuần tự (không cần seek); trả số byte đã gửi."""
         ...
@@ -227,6 +228,7 @@ class S3Store:
         content_type: str = "application/octet-stream",
         metadata: dict[str, str] | None = None,
         throttle: Throttle | None = None,
+        cache_control: str | None = None,
     ) -> int:
         from boto3.s3.transfer import TransferConfig
 
@@ -237,14 +239,11 @@ class S3Store:
             max_concurrency=1,
             use_threads=False,
         )
+        extra: dict[str, Any] = {"ContentType": content_type, "Metadata": dict(metadata or {})}
+        if cache_control:
+            extra["CacheControl"] = cache_control  # W1 `index.html`: `no-store` (02a §7.4)
         try:
-            self._client.upload_fileobj(
-                reader,
-                self.bucket,
-                key,
-                ExtraArgs={"ContentType": content_type, "Metadata": dict(metadata or {})},
-                Config=config,
-            )
+            self._client.upload_fileobj(reader, self.bucket, key, ExtraArgs=extra, Config=config)
         except Exception as exc:
             raise classify(exc) from exc
         return reader.count
@@ -357,6 +356,7 @@ class _Version:
     metadata: dict[str, str]
     content_type: str
     last_modified: datetime
+    cache_control: str | None = None
 
 
 class MemoryStore:
@@ -393,6 +393,7 @@ class MemoryStore:
         content_type: str = "application/octet-stream",
         metadata: dict[str, str] | None = None,
         throttle: Throttle | None = None,
+        cache_control: str | None = None,
     ) -> int:
         self._check("put", key)
         reader = ThrottledReader(stream, throttle)
@@ -404,7 +405,9 @@ class MemoryStore:
             chunks.append(chunk)
             if self.fail_on_put_after is not None and reader.count >= self.fail_on_put_after:
                 raise CloudError(UNREACHABLE)
-        version = _Version(uuid.uuid4().hex, b"".join(chunks), dict(metadata or {}), content_type, self.now())
+        version = _Version(
+            uuid.uuid4().hex, b"".join(chunks), dict(metadata or {}), content_type, self.now(), cache_control
+        )
         with self._lock:
             if self.versioning:
                 self._objects.setdefault(key, []).append(version)
@@ -476,6 +479,14 @@ class MemoryStore:
     def versions(self, key: str) -> builtins.list[bytes | None]:
         with self._lock:
             return [v.data for v in self._objects.get(key, [])]
+
+    def headers(self, key: str) -> tuple[str, str | None]:
+        """(Content-Type, Cache-Control) bản hiện hành — test W1 (02a §7.4)."""
+        with self._lock:
+            current = self._current(key)
+        if current is None:
+            raise ObjectNotFound(key)
+        return current.content_type, current.cache_control
 
     def keys(self, prefix: str = "") -> builtins.list[str]:
         return [o.key for o in self.list(prefix)]

@@ -62,6 +62,11 @@ BUILD_TASK = "shares.build"  # J-24, queue `export` (02a §7)
 CLEANUP_TASK = "shares.cleanup"  # J-25, queue `default`
 
 
+def new_object_prefix() -> str:
+    """`share/{token}/` — token 256 bit ngẫu nhiên (`secrets`), base64url 43 ký tự (NFR-42 ≥ 128 bit)."""
+    return f"share/{secrets.token_urlsafe(32)}/"
+
+
 # ---------------------------------------------------------------- job (sau commit)
 
 
@@ -374,7 +379,7 @@ async def create(db: AsyncSession, body: ShareCreateIn, p: Principal, settings: 
         include_snapshots=body.include_snapshots,
         recipient=recipient,
         expires_at=now + timedelta(days=body.expires_days),
-        object_prefix=f"share/{secrets.token_urlsafe(32)}/",  # 256 bit (NFR-42)
+        object_prefix=new_object_prefix(),
         progress=0,
         step_total=len(chosen),
         created_by=p.user_id,

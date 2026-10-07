@@ -48,3 +48,26 @@ def test_production_s3_requires_two_distinct_buckets_and_keys() -> None:
 def test_dev_allows_partial_s3() -> None:
     s = Settings(app_env="dev", s3_endpoint="http://minio:9000")
     assert s.s3_bucket == ""
+
+
+def test_production_share_links_https_only() -> None:
+    """NFR-42: URL ký W1 chỉ HTTPS ở production (S3_PUBLIC_ENDPOINT, rỗng → S3_ENDPOINT)."""
+    Settings(**PROD, **{**S3, "s3_public_endpoint": "https://cdn.s3.example.vn"})  # type: ignore[arg-type]
+    with pytest.raises(ValidationError, match="https://"):
+        Settings(**PROD, **{**S3, "s3_public_endpoint": "http://203.0.113.5:9000"})  # type: ignore[arg-type]
+    with pytest.raises(ValidationError, match="https://"):
+        Settings(**PROD, **{**S3, "s3_endpoint": "http://s3.example.vn"})  # type: ignore[arg-type]
+    staging = {**PROD, "app_env": "staging", **S3, "s3_endpoint": "http://minio:9000"}
+    Settings(**staging)  # type: ignore[arg-type]  # staging LAN được http
+
+
+def test_share_bucket_required_for_links() -> None:
+    """DEC-665: link chia sẻ cần bucket riêng — không rơi về bucket sao lưu (versioning)."""
+    from aicam.modules.cloud import config as cloud
+
+    s = Settings(app_env="dev", **{**S3, "s3_share_bucket": ""})  # type: ignore[arg-type]
+    assert cloud.is_configured(s)
+    assert not cloud.share_configured(s)
+    with pytest.raises(ValueError, match="S3_SHARE_BUCKET"):
+        cloud.share_store(s)
+    assert cloud.share_configured(Settings(app_env="dev", **S3))  # type: ignore[arg-type]
