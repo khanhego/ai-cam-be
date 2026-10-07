@@ -46,6 +46,10 @@ app.conf.update(
         "j02-enforce-retention": {"task": "media.enforce_retention", "schedule": crontab(hour=19, minute=0)},
         # Sao lưu cloud (02a §7): J-20 01, 07, 13, 19 giờ VN = 18, 0, 6, 12 UTC (RPO DB ≤ 6 giờ — NFR-40).
         "j20-backup-db": {"task": "backup.run_db", "schedule": crontab(hour="0,6,12,18", minute=0)},
+        "j21-backup-enqueue": {"task": "backup.enqueue_evidence", "schedule": 600.0},
+        "j22-backup-upload": {"task": "backup.upload_evidence", "schedule": 300.0},  # RPO bằng chứng ≤ 1 giờ
+        # 03:00 giờ VN = 20:00 UTC — sau J-02 (02:00) để xóa bản cloud ≤ 24 giờ sau retention (FR-02.14).
+        "j23-backup-prune": {"task": "backup.prune", "schedule": crontab(hour=20, minute=0)},
     },
 )
 

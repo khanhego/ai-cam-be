@@ -104,3 +104,14 @@ def test_j20_backup_db_schedule_route_and_retry(monkeypatch: pytest.MonkeyPatch)
         assert task.run()["state"] == "DISABLED"
     finally:
         task.pop_request()
+
+
+def test_j21_j22_j23_schedule() -> None:
+    from aicam.workers.celery_app import app
+
+    by_task = {e["task"]: e["schedule"] for e in app.conf.beat_schedule.values()}
+    assert by_task["backup.enqueue_evidence"] == 600.0
+    assert by_task["backup.upload_evidence"] == 300.0  # + ngân sách 240 giây → bằng chứng lên ≤ 1 giờ
+    assert by_task["backup.prune"].hour == {20}  # 03:00 VN, sau J-02 (19 UTC)
+    for name in ("backup.enqueue_evidence", "backup.upload_evidence", "backup.prune"):
+        assert name in app.tasks

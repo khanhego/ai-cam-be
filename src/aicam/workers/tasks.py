@@ -285,3 +285,26 @@ def backup_run_db(self: Any, run_id: str | None = None, trigger: str = "SCHEDULE
     if result.get("status") == "FAILED" and "state" not in result and self.request.retries < self.max_retries:
         raise self.retry(countdown=600, kwargs={"run_id": None, "trigger": trigger})
     return result
+
+
+@app.task(name="backup.enqueue_evidence", soft_time_limit=90)  # type: ignore[untyped-decorator]
+def backup_enqueue_evidence() -> dict[str, Any]:
+    """J-21 (10 phút): xếp bằng chứng cần giữ (BR-33) + (C) clip đóng gói vào hàng chờ sao lưu."""
+    return _run(lambda db: backup_jobs.enqueue_evidence(db, get_settings()))
+
+
+@app.task(  # type: ignore[untyped-decorator]
+    name="backup.upload_evidence",
+    soft_time_limit=get_settings().backup_upload_budget_s + 900,
+    time_limit=get_settings().backup_upload_budget_s + 960,
+)
+def backup_upload_evidence() -> dict[str, Any]:
+    """J-22 (5 phút): tải bằng chứng (ngân sách nhận việc 240 giây; tệp đang tải giữ lease bằng nhịp 30
+    giây)."""
+    return _run(lambda db: backup_jobs.upload_evidence(db, get_settings()))
+
+
+@app.task(name="backup.prune", soft_time_limit=1900, time_limit=1960)  # type: ignore[untyped-decorator]
+def backup_prune() -> dict[str, Any]:
+    """J-23 (03:00 VN): xóa bản cloud của bằng chứng bị retention xóa; chính sách bản DB (FR-02.14)."""
+    return _run(lambda db: backup_jobs.prune(db, get_settings()))

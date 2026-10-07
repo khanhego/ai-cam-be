@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from aicam.modules.claims.models import Claim, ClaimEvidence
-from aicam.modules.media.models import Clip
+from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.returns.models import OPEN_CASE_STATUSES, ReturnCase, ReturnCasePackage
 from aicam.modules.sessions.models import PackSession
 
@@ -153,6 +153,48 @@ async def is_snapshot_evidence(session: AsyncSession, snapshot_id: uuid.UUID, cu
         claim_snapshot_ids(cutoff).where(ClaimEvidence.snapshot_id == snapshot_id).limit(1)
     )
     return found is not None
+
+
+# ---------------------------------------------------------------- bằng chứng cần giữ — sao lưu (BR-33, J-21)
+
+EvidenceTargets = Select[uuid.UUID, str | None, int | None]
+
+
+def evidence_clip_targets(now: datetime, cutoff: datetime) -> EvidenceTargets:
+    """BR-33 (02a §5): clip `READY` có tệp đã băm của phiên được bảo vệ (a)–(c) — gồm bằng chứng của hồ sơ
+    khiếu nại đã đóng còn hạn giữ và dòng đã bỏ còn hạn (BR-38) — hoặc clip `held` (d). Video thô, clip
+    không thuộc BR-33 **không** có ở đây (FR-02.08). `MISSING` / `DELETED` không xét (§5.2 #14)."""
+    protected = protected_sessions_sql(now, cutoff).subquery()
+    return select(Clip.id, Clip.sha256, Clip.size_bytes).where(
+        Clip.status == "READY",
+        Clip.sha256.is_not(None),
+        Clip.path.is_not(None),
+        or_(Clip.held.is_(True), exists().where(protected.c[0] == Clip.session_id)),
+    )
+
+
+def all_pack_clip_targets() -> EvidenceTargets:
+    """FR-02.18 (C): mọi clip `READY` của phiên PACK `COMPLETED` (`backup_all_pack_clips`)."""
+    return select(Clip.id, Clip.sha256, Clip.size_bytes).where(
+        Clip.status == "READY",
+        Clip.sha256.is_not(None),
+        Clip.path.is_not(None),
+        exists().where(
+            PackSession.id == Clip.session_id, PackSession.type == "PACK", PackSession.status == "COMPLETED"
+        ),
+    )
+
+
+def evidence_snapshot_targets(now: datetime, cutoff: datetime) -> EvidenceTargets:
+    """BR-33: ảnh `READY` của phiên được bảo vệ hoặc tự là bằng chứng (a) (như J-02 giữ ảnh)."""
+    protected = protected_sessions_sql(now, cutoff).subquery()
+    own = claim_snapshot_ids(cutoff).subquery()
+    return select(Snapshot.id, Snapshot.sha256, Snapshot.size_bytes).where(
+        Snapshot.status == "READY",
+        Snapshot.sha256.is_not(None),
+        Snapshot.path.is_not(None),
+        or_(exists().where(protected.c[0] == Snapshot.session_id), exists().where(own.c[0] == Snapshot.id)),
+    )
 
 
 # ---------------------------------------------------------------- khóa khi gắn bằng chứng (DEC-251)
