@@ -64,6 +64,12 @@ ACTIONS = frozenset(
         # Thiếu tệp (02 API-92 v0.4 — DEC-530, T-291).
         "MEDIA_MARK_MISSING",
         "MEDIA_MISSING_RECOVERED",
+        # Thông báo (02 §6.2 API-171..176 — M17).
+        "NOTIFY_CHANNEL_CREATE",
+        "NOTIFY_CHANNEL_UPDATE",
+        "NOTIFY_CHANNEL_DELETE",
+        "NOTIFY_TEST",
+        "NOTIFY_SETTINGS_UPDATE",
         # Sao lưu cloud (02 §6.2 API-180..188, API-186 CLI — M15).
         "BACKUP_TEST",
         "BACKUP_SETTINGS_UPDATE",

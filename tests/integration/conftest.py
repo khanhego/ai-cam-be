@@ -129,3 +129,6 @@ async def api(db: AsyncSession, redis_client: object, test_settings: Settings) -
 
 # Sao lưu cloud (M15): kho MemoryStore, settings có khóa, client API (tests/integration/backup_fixtures.py).
 from .backup_fixtures import backup_api, backup_settings, memory_store, world  # noqa: E402, F401
+
+# Thông báo (M17): settings `NOTIFY_TRANSPORT=mock`, client API (tests/integration/notify_fixtures.py).
+from .notify_fixtures import notify_api, notify_settings  # noqa: E402, F401

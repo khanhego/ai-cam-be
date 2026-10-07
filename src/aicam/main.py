@@ -21,6 +21,7 @@ from aicam.modules.backup.router import router as backup_router
 from aicam.modules.claims.router import router as claims_router
 from aicam.modules.imports.router import router as imports_router
 from aicam.modules.media.router import router as media_router
+from aicam.modules.notify.router import router as notify_router
 from aicam.modules.orders.router import router as orders_router
 from aicam.modules.orders.service import InvalidTransition
 from aicam.modules.platforms.router import router as platforms_router
@@ -108,6 +109,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(settings_router, prefix="/api/v1")
     app.include_router(backup_router, prefix="/api/v1")
     app.include_router(shares_router, prefix="/api/v1")
+    app.include_router(notify_router, prefix="/api/v1")
     app.include_router(ws_router)
 
     @app.get("/healthz", tags=["system"])

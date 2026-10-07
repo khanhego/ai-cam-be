@@ -18,6 +18,8 @@ SENSITIVE_QUERY = (
     "auth_code", "X-Amz-Signature", "X-Amz-Credential", "X-Amz-Security-Token",
 )  # fmt: skip
 _QUERY_SECRET = re.compile(r"([?&])(" + "|".join(SENSITIVE_QUERY) + r")=[^&\s\"'#]*", re.IGNORECASE)
+# Bot token Telegram nằm trong **đường dẫn** (`api.telegram.org/bot123:ABC…/sendMessage`) — 02a §2.
+_TELEGRAM_BOT_PATH = re.compile(r"/bot\d+:[A-Za-z0-9_-]+")
 # Logger stdlib in nguyên URL gọi ra / vào: che query, httpx / httpcore chỉ ghi từ WARNING.
 NOISY_HTTP_LOGGERS = ("httpx", "httpcore")
 REDACTED_LOGGERS = ("uvicorn", "uvicorn.access", "uvicorn.error", "httpx", "httpcore", "celery")
@@ -28,7 +30,7 @@ def redact_query(text: str) -> str:
 
     Bỏ cả dấu `=` để log không còn mẫu `token=` / `sig=` (kiểm vận hành: `grep -E 'token=|sig='` phải rỗng).
     """
-    return _QUERY_SECRET.sub(r"\1[\2 đã che]", text)
+    return _TELEGRAM_BOT_PATH.sub("/bot[token đã che]", _QUERY_SECRET.sub(r"\1[\2 đã che]", text))
 
 
 def _clean_arg(value: object) -> object:
@@ -82,7 +84,7 @@ def redact(_: Any, __: str, event: MutableMapping[str, Any]) -> MutableMapping[s
         elif isinstance(value, str):
             if "@" in value:
                 value = _URL_CREDENTIALS.sub(r"\1***:***@", value)
-            if "=" in value:
+            if "=" in value or "/bot" in value:
                 value = redact_query(value)
             event[key] = value
     return event

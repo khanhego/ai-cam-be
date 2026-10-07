@@ -41,6 +41,13 @@ SHARE_OPTION_SESSION = (
     "unavailable_at", "cameras", "review_needed",
 )  # fmt: skip
 
+# API-170..176 (02 §6.2 "thông báo", M17). `last_error` = `{code, message, at, provider_code}` (FE DEC-760).
+NOTIFY_CODES = tuple(f"N{i:02d}" for i in range(1, 11))
+NOTIFY_CHANNEL = (
+    "id", "name", "type", "target", "events", "enabled", "last_status", "last_sent_at", "last_error.code",
+    "last_error.message", "last_error.at", "created_at",
+)  # fmt: skip
+
 # API-180..185 (02 §6.2 "sao lưu", M15).
 BACKUP_STATES = ("ON", "NOT_CONFIGURED", "KEY_UNCONFIRMED", "KEY_CHANGED", "DISABLED", "RESTORE_PENDING")
 BACKUP_STATUS_FIELDS = (
@@ -1280,6 +1287,84 @@ CONTRACT: tuple[Api, ...] = (
             "items[].status": _e("HASH_MISMATCH", "FAILED", "IGNORED", "PENDING"),
             "items[].resolution.action": _e("UPLOAD_ANYWAY", "IGNORE", "RETRY", "ACCEPT_RESTORED"),
         },
+    ),
+    # Phase 3 M17 thông báo (02 §6.2 API-170..176).
+    Api(
+        "API-170",
+        "GET",
+        "/notify/channels",
+        200,
+        (
+            "providers.TELEGRAM.configured",
+            "providers.ZALO_OA.configured",
+            "quiet_hours.enabled",
+            "quiet_hours.start",
+            "quiet_hours.end",
+            "events[].code",
+            "events[].label",
+            "events[].severity",
+            "events[].suggested_channel",
+            *(f"items[].{f}" for f in NOTIFY_CHANNEL),
+        ),
+        {
+            "events[].code": _e(*NOTIFY_CODES),
+            "events[].severity": _e("HIGH", "MEDIUM", "INFO"),
+            "items[].type": _e("TELEGRAM", "ZALO_OA"),
+            "items[].events[]": _e(*NOTIFY_CODES),
+            "items[].last_status": _e("OK", "ERROR", "NEVER"),
+        },
+    ),
+    Api(
+        "API-171",
+        "POST",
+        "/notify/channels",
+        201,
+        NOTIFY_CHANNEL,
+        request_fields=("name", "type", "target", "events", "enabled"),
+    ),
+    Api(
+        "API-172",
+        "PATCH",
+        "/notify/channels/{channel_id}",
+        200,
+        NOTIFY_CHANNEL,
+        request_fields=("name", "type", "target", "events", "enabled"),
+    ),
+    Api("API-173", "DELETE", "/notify/channels/{channel_id}", 204),
+    Api("API-174", "POST", "/notify/channels/{channel_id}/test", 200, ("ok", "sent_at")),
+    Api(
+        "API-175",
+        "GET",
+        "/notify/messages",
+        200,
+        (
+            "items[].id",
+            "items[].channel.id",
+            "items[].channel.name",
+            "items[].event_code",
+            "items[].event_label",
+            "items[].item_count",
+            "items[].text",
+            "items[].status",
+            "items[].attempts",
+            "items[].last_error",
+            "items[].created_at",
+            "items[].sent_at",
+            "items[].next_attempt_at",
+            *PAGE,
+        ),
+        {
+            "items[].status": _e("QUEUED", "HELD", "SENT", "RETRYING", "DROPPED", "SKIPPED"),
+            "items[].event_code": _e(*NOTIFY_CODES),
+        },
+    ),
+    Api(
+        "API-176",
+        "PUT",
+        "/notify/quiet-hours",
+        200,
+        ("enabled", "start", "end"),
+        request_fields=("enabled", "start", "end"),
     ),
     # Phase 3 M16 link chia sẻ (02 §6.2 API-160..164).
     Api(

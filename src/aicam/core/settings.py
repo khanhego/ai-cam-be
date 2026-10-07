@@ -148,6 +148,22 @@ class Settings(BaseSettings):
     backup_pg_dump_bin: str = "pg_dump"
     backup_pg_restore_bin: str = "pg_restore"
 
+    # Phase 3 — thông báo Telegram / Zalo OA (02a §7.5, §9; FR-06.04..06.11). Bot token / khóa OA chỉ ở biến
+    # môi trường (DEC-408); token Zalo xoay vòng lưu DB mã hóa Fernet (DEC-445). Chưa có bot / OA thật (Q21):
+    # dev / test dùng `NOTIFY_TRANSPORT=mock` (ghi Redis `notify:mock:{type}` + log).
+    notify_enabled: bool = True
+    notify_transport: Literal["real", "mock"] = "real"
+    notify_mock_fail: str = ""  # dev / test: loại kênh luôn lỗi, cách dấu phẩy (vd `TELEGRAM`)
+    telegram_bot_token: str = ""
+    telegram_api_base: str = "https://api.telegram.org"
+    zalo_app_id: str = ""
+    zalo_app_secret: str = ""
+    zalo_oa_refresh_token: str = ""
+    zalo_api_base: str = "https://openapi.zalo.me"  # giả định theo tài liệu công khai (Q21)
+    zalo_oauth_base: str = "https://oauth.zaloapp.com"
+    # Dashboard trong tin "Xem: https://{SITE_ADDRESS}/admin/…" (AS-16). Rỗng → tin không có dòng link.
+    site_address: str = ""
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
@@ -192,6 +208,9 @@ class Settings(BaseSettings):
                     f"Môi trường {self.app_env} không được dùng TIKTOK_ADAPTER=mock khi bật TikTok"
                 )
         self._validate_cloud()
+        if self.is_production and self.notify_transport == "mock":
+            # 02a §9: mock nuốt mọi tin (chỉ ghi Redis) — production mất cảnh báo mà không ai biết.
+            raise ValueError("Production không được dùng NOTIFY_TRANSPORT=mock")
         return self
 
     def _validate_cloud(self) -> None:

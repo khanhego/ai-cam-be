@@ -27,6 +27,7 @@ PERMISSIONS: dict[str, list[str]] = {
         *_RETURNS_LEAD,
         *_SHARES,
         "shares.revoke_any",
+        "notify.manage",  # API-170..176 chỉ ADMIN (02 §8 AuthZ)
     ],
     "SUPERVISOR": [
         "packages.read",

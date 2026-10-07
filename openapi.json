@@ -1058,6 +1058,312 @@
         "title": "CaseRef",
         "type": "object"
       },
+      "ChannelBrief": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ChannelBrief",
+        "type": "object"
+      },
+      "ChannelCreateIn": {
+        "description": "API-171.",
+        "properties": {
+          "enabled": {
+            "default": true,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "events": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Events",
+            "type": "array"
+          },
+          "name": {
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          },
+          "target": {
+            "maxLength": 200,
+            "title": "Target",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "TELEGRAM",
+              "ZALO_OA"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type",
+          "target"
+        ],
+        "title": "ChannelCreateIn",
+        "type": "object"
+      },
+      "ChannelError": {
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "provider_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Code"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ChannelError",
+        "type": "object"
+      },
+      "ChannelOut": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "events": {
+            "items": {
+              "enum": [
+                "N01",
+                "N02",
+                "N03",
+                "N04",
+                "N05",
+                "N06",
+                "N07",
+                "N08",
+                "N09",
+                "N10"
+              ],
+              "type": "string"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChannelError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_sent_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Sent At"
+          },
+          "last_status": {
+            "enum": [
+              "OK",
+              "ERROR",
+              "NEVER"
+            ],
+            "title": "Last Status",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "TELEGRAM",
+              "ZALO_OA"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "type",
+          "target",
+          "events",
+          "enabled",
+          "last_status",
+          "last_sent_at",
+          "last_error",
+          "created_at"
+        ],
+        "title": "ChannelOut",
+        "type": "object"
+      },
+      "ChannelUpdateIn": {
+        "description": "API-172 — mọi trường tùy chọn như API-171.",
+        "properties": {
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "events": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 20,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Events"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "TELEGRAM",
+                  "ZALO_OA"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "title": "ChannelUpdateIn",
+        "type": "object"
+      },
+      "ChannelsOut": {
+        "description": "API-170.",
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/EventInfo"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "providers": {
+            "$ref": "#/components/schemas/Providers"
+          },
+          "quiet_hours": {
+            "$ref": "#/components/schemas/QuietHours"
+          }
+        },
+        "required": [
+          "providers",
+          "quiet_hours",
+          "events",
+          "items"
+        ],
+        "title": "ChannelsOut",
+        "type": "object"
+      },
       "ClaimBrief": {
         "properties": {
           "code": {
@@ -2680,6 +2986,58 @@
           "at"
         ],
         "title": "ErrorOut",
+        "type": "object"
+      },
+      "EventInfo": {
+        "properties": {
+          "code": {
+            "enum": [
+              "N01",
+              "N02",
+              "N03",
+              "N04",
+              "N05",
+              "N06",
+              "N07",
+              "N08",
+              "N09",
+              "N10"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "HIGH",
+              "MEDIUM",
+              "INFO"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "suggested_channel": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Channel"
+          }
+        },
+        "required": [
+          "code",
+          "label",
+          "severity",
+          "suggested_channel"
+        ],
+        "title": "EventInfo",
         "type": "object"
       },
       "EvidenceClip": {
@@ -5122,6 +5480,157 @@
         "title": "MergedOrderRef",
         "type": "object"
       },
+      "MessageOut": {
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "channel": {
+            "$ref": "#/components/schemas/ChannelBrief"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "event_code": {
+            "enum": [
+              "N01",
+              "N02",
+              "N03",
+              "N04",
+              "N05",
+              "N06",
+              "N07",
+              "N08",
+              "N09",
+              "N10"
+            ],
+            "title": "Event Code",
+            "type": "string"
+          },
+          "event_label": {
+            "title": "Event Label",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "item_count": {
+            "title": "Item Count",
+            "type": "integer"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
+          "sent_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sent At"
+          },
+          "status": {
+            "enum": [
+              "QUEUED",
+              "HELD",
+              "SENT",
+              "RETRYING",
+              "DROPPED",
+              "SKIPPED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "id",
+          "channel",
+          "event_code",
+          "event_label",
+          "item_count",
+          "text",
+          "status",
+          "attempts",
+          "last_error",
+          "created_at",
+          "sent_at",
+          "next_attempt_at"
+        ],
+        "title": "MessageOut",
+        "type": "object"
+      },
+      "MessagePage": {
+        "description": "API-175 — 30 ngày, mới nhất trước.",
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MessageOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "MessagePage",
+        "type": "object"
+      },
       "MismatchOut": {
         "properties": {
           "actual": {
@@ -6695,6 +7204,35 @@
         "title": "Protection",
         "type": "object"
       },
+      "ProviderState": {
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "configured"
+        ],
+        "title": "ProviderState",
+        "type": "object"
+      },
+      "Providers": {
+        "properties": {
+          "TELEGRAM": {
+            "$ref": "#/components/schemas/ProviderState"
+          },
+          "ZALO_OA": {
+            "$ref": "#/components/schemas/ProviderState"
+          }
+        },
+        "required": [
+          "TELEGRAM",
+          "ZALO_OA"
+        ],
+        "title": "Providers",
+        "type": "object"
+      },
       "QueuedOut": {
         "properties": {
           "queued": {
@@ -6704,6 +7242,29 @@
           }
         },
         "title": "QueuedOut",
+        "type": "object"
+      },
+      "QuietHours": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "end": {
+            "title": "End",
+            "type": "string"
+          },
+          "start": {
+            "title": "Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "enabled",
+          "start",
+          "end"
+        ],
+        "title": "QuietHours",
         "type": "object"
       },
       "Ratio": {
@@ -11760,6 +12321,27 @@
         "title": "TestOut",
         "type": "object"
       },
+      "TestSendOut": {
+        "description": "API-174.",
+        "properties": {
+          "ok": {
+            "const": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "sent_at": {
+            "format": "date-time",
+            "title": "Sent At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "sent_at"
+        ],
+        "title": "TestSendOut",
+        "type": "object"
+      },
       "TimelineItem": {
         "properties": {
           "actor": {
@@ -14809,6 +15391,341 @@
         "summary": "Snapshot Media",
         "tags": [
           "media"
+        ]
+      }
+    },
+    "/api/v1/notify/channels": {
+      "get": {
+        "description": "API-170 (FR-06.04, 06.07): kênh + nhà cung cấp đã cấu hình + giờ yên lặng + danh mục N01..N10.",
+        "operationId": "list_channels_api_v1_notify_channels_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Channels",
+        "tags": [
+          "notify"
+        ]
+      },
+      "post": {
+        "description": "API-171 (FR-06.04): thêm kênh.",
+        "operationId": "create_channel_api_v1_notify_channels_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Channel",
+        "tags": [
+          "notify"
+        ]
+      }
+    },
+    "/api/v1/notify/channels/{channel_id}": {
+      "delete": {
+        "description": "API-173 (FR-06.04): xóa kênh — tin đang chờ của kênh bị bỏ.",
+        "operationId": "delete_channel_api_v1_notify_channels__channel_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Channel",
+        "tags": [
+          "notify"
+        ]
+      },
+      "patch": {
+        "description": "API-172 (FR-06.04, 06.07): sửa kênh.",
+        "operationId": "update_channel_api_v1_notify_channels__channel_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelUpdateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Channel",
+        "tags": [
+          "notify"
+        ]
+      }
+    },
+    "/api/v1/notify/channels/{channel_id}/test": {
+      "post": {
+        "description": "API-174 (FR-06.10): gửi thử ≤ 10 giây — 502 `NOTIFY_SEND_FAILED`, 504 `NOTIFY_TIMEOUT`.",
+        "operationId": "test_channel_api_v1_notify_channels__channel_id__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "channel_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Channel Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSendOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Channel",
+        "tags": [
+          "notify"
+        ]
+      }
+    },
+    "/api/v1/notify/messages": {
+      "get": {
+        "description": "API-175 (FR-06.10): nhật ký gửi 30 ngày, mới nhất trước.",
+        "operationId": "list_messages_api_v1_notify_messages_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "channel_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "QUEUED",
+                    "HELD",
+                    "SENT",
+                    "RETRYING",
+                    "DROPPED",
+                    "SKIPPED"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessagePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Messages",
+        "tags": [
+          "notify"
+        ]
+      }
+    },
+    "/api/v1/notify/quiet-hours": {
+      "put": {
+        "description": "API-176 (FR-06.08): giờ yên lặng.",
+        "operationId": "update_quiet_hours_api_v1_notify_quiet_hours_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuietHours"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuietHours"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Quiet Hours",
+        "tags": [
+          "notify"
         ]
       }
     },
