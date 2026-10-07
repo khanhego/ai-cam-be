@@ -30,6 +30,7 @@ from aicam.modules.backup.schemas import (
     KeyOut,
     OldKeyOut,
     ResolutionOut,
+    ReuploadOut,
     RunNowOut,
     SettingsOut,
     StorageOut,
@@ -323,9 +324,109 @@ async def last_error(db: AsyncSession, since: datetime) -> ErrorOut | None:
     return max(found, key=lambda e: e.at) if found else None
 
 
+def _source_ready() -> Any:
+    """Tệp nguồn còn ở kho (clip / ảnh `READY`) — điều kiện tải lại bằng khóa mới (API-187)."""
+    from sqlalchemy import exists
+
+    from aicam.modules.media.models import Clip, Snapshot
+
+    return (
+        (BackupObject.kind == "CLIP")
+        & exists().where(Clip.id == BackupObject.clip_id, Clip.status == "READY")
+    ) | (
+        (BackupObject.kind == "SNAPSHOT")
+        & exists().where(Snapshot.id == BackupObject.snapshot_id, Snapshot.status == "READY")
+    )
+
+
+def _reuploadable(current: str) -> Any:
+    return (
+        (BackupObject.status == "UPLOADED")
+        & BackupObject.cloud_present.is_(True)
+        & BackupObject.kind.in_(EVIDENCE_KINDS)
+        & (BackupObject.cloud_key_fingerprint != current)
+        & _source_ready()
+    )
+
+
 async def old_keys(db: AsyncSession, settings: Settings) -> list[OldKeyOut]:
-    """Mở rộng ở T-272 (đổi khóa)."""
-    return []
+    """EX-K7 (DEC-495, 522): mỗi dấu vân tay ≠ khóa hiện tại còn bản trên cloud — bằng chứng `cloud_present`
+    (**bất kể `status`**: dòng đang tải lại vẫn đếm tới khi J-22 ghi đè xong) + bản DB `SUCCESS` chưa xóa;
+    `reuploadable` = dòng `UPLOADED` có tệp còn ở kho."""
+    current = current_fingerprint(settings)
+    if current is None:
+        return []
+    o = BackupObject
+    ev = (
+        await db.execute(
+            select(
+                o.cloud_key_fingerprint,
+                func.count(),
+                func.count().filter(_reuploadable(current)),
+                func.coalesce(func.sum(o.size_bytes).filter(_reuploadable(current)), 0),
+            )
+            .where(o.cloud_present.is_(True), o.kind.in_(EVIDENCE_KINDS), o.cloud_key_fingerprint != current)
+            .group_by(o.cloud_key_fingerprint)
+        )
+    ).all()
+    runs = (
+        await db.execute(
+            select(BackupRun.key_fingerprint, func.count())
+            .where(
+                BackupRun.status == "SUCCESS",
+                BackupRun.cloud_deleted_at.is_(None),
+                BackupRun.key_fingerprint.is_not(None),
+                BackupRun.key_fingerprint != current,
+            )
+            .group_by(BackupRun.key_fingerprint)
+        )
+    ).all()
+    out: dict[str, OldKeyOut] = {}
+    for fp, n, k, b in ev:
+        if fp is None:
+            continue
+        out[fp] = OldKeyOut(
+            fingerprint=fp, evidence_objects=n, db_runs=0, reuploadable=k, reuploadable_bytes=int(b or 0)
+        )
+    for fp, n in runs:
+        if fp is None:
+            continue
+        item = out.setdefault(
+            fp, OldKeyOut(fingerprint=fp, evidence_objects=0, db_runs=0, reuploadable=0, reuploadable_bytes=0)
+        )
+        item.db_runs = n
+    return sorted(out.values(), key=lambda k: k.fingerprint)
+
+
+async def reupload_old_key(db: AsyncSession, p: Principal, settings: Settings) -> ReuploadOut:
+    """API-187 (EX-K7, DEC-522): `state = ON` (else 409 / 503); một `UPDATE` xếp lại tệp còn ở kho đang mã hóa
+    bằng khóa cũ → `PENDING` — **không** đụng `cloud_present` / `cloud_key_fingerprint` (bản cũ còn tới khi
+    J-22
+    ghi đè cùng `object_key`). Idempotent. Audit `BACKUP_REUPLOAD_OLD_KEY {fingerprints, queued}`."""
+    from sqlalchemy import update
+
+    from aicam.modules.settings import service as settings_service
+
+    st = state(await settings_service.get(db), settings)
+    if st != ON:
+        raise _state_error(st)
+    current = current_fingerprint(settings) or ""
+    now = clock.now()
+    rows = (
+        await db.execute(
+            update(BackupObject)
+            .where(_reuploadable(current))
+            .values(status="PENDING", attempts=0, next_attempt_at=now, last_error=None, updated_at=now)
+            .returning(BackupObject.id, BackupObject.size_bytes, BackupObject.cloud_key_fingerprint)
+        )
+    ).all()
+    total = sum(int(r[1] or 0) for r in rows)
+    fps = sorted({r[2] for r in rows if r[2]})
+    audit.record(db, "BACKUP_REUPLOAD_OLD_KEY", user_id=p.user_id, object_type="BACKUP", ip=p.ip,
+                 data={"fingerprints": fps, "queued": len(rows), "bytes": total})  # fmt: skip
+    _publish_after_commit(db, settings)
+    await commit(db)
+    return ReuploadOut(queued=len(rows), bytes=total)
 
 
 async def _user_ref(db: AsyncSession, user_id: uuid.UUID | None) -> UserRefOut | None:

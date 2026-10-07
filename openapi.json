@@ -8538,6 +8538,24 @@
         "title": "ReturnsReportOut",
         "type": "object"
       },
+      "ReuploadOut": {
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "queued": {
+            "title": "Queued",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "queued",
+          "bytes"
+        ],
+        "title": "ReuploadOut",
+        "type": "object"
+      },
       "ReviewIn": {
         "description": "API-189 (02 §6.2): `action` / `reason_code` / `note` kiểm ở service (422 `fields` tiếng Việt).",
         "properties": {
@@ -11981,6 +11999,28 @@
           }
         },
         "summary": "List Issues",
+        "tags": [
+          "backup"
+        ]
+      }
+    },
+    "/api/v1/backup/reupload-old-key": {
+      "post": {
+        "description": "API-187 (EX-K7): tải lại bằng chứng còn ở kho đang mã hóa bằng khóa cũ.",
+        "operationId": "reupload_old_key_api_v1_backup_reupload_old_key_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReuploadOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Reupload Old Key",
         "tags": [
           "backup"
         ]

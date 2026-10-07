@@ -5,82 +5,23 @@ Kho `MemoryStore` (versioning), tệp clip / ảnh thật trong `VIDEO_ROOT` t�
 
 import hashlib
 import io
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import audit, clock
-from aicam.core.settings import Settings
 from aicam.modules.backup import jobs
 from aicam.modules.backup.models import BackupObject, BackupRun
-from aicam.modules.claims.models import Claim, ClaimEvidence
 from aicam.modules.cloud import crypto
 from aicam.modules.cloud.store import UNREACHABLE, CloudError, MemoryStore
-from aicam.modules.media.models import Clip, Snapshot
-from aicam.modules.orders.models import Package
-from aicam.modules.sessions.models import PackSession
+from aicam.modules.media.models import Clip
 from aicam.modules.settings import service as settings_service
 
-from .backup_fixtures import KEY_A, enable_backup, make_backup_settings
-from .factories import make_station_account
-from .returns_helpers import pack_session_with_clips
+from .backup_fixtures import KEY_A, NOW, World
 
 pytestmark = pytest.mark.integration
-
-NOW = datetime(2026, 10, 7, 3, 0, tzinfo=UTC)
-
-
-@dataclass
-class World:
-    settings: Settings
-    protected: PackSession  # bằng chứng của hồ sơ khiếu nại mở
-    loose: PackSession  # không thuộc BR-33
-    clips: dict[str, Clip]  # CAM1 / CAM2 của phiên được bảo vệ
-    snapshot: Snapshot
-    files: dict[str, bytes]  # rel path → nội dung
-
-
-@pytest.fixture
-async def world(db: AsyncSession, redis_client: object, tmp_path: Path, memory_store: MemoryStore) -> World:
-    clock.freeze(NOW)
-    settings = make_backup_settings(video_root=tmp_path / "video", backup_tmp_dir=tmp_path / "bk")
-    _, station = await make_station_account(db)
-    sessions: list[PackSession] = []
-    files: dict[str, bytes] = {}
-    for n in (1, 2):
-        package = Package(tracking_number=f"SPXTSTBK0000{n}", warehouse_status="PACKED")
-        db.add(package)
-        await db.flush()
-        pack = await pack_session_with_clips(db, station, package, NOW - timedelta(days=2))
-        clips_ = (await db.scalars(select(Clip).where(Clip.session_id == pack.id))).all()
-        snaps_ = (await db.scalars(select(Snapshot).where(Snapshot.session_id == pack.id))).all()
-        for row in [*clips_, *snaps_]:
-            assert row.path is not None
-            content = f"{row.path}-noi-dung".encode() * 50
-            path = settings.video_root / row.path
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content)
-            row.sha256 = hashlib.sha256(content).hexdigest()
-            row.size_bytes = len(content)
-            files[row.path] = content
-        sessions.append(pack)
-    protected, loose = sessions
-    claim = Claim(package_id=protected.package_id, type="OTHER", counterparty="PLATFORM", source="MANUAL")
-    db.add(claim)
-    await db.flush()
-    db.add(ClaimEvidence(claim_id=claim.id, kind="SESSION", session_id=protected.id, auto=False))
-    await db.flush()
-    await enable_backup(db, settings)
-    clips = {
-        c.camera_role: c for c in (await db.scalars(select(Clip).where(Clip.session_id == protected.id)))
-    }
-    snap = await db.scalar(select(Snapshot).where(Snapshot.session_id == protected.id))
-    assert snap is not None
-    return World(settings, protected, loose, clips, snap, files)
 
 
 async def _objects(db: AsyncSession) -> list[BackupObject]:

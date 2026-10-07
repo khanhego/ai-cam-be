@@ -157,6 +157,13 @@ nhập lại mật khẩu camera, link cũ không sao chép được); `S3_ENDPO
 `TIKTOK_APP_SECRET` / `TIKTOK_SERVICE_ID`; `TELEGRAM_BOT_TOKEN`; `ZALO_APP_ID` / `ZALO_APP_SECRET`;
 `SITE_ADDRESS`, `LAN_IP`. Cách nhanh: cất nguyên `docker/.env` + danh sách khóa cũ.
 
+**Đổi khóa sao lưu** (lộ khóa / nhân sự nghỉ — EX-K7): `aicam backup-keygen` → đặt khóa mới vào
+`BACKUP_ENCRYPTION_KEY`, **chuyển khóa cũ sang `BACKUP_OLD_KEYS`** (cách dấu phẩy) → `dc up -d api worker-backup`.
+Sao lưu dừng ("Khóa đã đổi") tới khi Admin xác nhận dấu vân tay mới ở D23. Sau đó D23 hiện "{N} tệp bằng chứng và
+{M} bản DB mã hóa bằng khóa cũ" + nút **Tải lại bằng chứng bằng khóa mới** (chỉ tệp còn ở kho; bản DB cũ hết hạn
+theo chính sách 30 ngày / tháng). **Giữ khóa cũ** (cất ngoài máy + `BACKUP_OLD_KEYS`) tới khi D23 không còn dòng
+khóa cũ — tệp đã bị xóa tại kho không tải lại được, chỉ khôi phục được bằng khóa cũ.
+
 **Theo dõi** — D23 (trạng thái, lịch sử 14 ngày, tệp chờ / lỗi), D2 "Cần xử lý" + N08 khi: DB không thành công >
 26 giờ, 2 lượt DB liền lỗi, tệp chờ > 24 giờ, lệch mã băm, không thấy tệp tại kho. Log: `backup_db`,
 `backup_object`, `backup_hash_mismatch`, `backup_source_missing`, `backup_lease_expired`, `backup_prune`.

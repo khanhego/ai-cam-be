@@ -63,3 +63,9 @@ async def list_issues(
 ) -> s.IssuesPage:
     """API-185 (EX-K6, EX-K9): lệch mã băm / không thấy tệp tại kho / lỗi tải."""
     return await service.issues(db, kind, include_resolved, page, page_size)
+
+
+@router.post("/backup/reupload-old-key", response_model=s.ReuploadOut, status_code=202)
+async def reupload_old_key(p: AdminOnly, db: DbSession, settings: AppSettings) -> s.ReuploadOut:
+    """API-187 (EX-K7): tải lại bằng chứng còn ở kho đang mã hóa bằng khóa cũ."""
+    return await service.reupload_old_key(db, p, settings)
