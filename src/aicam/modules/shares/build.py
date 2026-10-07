@@ -57,6 +57,10 @@ MESSAGES = {
 }
 
 
+# G3-SH-4: video / ảnh của link (URL ký) — proxy / CDN không được lưu đệm dùng chung (bằng chứng riêng tư).
+MEDIA_CACHE_CONTROL = "private, no-store"
+
+
 class BuildError(Exception):
     def __init__(self, code: str, detail: str) -> None:
         super().__init__(detail)
@@ -266,7 +270,7 @@ async def _build_steps(
         await _set("UPLOADING", base + share // 2, n)
         key = f"{prefix}v{n}.mp4"
         uploaded.append(key)
-        await _put(store, key, video, "video/mp4", throttle)
+        await _put(store, key, video, "video/mp4", throttle, MEDIA_CACHE_CONTROL)
         video.unlink(missing_ok=True)
         photo_keys: list[str] = []
         kept: list[uuid.UUID] = []
@@ -286,7 +290,7 @@ async def _build_steps(
                 continue  # ảnh gốc bất biến — lệch thì không đưa vào link
             pkey = f"{prefix}p{n}-{len(photo_keys) + 1}.jpg"
             uploaded.append(pkey)
-            await _put(store, pkey, data, "image/jpeg", throttle)
+            await _put(store, pkey, data, "image/jpeg", throttle, MEDIA_CACHE_CONTROL)
             photo_keys.append(pkey)
             kept.append(snap.id)
         item.video_key, item.video_sha256, item.size_bytes = key, rendered.sha256, size

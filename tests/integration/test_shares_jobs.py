@@ -116,8 +116,9 @@ async def test_build_publishes_only_selected_evidence(
     )
     assert store.keys() == store.keys(prefix)  # không ghi gì ngoài thư mục link
     assert store.headers(f"{prefix}index.html") == ("text/html; charset=utf-8", "no-store")
-    assert store.headers(f"{prefix}v1.mp4")[0] == "video/mp4"
-    assert store.headers(f"{prefix}p1-1.jpg")[0] == "image/jpeg"
+    # G3-SH-4: video / ảnh qua URL ký — không cho proxy / CDN dùng chung bộ nhớ đệm
+    assert store.headers(f"{prefix}v1.mp4") == ("video/mp4", "private, no-store")
+    assert store.headers(f"{prefix}p1-1.jpg") == ("image/jpeg", "private, no-store")
     assert (
         store.raw(f"{prefix}p1-1.jpg")
         == (share_settings.video_root / (w.snaps["ret_a"][0].path or "")).read_bytes()
