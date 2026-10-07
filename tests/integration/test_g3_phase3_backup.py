@@ -205,3 +205,50 @@ async def test_bk2_pg_restore_failure_marks_pending_and_warns(
     assert "Đã tắt sao lưu tự động" in "\n".join(report.lines)
     assert await _scalar(target, "SELECT backup_enabled FROM setting WHERE id = 1") is False
     assert await _scalar(target, "SELECT backup_restore_pending FROM setting WHERE id = 1") is True
+
+
+async def test_bk5_prune_db_marks_run_only_when_all_objects_locked(
+    db: AsyncSession, world: World, memory_store: MemoryStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-BK-5: J-23 xóa lượt DB ngoài chính sách — một đối tượng đang bị khóa (`skip_locked` bỏ qua) → chưa
+    đặt `backup_run.cloud_deleted_at`; lượt sau đủ → đặt."""
+    from aicam.modules.backup.models import BackupRun
+
+    fp = crypto.fingerprint(crypto.parse_key(KEY_A))
+    runs = []
+    for i in range(4):
+        at = NOW - timedelta(days=40 + i)
+        run = BackupRun(
+            kind="DB", trigger="SCHEDULE", status="SUCCESS", started_at=at, finished_at=at, key_fingerprint=fp
+        )
+        db.add(run)
+        await db.flush()
+        for kind in ("DB_DUMP", "IMPORTS"):
+            key = f"backup/x/{i}-{kind}.enc"
+            memory_store.put_stream(key, io.BytesIO(b"x"))
+            db.add(
+                BackupObject(
+                    kind=kind, run_id=run.id, object_key=key, status="UPLOADED", cloud_present=True,
+                    cloud_key_fingerprint=fp, encrypted_size=1,
+                )
+            )  # fmt: skip
+        runs.append(run)
+    await db.flush()
+    oldest = runs[-1]  # 3 bản mới nhất luôn giữ (DEC-505) → chỉ bản cũ nhất bị xóa
+    real = jobs._lock_run_objects
+
+    async def one_locked_elsewhere(session: AsyncSession, run_id: object) -> list[BackupObject]:
+        rows = await real(session, run_id)  # type: ignore[arg-type]
+        return rows[:1]
+
+    monkeypatch.setattr(jobs, "_lock_run_objects", one_locked_elsewhere)
+    out = await jobs.prune(db, world.settings, store=memory_store)
+    assert out["db_runs_deleted"] == 0
+    assert out["db_partial"] == 1
+    await db.refresh(oldest)
+    assert oldest.cloud_deleted_at is None
+    monkeypatch.setattr(jobs, "_lock_run_objects", real)
+    out = await jobs.prune(db, world.settings, store=memory_store)
+    assert out["db_runs_deleted"] == 1
+    await db.refresh(oldest)
+    assert oldest.cloud_deleted_at is not None

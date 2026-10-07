@@ -17,7 +17,7 @@ from typing import Any
 
 import structlog
 from redis import Redis
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -872,13 +872,12 @@ async def _prune_db(
     for run in sorted(victims, key=lambda r: r.started_at):
         if time.monotonic() > deadline:
             break
-        objs = (
-            await db.scalars(
-                select(BackupObject)
-                .where(BackupObject.run_id == run.id, BackupObject.cloud_present.is_(True))
-                .with_for_update(skip_locked=True)
-            )
-        ).all()
+        objs = await _lock_run_objects(db, run.id)
+        total = await db.scalar(
+            select(func.count())
+            .select_from(BackupObject)
+            .where(BackupObject.run_id == run.id, BackupObject.cloud_present.is_(True))
+        )
         try:
             for obj in objs:
                 await asyncio.to_thread(store.delete, obj.object_key)
@@ -891,10 +890,29 @@ async def _prune_db(
         for obj in objs:
             obj.status, obj.cloud_present, obj.cloud_key_fingerprint = "CLOUD_DELETED", False, None
             obj.cloud_deleted_at, obj.updated_at = t, t
+        if len(objs) < int(total or 0):
+            # G3-BK-5: có đối tượng đang bị khóa (`skip_locked`) → chưa xóa đủ; lượt J-23 sau làm tiếp, chưa
+            # đánh dấu lượt DB đã xóa khỏi cloud.
+            await db.commit()
+            out["db_partial"] = out.get("db_partial", 0) + 1
+            log.info("backup_prune_db_partial", run_id=str(run.id), deleted=len(objs), total=int(total or 0))
+            continue
         await db.execute(update(BackupRun).where(BackupRun.id == run.id).values(cloud_deleted_at=t))
         await db.commit()
         out["db_runs_deleted"] += 1
     return out
+
+
+async def _lock_run_objects(db: AsyncSession, run_id: uuid.UUID) -> list[BackupObject]:
+    return list(
+        (
+            await db.scalars(
+                select(BackupObject)
+                .where(BackupObject.run_id == run_id, BackupObject.cloud_present.is_(True))
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+    )
 
 
 def _prune_probes(store: ObjectStore, now: datetime) -> int:
