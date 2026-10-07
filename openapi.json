@@ -2671,7 +2671,8 @@
               "PENDING",
               "READY",
               "FAILED",
-              "DELETED"
+              "DELETED",
+              "MISSING"
             ],
             "title": "Status",
             "type": "string"
@@ -3022,7 +3023,8 @@
           "status": {
             "enum": [
               "READY",
-              "DELETED"
+              "DELETED",
+              "MISSING"
             ],
             "title": "Status",
             "type": "string"
@@ -5800,7 +5802,8 @@
           "status": {
             "enum": [
               "READY",
-              "DELETED"
+              "DELETED",
+              "MISSING"
             ],
             "title": "Status",
             "type": "string"
@@ -9549,7 +9552,8 @@
           "status": {
             "enum": [
               "READY",
-              "DELETED"
+              "DELETED",
+              "MISSING"
             ],
             "title": "Status",
             "type": "string"

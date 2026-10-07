@@ -440,6 +440,9 @@ CLAIM_DETAIL_ENUMS = {
     **CLAIM_ENUMS,
     "deadline_source": _e("PLATFORM", "DEFAULT", "MANUAL", "DEFAULT_PLATFORM_PASSED"),  # + BR-42 (Phase 3)
     "evidence[].kind": _e("SESSION", "SNAPSHOT"),
+    # T-286 (02 §5.2 `MISSING` Thiếu tệp — DEC-520, 524).
+    "evidence[].session.clips[].status": _e("PENDING", "READY", "FAILED", "DELETED", "MISSING"),
+    "evidence[].snapshot.status": _e("READY", "DELETED", "MISSING"),
     "evidence[].session.cancel_cause": _e("WRONG_SCAN", "NOT_A_RETURN", "OTHER"),
     "evidence[].session.evidence_exclusion": _e("STATION_CANCEL", "SUPERVISOR_CANCEL", "MARKED"),
     "excluded_return_sessions[].evidence_exclusion": _e("STATION_CANCEL", "SUPERVISOR_CANCEL", "MARKED"),
@@ -770,7 +773,12 @@ CONTRACT: tuple[Api, ...] = (
             "timeline[].actor",
             "timeline[].shops",  # Phase 3 BR-32 (DEC-561): dòng sự kiện `AMBIGUOUS_SHOP`
         ),
-        {"sessions[].clips[].protection.reasons[]": _e("CLAIM", "RETURN_CASE", "HELD")},
+        {
+            "sessions[].clips[].protection.reasons[]": _e("CLAIM", "RETURN_CASE", "HELD"),
+            # T-286 (02 §6.1 API-31 ảnh — DEC-524): ảnh `MISSING` → `url = null`.
+            "sessions[].snapshots[].status": _e("READY", "DELETED", "MISSING"),
+            "sessions[].pack_snapshot.status": _e("READY", "DELETED", "MISSING"),
+        },
     ),
     Api(
         "API-100",

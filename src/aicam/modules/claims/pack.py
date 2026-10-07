@@ -83,6 +83,10 @@ Thư mục:
 - …-mo-hoan-can-soat-…: phiên mở hàng hoàn do quản lý hủy, chưa rõ lý do — cần xem lại trước khi dùng.
 - 03-phien-khac-…: phiên khác được thêm làm bằng chứng — chỉ clip gốc + info.json.
 
+Phần còn thiếu (ho-so.json "missing"): CLIP_MISSING / SNAPSHOT_MISSING = Thiếu tệp — hệ thống có ghi nhận
+clip / ảnh nhưng máy chủ không còn tệp (mất khi khôi phục hoặc không thấy tại kho); CLIP_DELETED = đã xóa
+theo chính sách lưu trữ; CLIP_FAILED / CLIP_NOT_READY = không cắt được / chưa cắt xong.
+
 Kiểm tính toàn vẹn: clip gốc không bị sửa nếu mã SHA-256 của tệp trùng với mã ghi trong ho-so.json và
 info.json.
   Windows:  certutil -hashfile goc-CAM1.mp4 SHA256
@@ -290,11 +294,11 @@ class _Builder:
         copied: list[Clip] = []
         for role in ROLES:
             clip = clips.get(role)
-            if clip is None:
-                self.miss(pack.id, role, "CLIP_MISSING")
+            if clip is None:  # chưa có dòng clip (J-01 chưa chạy) — khác `MISSING` (DEC-677)
+                self.miss(pack.id, role, "CLIP_NOT_READY")
                 continue
             if clip.status != "READY" or not clip.path:
-                reason = {"DELETED": "CLIP_DELETED", "FAILED": "CLIP_FAILED"}.get(
+                reason = {"DELETED": "CLIP_DELETED", "FAILED": "CLIP_FAILED", "MISSING": "CLIP_MISSING"}.get(
                     clip.status, "CLIP_NOT_READY"
                 )
                 self.miss(pack.id, role, reason)
@@ -314,7 +318,8 @@ class _Builder:
 
     async def copy_snapshot(self, snap: Snapshot, dst: Path) -> None:
         if snap.status != "READY" or not snap.path:
-            self.miss(snap.session_id, "CAM1", "SNAPSHOT_DELETED", snapshot_id=str(snap.id))
+            reason = "SNAPSHOT_MISSING" if snap.status == "MISSING" else "SNAPSHOT_DELETED"
+            self.miss(snap.session_id, "CAM1", reason, snapshot_id=str(snap.id))
             return
         try:
             await asyncio.to_thread(shutil.copyfile, absolute(self.settings, snap.path), dst)

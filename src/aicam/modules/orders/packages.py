@@ -155,15 +155,15 @@ class SessionSnapshot(BaseModel):
     id: uuid.UUID
     kind: Literal["MANUAL", "PACK_CLOSE"]
     taken_at: datetime
-    url: str | None  # null khi ảnh đã xóa theo lưu trữ
-    status: Literal["READY", "DELETED"]
+    url: str | None  # null khi ảnh đã xóa theo lưu trữ / thiếu tệp
+    status: Literal["READY", "DELETED", "MISSING"]  # MISSING (v0.3 — DEC-524): url, protection = null
     protection: Protection | None
 
 
 class PackSnapshot(BaseModel):
     id: uuid.UUID
     url: str | None
-    status: Literal["READY", "DELETED"]
+    status: Literal["READY", "DELETED", "MISSING"]
 
 
 class SessionDetail(BaseModel):

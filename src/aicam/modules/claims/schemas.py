@@ -86,7 +86,7 @@ class ClaimPage(Page[ClaimListItem]):
 class EvidenceClip(BaseModel):
     id: uuid.UUID
     camera_role: Literal["CAM1", "CAM2"]
-    status: Literal["PENDING", "READY", "FAILED", "DELETED"]
+    status: Literal["PENDING", "READY", "FAILED", "DELETED", "MISSING"]  # MISSING — Thiếu tệp (DEC-520)
     sha256: str | None
     deleted_at: datetime | None
 
@@ -127,8 +127,8 @@ class EvidenceSnapshot(BaseModel):
     id: uuid.UUID
     kind: Literal["MANUAL", "PACK_CLOSE"]
     taken_at: datetime
-    url: str | None  # null khi ảnh đã bị retention xóa
-    status: Literal["READY", "DELETED"]
+    url: str | None  # null khi ảnh đã bị retention xóa / thiếu tệp
+    status: Literal["READY", "DELETED", "MISSING"]
 
 
 class EvidenceOut(BaseModel):
