@@ -76,6 +76,10 @@ async def test_cancel_requested_when_new_blocks_scan_but_keeps_package(
     assert (await _package(db)).warehouse_status == "NEW"
     body = await _scan(api, station)
     assert (body["outcome"], body["alert"]["code"]) == ("ALERT", "ORDER_CANCEL_REQUESTED")
+    # Thân S4 đúng chữ 01 §10.4 / 02b-station §9 (T-229, DEC-825) — station hiện `message` của server.
+    assert body["alert"]["message"].endswith(
+        ": người mua đang xin hủy đơn này. Chờ xử lý trên sàn, chưa đóng gói."
+    )
 
     # (3) sàn từ chối yêu cầu hủy → đóng gói, bàn giao như thường
     await orders.upsert_platform_order(db, _order("READY_TO_SHIP"))

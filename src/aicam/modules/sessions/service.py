@@ -359,7 +359,8 @@ async def _open_session_unsafe(
         ):
             return "ALERT", _alert(
                 "ORDER_CANCEL_REQUESTED",
-                f"{code}: người mua đang yêu cầu hủy đơn. Không đóng gói tới khi sàn quyết định.",
+                # Thân S4 theo 01 §10.4 / 02b-station §9 (station hiện `message` server — DEC-825).
+                f"{code}: người mua đang xin hủy đơn này. Chờ xử lý trên sàn, chưa đóng gói.",
                 platform=platform,
             )
         return "ALERT", _alert(
