@@ -2,6 +2,7 @@
 cụt, đảo khối, sửa byte, sai khóa → lỗi; dấu vân tay; chọn đúng khóa trong 2 khóa; bản mã không chứa bản rõ
 / khóa."""
 
+import argparse
 import base64
 import hashlib
 import io
@@ -138,3 +139,27 @@ def test_backup_keygen_prints_valid_key_and_fingerprint(capsys: pytest.CaptureFi
     key = out[0].split("=", 1)[1]
     assert len(crypto.parse_key(key)) == 32
     assert out[1] == f"Dấu vân tay: {crypto.fingerprint(crypto.parse_key(key))}"
+
+
+def test_backup_verify_cli_parses_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    """T-229 (DEC-824): `aicam backup-verify` (không tùy chọn — runbook ops §6.2) và `--accept … --reason
+    --from-cloud --key-file` (ops §6.2 "Lối ra") phải parse được; trước đây parser thiếu tùy chọn → lệnh văng
+    `AttributeError` → "Chờ kiểm khôi phục" không bao giờ gỡ được."""
+    seen: list[argparse.Namespace] = []
+
+    async def fake_verify(args: argparse.Namespace) -> int:
+        seen.append(args)
+        return 0
+
+    monkeypatch.setattr(cli, "backup_verify", fake_verify)
+    assert cli.main(["backup-verify"]) == 0
+    assert (seen[0].accept, seen[0].reason, seen[0].from_cloud, seen[0].key_file) == ([], None, False, [])
+    argv = ["backup-verify", "--accept", "a1", "a2", "--reason", "Tệp do IT chép lại", "--from-cloud",
+            "--key-file", "k1", "--key-file", "k2"]  # fmt: skip
+    assert cli.main(argv) == 0
+    assert seen[1].accept == ["a1", "a2"]
+    assert (seen[1].reason, seen[1].from_cloud, seen[1].key_file) == (
+        "Tệp do IT chép lại",
+        True,
+        ["k1", "k2"],
+    )

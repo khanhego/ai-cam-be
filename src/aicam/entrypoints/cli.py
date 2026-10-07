@@ -304,8 +304,26 @@ def main(argv: list[str] | None = None) -> int:
         "--key-file", action="append", default=[], help="tệp chứa một khóa cũ (base64), lặp được"
     )
     rst.add_argument("--force", action="store_true", help="cho phép ghi đè DB đích không trống")
-    sub.add_parser(
+    ver = sub.add_parser(
         "backup-verify", help="Kiểm SHA-256 clip / ảnh sau khôi phục; đạt → gỡ 'Chờ kiểm khôi phục'"
+    )
+    # ops §6.2 "Lối ra" (DEC-518): chấp nhận lệch / thiếu theo id, kiểm sâu bản cloud. Thiếu các tùy chọn này
+    # thì lệnh văng AttributeError ngay cả khi chạy không tham số (T-229, DEC-824).
+    ver.add_argument(
+        "--accept",
+        nargs="+",
+        default=[],
+        metavar="ID",
+        help="id clip / ảnh chấp nhận lệch / thiếu (cần --reason)",
+    )
+    ver.add_argument("--reason", help="lý do chấp nhận (5–500 ký tự)")
+    ver.add_argument(
+        "--from-cloud",
+        action="store_true",
+        help="giải mã từng bản cloud, so SHA-256 (chẩn đoán, không gỡ cờ)",
+    )
+    ver.add_argument(
+        "--key-file", action="append", default=[], help="tệp chứa một khóa cũ (base64), lặp được"
     )
 
     args = parser.parse_args(argv)
