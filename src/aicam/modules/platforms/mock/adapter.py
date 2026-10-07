@@ -139,6 +139,11 @@ class MockAdapter:
         self.fail_list_auth = False  # list_updated_orders ném PlatformAuthError (token bị thu hồi)
         self.fail_refresh = False  # refresh ném PlatformAuthError
         self.calls: list[str] = []
+        # Phase 3 (02a §7.2, NFR-39, AC-43): điều khiển theo shop (`creds.shop_id` = `platform_shop_id`).
+        self.delay_s_by_shop: dict[str, float] = {}  # chờ mỗi lời gọi (tra khi quét) / mỗi đơn (J-04)
+        self.fail_shop: set[str] = set()  # shop luôn lỗi `PlatformError`
+        self.orders_by_shop: dict[str, dict[str, PlatformOrder]] = {}  # dữ liệu riêng shop (không có → chung)
+        self.shop_calls: list[tuple[str, str | None]] = []  # (thao tác, shop)
 
     # ----- điều khiển trong test
     def put(self, order: PlatformOrder) -> None:
@@ -185,42 +190,67 @@ class MockAdapter:
         return MOCK_SHOP_NAME
 
     # ----- PlatformAdapter: đơn
-    async def _wait(self) -> None:
-        if self.delay_s:
-            await asyncio.sleep(self.delay_s)
+    async def _wait(self, creds: ShopCredentials | None = None) -> None:
+        delay = self.delay_s
+        if creds is not None:
+            delay = self.delay_s_by_shop.get(creds.shop_id, delay)
+        if delay:
+            await asyncio.sleep(delay)
+
+    def _check_shop(self, op: str, creds: ShopCredentials | None) -> None:
+        shop = creds.shop_id if creds is not None else None
+        self.shop_calls.append((op, shop))
+        if shop is not None and shop in self.fail_shop:
+            raise PlatformError(f"HTTP 503 (mock fail_shop {shop})")
+
+    def _orders_of(self, creds: ShopCredentials | None) -> dict[str, PlatformOrder]:
+        if creds is not None and creds.shop_id in self.orders_by_shop:
+            return self.orders_by_shop[creds.shop_id]
+        return self.orders
+
+    def put_for_shop(self, shop: str, order: PlatformOrder) -> None:
+        self.orders_by_shop.setdefault(shop, {})[order.platform_order_sn] = order
 
     async def get_order(self, creds: ShopCredentials | None, order_sn: str) -> PlatformOrder | None:
-        await self._wait()
-        order = self.orders.get(order_sn)
+        self._check_shop("get_order", creds)
+        await self._wait(creds)
+        order = self._orders_of(creds).get(order_sn)
         return _grouped(order) if order else None
 
     async def find_by_tracking(
         self, creds: ShopCredentials | None, tracking_number: str
     ) -> PlatformOrder | None:
-        await self._wait()
+        self._check_shop("find_by_tracking", creds)
+        await self._wait(creds)
         code = tracking_number.upper()
-        found = next((o for o in self.orders.values() if code in o.tracking_numbers), None)
+        found = next((o for o in self._orders_of(creds).values() if code in o.tracking_numbers), None)
         return _grouped(found) if found else None
 
     async def list_updated_orders(
         self, creds: ShopCredentials | None, since: datetime
     ) -> AsyncIterator[PlatformOrder]:
         self.calls.append("list_updated_orders")
+        self._check_shop("list_updated_orders", creds)
         if self.fail_list_auth:
             raise PlatformAuthError("invalid_access_token")
         if self.fail_list_times > 0:
             self.fail_list_times -= 1
             raise PlatformError("HTTP 503")
-        for order in sorted(self.orders.values(), key=lambda o: o.updated_at or _BASE_TIME):
+        slow = creds is not None and creds.shop_id in self.delay_s_by_shop
+        for order in sorted(self._orders_of(creds).values(), key=lambda o: o.updated_at or _BASE_TIME):
             if (order.updated_at or _BASE_TIME) >= since:
+                if slow:
+                    await self._wait(creds)
                 yield _grouped(order)
 
     async def get_shipping_statuses(
         self, creds: ShopCredentials | None, refs: Sequence[ShipmentRef]
     ) -> list[ShippingStatus]:
+        self._check_shop("get_shipping_statuses", creds)
         out = []
+        orders = self._orders_of(creds)
         for ref in refs:
-            order = self.orders.get(ref.platform_order_sn)
+            order = orders.get(ref.platform_order_sn)
             raw = self.shipping.get(ref.tracking_number.upper())
             if raw is None and order is None:
                 continue
@@ -244,6 +274,7 @@ class MockAdapter:
         self, creds: ShopCredentials | None, since: datetime
     ) -> AsyncIterator[PlatformReturn]:
         self.calls.append("list_returns")
+        self._check_shop("list_returns", creds)
         if self.fail_returns_times > 0:
             self.fail_returns_times -= 1
             raise PlatformError("HTTP 503")

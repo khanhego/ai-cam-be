@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     tiktok_lookup_lookback_min: int = 60
     tiktok_initial_sync_days: int = 3
     tiktok_returns_initial_days: int = 15
+    mock_shopee_shop_ids: str = "990001,990002"  # 02a §7.2 — mock Shopee nhiều shop (dev / test)
+    # Ngân sách mỗi task một shop (02a §7, §9): J-04 (queue sync_fast) / J-06, J-13 (queue sync).
+    sync_task_budget_s: float = 120.0
+    sync_long_task_budget_s: float = 300.0
 
     @property
     def is_production(self) -> bool:

@@ -18,9 +18,10 @@ from aicam.modules.claims import service as claims
 from aicam.modules.imports import service as imports
 from aicam.modules.media import exports, jobs, snapshots
 from aicam.modules.media import service as media
+from aicam.modules.platforms import budget
+from aicam.modules.platforms import dispatch as platform_dispatch
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms import sync as platform_sync
-from aicam.modules.platforms.shopee import client as shopee_client
 from aicam.modules.reconciliation import service as reconciliation
 from aicam.modules.sessions import service as sessions
 from aicam.modules.stations import service as stations
@@ -164,59 +165,94 @@ def housekeeping() -> dict[str, int]:
     return _run(_job)
 
 
-# ---------------------------------------------------------------- Shopee (T-22, queue `sync`)
+# ---------------------------------------------------------------- Sàn (T-22; fan-out một task / shop — T-205)
+# Task phân phối (beat, không tham số) → `dispatch.dispatch` gửi một task / shop; task shop chạy trong ngân
+# sách riêng (`SYNC_TASK_BUDGET_S` / `SYNC_LONG_TASK_BUDGET_S`) < `soft_time_limit` (còn thời gian ghi lỗi,
+# nhả lock).
+# Tên cũ có `shop_id` (message API-73 / callback Phase 2 còn trong hàng đợi) vẫn chạy như task shop.
 
-SYNC_BUDGET_S = 210.0  # < soft_time_limit 240: còn thời gian ghi lỗi / nhả lock
+
+def _shop_uuid(shop_id: str | None) -> uuid.UUID | None:
+    return uuid.UUID(shop_id) if shop_id else None
 
 
-@app.task(name="platforms.sync_orders", soft_time_limit=240, time_limit=270)  # type: ignore[untyped-decorator]
+@app.task(name="platforms.sync_orders", soft_time_limit=150, time_limit=180)  # type: ignore[untyped-decorator]
 def sync_orders(shop_id: str | None = None, lock_held: bool | str = False) -> dict[str, Any]:
-    """J-04 (5 phút / mọi shop CONNECTED; API-73 và sau kết nối cho một shop). Timeout 4 phút (02a §7)."""
-
-    async def _job(db: AsyncSession) -> dict[str, Any]:
-        settings = get_settings()
-        with shopee_client.time_budget(SYNC_BUDGET_S):  # G3 F-14
-            return await platform_sync.sync_orders(
-                db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None,
-                lock_held=lock_held,
-            )  # fmt: skip
-
-    return _run(_job)
+    """J-04 (5 phút): không `shop_id` → phân phối một task / shop; có → như `platforms.sync_shop_orders`."""
+    settings = get_settings()
+    if shop_id is None:
+        return _run(lambda db: platform_dispatch.dispatch(db, settings, platform_dispatch.ORDERS))
+    return _run(
+        lambda db: platform_dispatch.run_shop(
+            db, settings, platform_dispatch.ORDERS, _shop_uuid(shop_id), lock_held=lock_held
+        )
+    )
 
 
-@app.task(name="platforms.verify_unverified", soft_time_limit=240)  # type: ignore[untyped-decorator]
+@app.task(name="platforms.sync_shop_orders", soft_time_limit=150, time_limit=180)  # type: ignore[untyped-decorator]
+def sync_shop_orders(shop_id: str, lock_held: bool | str = False) -> dict[str, Any]:
+    """J-04 một shop (ngân sách 120 giây — 02a §7)."""
+    settings = get_settings()
+    return _run(
+        lambda db: platform_dispatch.run_shop(
+            db, settings, platform_dispatch.ORDERS, _shop_uuid(shop_id), lock_held=lock_held
+        )
+    )
+
+
+@app.task(name="platforms.verify_unverified", soft_time_limit=150)  # type: ignore[untyped-decorator]
 def verify_unverified() -> dict[str, int]:
     """J-05 (10 phút): xác minh lại kiện chưa xác minh (BR-04)."""
     settings = get_settings()
-    return _run(lambda db: platform_sync.verify_unverified(db, platforms.get_adapter(settings), settings))
+
+    async def _job(db: AsyncSession) -> dict[str, int]:
+        with budget.time_budget(settings.sync_task_budget_s):
+            return await platform_sync.verify_unverified(db, platforms.get_adapter(settings), settings)
+
+    return _run(_job)
 
 
-@app.task(name="platforms.sync_shipping_status", soft_time_limit=600)  # type: ignore[untyped-decorator]
-def sync_shipping_status() -> dict[str, int]:
-    """J-06 (15 phút): trạng thái vận chuyển → HANDED_OVER / DELIVERED; hủy sau đóng (EX-P10)."""
+@app.task(name="platforms.sync_shipping_status", soft_time_limit=60)  # type: ignore[untyped-decorator]
+def sync_shipping_status() -> dict[str, Any]:
+    """J-06 (15 phút): phân phối một task / shop."""
     settings = get_settings()
-    return _run(lambda db: platform_sync.sync_shipping_status(db, platforms.get_adapter(settings), settings))
+    return _run(lambda db: platform_dispatch.dispatch(db, settings, platform_dispatch.SHIPPING))
+
+
+@app.task(name="platforms.sync_shop_shipping", soft_time_limit=330, time_limit=360)  # type: ignore[untyped-decorator]
+def sync_shop_shipping(shop_id: str | None = None) -> dict[str, Any]:
+    """J-06 một shop (ngân sách 300 giây): vận chuyển → HANDED_OVER / DELIVERED; hủy sau đóng (EX-P10)."""
+    settings = get_settings()
+    return _run(
+        lambda db: platform_dispatch.run_shop(db, settings, platform_dispatch.SHIPPING, _shop_uuid(shop_id))
+    )
 
 
 @app.task(name="platforms.refresh_tokens", soft_time_limit=120)  # type: ignore[untyped-decorator]
-def refresh_tokens() -> dict[str, int]:
-    """J-12 (30 phút): làm mới token sắp hết hạn; bị từ chối → shop EXPIRED."""
+def refresh_tokens() -> dict[str, Any]:
+    """J-12 (30 phút): làm mới token theo grant (DEC-433, 507); bị từ chối → shop EXPIRED."""
     settings = get_settings()
-    return _run(lambda db: platform_sync.refresh_tokens(db, platforms.get_adapter(settings), settings))
+    return _run(lambda db: platform_dispatch.refresh_all(db, settings))
 
 
-@app.task(name="platforms.sync_returns", soft_time_limit=240, time_limit=270)  # type: ignore[untyped-decorator]
+@app.task(name="platforms.sync_returns", soft_time_limit=330, time_limit=360)  # type: ignore[untyped-decorator]
 def sync_returns(shop_id: str | None = None) -> dict[str, Any]:
-    """J-13 (15 phút / mọi shop CONNECTED; sau khi kết nối): yêu cầu trả → hồ sơ hàng hoàn. Timeout 4 phút."""
+    """J-13 (15 phút): không `shop_id` → phân phối; có → như `platforms.sync_shop_returns`."""
     settings = get_settings()
+    if shop_id is None:
+        return _run(lambda db: platform_dispatch.dispatch(db, settings, platform_dispatch.RETURNS))
+    return _run(
+        lambda db: platform_dispatch.run_shop(db, settings, platform_dispatch.RETURNS, _shop_uuid(shop_id))
+    )
 
-    async def _job(db: AsyncSession) -> dict[str, Any]:
-        with shopee_client.time_budget(SYNC_BUDGET_S):  # G3 F-14
-            return await platform_sync.sync_returns(
-                db, platforms.get_adapter(settings), settings, uuid.UUID(shop_id) if shop_id else None
-            )
 
-    return _run(_job)
+@app.task(name="platforms.sync_shop_returns", soft_time_limit=330, time_limit=360)  # type: ignore[untyped-decorator]
+def sync_shop_returns(shop_id: str) -> dict[str, Any]:
+    """J-13 một shop (ngân sách 300 giây): yêu cầu trả → hồ sơ hàng hoàn."""
+    settings = get_settings()
+    return _run(
+        lambda db: platform_dispatch.run_shop(db, settings, platform_dispatch.RETURNS, _shop_uuid(shop_id))
+    )
 
 
 @app.task(  # type: ignore[untyped-decorator]

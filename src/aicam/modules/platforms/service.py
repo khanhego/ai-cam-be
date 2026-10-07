@@ -41,8 +41,8 @@ log = structlog.get_logger()
 PLATFORM = "SHOPEE"
 STATE_TTL_S = 600  # API-71: state chống CSRF hạn 10 phút
 SYNC_LOCK_TTL_S = 600  # 02a §6: lock Redis `sync:{shop}` TTL 10 phút
-SYNC_TASK = "platforms.sync_orders"
-SYNC_RETURNS_TASK = "platforms.sync_returns"  # J-13
+SYNC_TASK = "platforms.sync_shop_orders"  # J-04 một shop (fan-out — T-205; `dispatch.SHOP_TASKS`)
+SYNC_RETURNS_TASK = "platforms.sync_shop_returns"  # J-13 một shop
 CALLBACK_PATH = "/api/v1/shops/shopee/callback"
 RESULT_PATH = "/admin/settings/shopee"
 

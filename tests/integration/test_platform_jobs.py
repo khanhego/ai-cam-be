@@ -22,8 +22,8 @@ from aicam.core.settings import Settings
 from aicam.modules.imports.models import CsvImport
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package, Shop, StatusHistory
+from aicam.modules.platforms import grants, sync
 from aicam.modules.platforms import service as platforms
-from aicam.modules.platforms import sync
 from aicam.modules.platforms.base import PlatformItem, PlatformOrder, ShopCredentials
 from aicam.modules.platforms.mock.adapter import MOCK_SHOP_ID, MockAdapter
 from aicam.modules.platforms.shopee.adapter import ShopeeAdapter
@@ -375,42 +375,44 @@ async def _shop_copy(db: AsyncSession, settings: Settings) -> Shop:
     return shop
 
 
-# ---------------------------------------------------------------- G3-N4: J-12 dưới lock sync:{shop}
+# ---------------------------------------------------------------- J-12 theo grant (DEC-433, 507 — thay G3-N4)
 
 
-async def test_j12_skips_while_j04_holds_lock(
+async def test_j12_skips_while_grant_lock_held(
     db: AsyncSession, mock: MockAdapter, test_settings: Settings
 ) -> None:
-    """J-04 đang chạy (giữ lock) → J-12 không refresh (refresh token dùng một lần); J-04 tự làm mới."""
+    """Người khác đang làm mới cùng grant (giữ `grant:{p}:{ref}`) → J-12 không chờ, không refresh (refresh
+    token dùng một lần). J-12 **không** lấy `sync:{shop}`: J-04 đang giữ lock shop không chặn J-12."""
     shop = await _shop(db, test_settings, expires_in=timedelta(minutes=30))
-    token = await platforms.acquire_sync_lock(shop.id, "job")
+    token = await grants.acquire("SHOPEE", MOCK_SHOP_ID, wait_s=0)
     assert token is not None
 
     out = await sync.refresh_tokens(db, mock, test_settings)
 
     assert out == {"refreshed": 0, "expired": 0, "failed": 0, "skipped": 1}
     assert "refresh" not in mock.calls
-    await db.refresh(shop)
-    assert shop.auth_status == "CONNECTED"
-    await platforms.release_sync_lock(shop.id, token)
+    await grants.release("SHOPEE", MOCK_SHOP_ID, token)
+    sync_token = await platforms.acquire_sync_lock(shop.id, "job")  # J-04 đang chạy shop này
     out = await sync.refresh_tokens(db, mock, test_settings)
     assert out["refreshed"] == 1
     assert mock.calls.count("refresh") == 1
+    await platforms.release_sync_lock(shop.id, sync_token)
 
 
 async def test_j12_rereads_after_lock(
     db: AsyncSession, mock: MockAdapter, test_settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """J-12 chọn shop sắp hết hạn; trước khi J-12 lấy được lock, J-04 đã làm mới → J-12 đọc lại, bỏ qua."""
+    """J-12 chọn shop sắp hết hạn; trước khi J-12 lấy khóa grant, J-04 đã làm mới → J-12 đọc lại, bỏ qua."""
     shop = await _shop(db, test_settings, expires_in=timedelta(minutes=30))
-    original = platforms.acquire_sync_lock
+    original = grants.acquire
+    cipher = Cipher(test_settings.fernet_key)
 
-    async def j04_refreshed_first(shop_id: Any, owner: str) -> str | None:
-        await sync.ensure_fresh(db, shop, mock, Cipher(test_settings.fernet_key), force=True)
-        await db.flush()
-        return await original(shop_id, owner)
+    async def j04_refreshed_first(platform: str, ref: str, *, wait_s: float = 10.0) -> str | None:
+        monkeypatch.setattr(grants, "acquire", original)
+        await grants.ensure_fresh(db, shop, mock, cipher, force=True)
+        return await original(platform, ref, wait_s=wait_s)
 
-    monkeypatch.setattr(platforms, "acquire_sync_lock", j04_refreshed_first)
+    monkeypatch.setattr(grants, "acquire", j04_refreshed_first)
     out = await sync.refresh_tokens(db, mock, test_settings)
 
     assert out["skipped"] == 1
