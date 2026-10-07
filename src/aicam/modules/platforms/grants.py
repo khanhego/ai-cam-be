@@ -145,11 +145,9 @@ async def _refresh_locked(
         "platform_token_refreshed", platform=shop.platform, grant=ref, shops=len(targets),
         expires_at=fresh.expires_at.isoformat(),
     )  # fmt: skip
-    return Outcome(
-        ShopCredentials(shop.platform_shop_id, fresh.access_token, fresh.refresh_token, fresh.expires_at),
-        refreshed=True,
-        shops=len(targets),
-    )
+    # G3-MS-1: trả token đầy đủ của shop (`shop_cipher`, `grant_ref`, `region` — làm mới không trả các trường
+    # này); thiếu `shop_cipher` thì mọi lời gọi cấp shop TikTok bị từ chối → shop EXPIRED mỗi chu kỳ token.
+    return Outcome(platforms.credentials(shop, cipher), refreshed=True, shops=len(targets))
 
 
 async def ensure_fresh(
