@@ -9,6 +9,7 @@ Queue: J-04 → `sync_fast` (`worker-sync -c 3`), J-06 / J-13 → `sync` (`worke
 T-276. Route beat cùng hằng ở `workers/celery_app.py` (`SYNC_ROUTES`).
 """
 
+import secrets
 import uuid
 from typing import Any
 
@@ -17,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core.db import commit, rollback
+from aicam.core.redis import get_redis
 from aicam.core.settings import Settings
 from aicam.modules.orders.models import Shop
 from aicam.modules.platforms import budget, connect, registry, sync
@@ -94,12 +96,18 @@ async def run_shop(
 
     `shop_id=None` chỉ cho J-06 đơn file (xem `dispatch`)."""
     held = lock_held if isinstance(lock_held, str) else None
+    if kind == SHIPPING:
+        # G3-MS-6: J-06 cùng shop không chạy chồng (beat 15 phút + task kéo dài) — khóa NX, bận → bỏ lượt.
+        token = await acquire_shipping_lock(shop_id)
+        if token is None:
+            log.info("platform_shipping_locked", shop_id=str(shop_id) if shop_id else "file")
+            return {"skipped": "locked"}
+        try:
+            return await _run_shipping(session, settings, shop_id)
+        finally:
+            await release_shipping_lock(shop_id, token)
     if shop_id is None:
-        if kind != SHIPPING:
-            return {"skipped": "no_shop"}
-        adapter = registry.adapter_for(registry.SHOPEE, settings)
-        with budget.time_budget(budget_s(kind, settings)):
-            return await sync.sync_shipping_status(session, adapter, settings)
+        return {"skipped": "no_shop"}
     shop = await session.get(Shop, shop_id)
     platform = shop.platform if shop is not None else None
     await commit(session)
@@ -114,12 +122,55 @@ async def run_shop(
                 out = await sync.sync_orders(session, adapter, settings, shop_id, lock_held=lock_held)
                 await _publish_shop(session, shop_id)
                 return out
-            if kind == SHIPPING:
-                return await sync.sync_shipping_status(session, adapter, settings, shop_id)
             return await sync.sync_returns(session, adapter, settings, shop_id)
     except Exception:
         await rollback(session)
         log.exception("platform_shop_task_crashed", kind=kind, shop_id=str(shop_id))
+        raise
+
+
+SHIPPING_LOCK_TTL_S = 600  # > ngân sách J-06 (300 giây) + thời gian khóa DB
+
+
+def shipping_lock_key(shop_id: uuid.UUID | None) -> str:
+    return f"sync_shipping:{shop_id or 'file'}"
+
+
+async def acquire_shipping_lock(shop_id: uuid.UUID | None) -> str | None:
+    token = secrets.token_hex(8)
+    ok = await get_redis().set(shipping_lock_key(shop_id), token, nx=True, ex=SHIPPING_LOCK_TTL_S)
+    return token if ok else None
+
+
+async def release_shipping_lock(shop_id: uuid.UUID | None, token: str) -> None:
+    await get_redis().eval(_RELEASE_IF_OWNER, 1, shipping_lock_key(shop_id), token)  # type: ignore[misc]
+
+
+_RELEASE_IF_OWNER = """
+if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end
+return 0
+"""
+
+
+async def _run_shipping(
+    session: AsyncSession, settings: Settings, shop_id: uuid.UUID | None
+) -> dict[str, Any]:
+    if shop_id is None:  # đơn file → shop Shopee mặc định (Phase 2)
+        adapter = registry.adapter_for(registry.SHOPEE, settings)
+        with budget.time_budget(budget_s(SHIPPING, settings)):
+            return await sync.sync_shipping_status(session, adapter, settings)
+    shop = await session.get(Shop, shop_id)
+    platform = shop.platform if shop is not None else None
+    await commit(session)
+    if platform is None:
+        return {"skipped": "not_found"}
+    adapter = registry.adapter_for(platform, settings)
+    try:
+        with budget.time_budget(budget_s(SHIPPING, settings)):
+            return await sync.sync_shipping_status(session, adapter, settings, shop_id)
+    except Exception:
+        await rollback(session)
+        log.exception("platform_shop_task_crashed", kind=SHIPPING, shop_id=str(shop_id))
         raise
 
 

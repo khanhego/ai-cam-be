@@ -233,3 +233,23 @@ async def test_ms3_j06_shop_crash_does_not_break_next_shop(
         await db.refresh(package)
         statuses.append(package.warehouse_status)
     assert sorted(statuses) == ["HANDED_OVER", "PACKED"]
+
+
+# ---------------------------------------------------------------- G3-MS-6
+
+
+async def test_ms6_j06_same_shop_not_concurrent(
+    db: AsyncSession, tiktok: MockTikTokAdapter, test_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-MS-6: J-06 cùng shop đang chạy (khóa `sync_shipping:{shop}`) → lượt chồng bỏ qua; xong thì nhả."""
+    from aicam.modules.platforms import dispatch, registry
+
+    shop = await _tt_shop(db, test_settings)
+    monkeypatch.setattr(registry, "adapter_for", lambda *_: tiktok)
+    token = await dispatch.acquire_shipping_lock(shop.id)
+    assert token is not None
+    assert await dispatch.run_shop(db, test_settings, dispatch.SHIPPING, shop.id) == {"skipped": "locked"}
+    await dispatch.release_shipping_lock(shop.id, token)
+    out = await dispatch.run_shop(db, test_settings, dispatch.SHIPPING, shop.id)
+    assert "skipped" not in out
+    assert await dispatch.acquire_shipping_lock(shop.id) is not None  # đã nhả sau lượt
