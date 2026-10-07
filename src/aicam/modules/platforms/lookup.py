@@ -124,6 +124,8 @@ async def targets(
 
 
 def _matches(order: PlatformOrder, code: str, by_order_sn: bool) -> bool:
+    if order.fulfilled_by_platform:
+        return False  # EX-T5: đơn kho của sàn — không đóng gói / không nhận hoàn tại kho
     if code in (t.upper() for t in order.tracking_numbers):
         return True
     return by_order_sn and order.platform_order_sn.upper() == code

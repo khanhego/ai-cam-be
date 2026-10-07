@@ -47,6 +47,9 @@ class PlatformOrder:
     # Kiện gộp (FR-05.22, DEC-454): mã đơn **khác** cùng shop đi chung mã vận đơn với đơn này — adapter đánh
     # dấu; `orders.upsert_platform_order` ghi `package_order` thay vì chuyển kiện sang đơn này.
     merged_order_sns: tuple[str, ...] = ()
+    # Đơn do kho của sàn giao (TikTok `fulfillment_type`, AS-13, EX-T5): kho không đóng gói → J-04 bỏ qua +
+    # đếm, tra khi quét coi như không thấy.
+    fulfilled_by_platform: bool = False
 
     @property
     def is_cancelled(self) -> bool:

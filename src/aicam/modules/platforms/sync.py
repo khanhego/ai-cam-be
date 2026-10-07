@@ -292,6 +292,9 @@ async def sync_shop_orders(
                     ):
                         raise ShopStopped()
                     result.orders += 1
+                    if order.fulfilled_by_platform:
+                        result.skipped += 1  # EX-T5 (AS-13): đơn kho của sàn — kho không đóng gói, chỉ đếm
+                        continue
                     if await _upsert(session, order, shop_id):
                         result.changed += 1
                     # DEC-162 (G3-V1): commit sau MỖI đơn — nhả khóa `order:{sn}` + khóa kiện trước khi

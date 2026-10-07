@@ -1,6 +1,5 @@
-"""HTTP client TikTok Shop Partner API (02a §7.1): ký HMAC, thử lại giãn cách, `Retry-After`, ngân sách lượt,
-log
-mỗi lần gọi (không log query / header — token, `sign`, `app_secret`).
+"""HTTP client TikTok Shop Partner API (02a §7.1): ký HMAC, thử lại giãn cách, `Retry-After`, ngân sách
+lượt, log mỗi lần gọi (không log query / header — token, `sign`, `app_secret`).
 
 **Giả định theo tài liệu công khai TikTok Shop Partner Center (version `202309`) — chưa test với TikTok thật,
 thiếu tài khoản đối tác (Q18, Q19).** Điểm phải xác minh ở T-3 TikTok:

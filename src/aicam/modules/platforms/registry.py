@@ -6,6 +6,9 @@ adapter thật ở T-208 / T-209, mock 2 shop ở T-211 — trước đó `adapt
 "chưa cấu hình" (quét → kiện chưa xác minh, job bỏ qua sàn).
 """
 
+from datetime import timedelta
+from functools import lru_cache
+
 from aicam.core.settings import Settings
 from aicam.modules.platforms import service
 from aicam.modules.platforms.base import PlatformAdapter
@@ -51,7 +54,37 @@ def returns_enabled(platform: str, settings: Settings) -> bool:
     return settings.tiktok_returns_enabled
 
 
+@lru_cache
+def _tiktok(
+    app_key: str, app_secret: str, api_base: str, auth_base: str, authorize_url: str, service_id: str,
+    timeout_s: float, attempts: int, backoff_s: float, lookback_min: int,
+) -> PlatformAdapter:  # fmt: skip
+    from aicam.modules.platforms.tiktok.adapter import TikTokAdapter
+    from aicam.modules.platforms.tiktok.client import TikTokClient
+
+    client = TikTokClient(
+        app_key,
+        app_secret,
+        api_base,
+        auth_base,
+        timeout_s=timeout_s,
+        max_attempts=attempts,
+        backoff_s=backoff_s,
+    )
+    return TikTokAdapter(
+        client, authorize_url=authorize_url, service_id=service_id,
+        lookup_lookback=timedelta(minutes=lookback_min),
+    )  # fmt: skip
+
+
 def adapter_for(platform: str, settings: Settings) -> PlatformAdapter:
     if _check(platform) == SHOPEE:
         return service.get_adapter(settings)
-    return service.UnconfiguredAdapter(TIKTOK)  # TikTok: adapter thật / mock ở T-208, T-209, T-211
+    if not is_configured(TIKTOK, settings) or settings.tiktok_adapter == "mock":
+        return service.UnconfiguredAdapter(TIKTOK)  # mock 2 shop: T-211
+    return _tiktok(
+        settings.tiktok_app_key, settings.tiktok_app_secret, settings.tiktok_api_base,
+        settings.tiktok_auth_base, settings.tiktok_authorize_url, settings.tiktok_service_id,
+        settings.tiktok_timeout_s, settings.tiktok_max_attempts, settings.tiktok_backoff_s,
+        settings.tiktok_lookup_lookback_min,
+    )  # fmt: skip
