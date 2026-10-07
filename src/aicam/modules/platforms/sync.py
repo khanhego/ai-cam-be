@@ -460,6 +460,17 @@ async def verify_unverified(
 # ---------------------------------------------------------------- J-06
 
 
+def _keeps_cancel_requested(order: Order, st: ShippingStatus) -> bool:
+    """G3-MS-2: J-06 không hạ đơn khỏi `CANCEL_REQUESTED` khi chữ trạng thái đơn trên sàn **không đổi** — yêu
+    cầu hủy bị từ chối / người mua rút do J-04 áp (đọc yêu cầu hủy); J-06 chỉ áp khi chữ trạng thái đổi
+    (vd sang `CANCELLED`, đang giao)."""
+    return (
+        order.platform_status_group == "CANCEL_REQUESTED"
+        and st.order_status_group != "CANCEL_REQUESTED"
+        and (st.order_status or "") == (order.platform_status or "")
+    )
+
+
 async def _apply_shipping(session: AsyncSession, package_id: Any, order_id: Any, st: ShippingStatus) -> bool:
     """Áp một trạng thái vận chuyển. Khóa `order:{sn}` → hồ sơ mở của đơn → kiện, đọc lại sau khóa (R3-4).
 
@@ -485,7 +496,7 @@ async def _apply_shipping(session: AsyncSession, package_id: Any, order_id: Any,
         return False
     package = locked[0]
     package.platform_logistics_status = st.raw_status or package.platform_logistics_status
-    if st.order_status:
+    if st.order_status and not _keeps_cancel_requested(order, st):
         old_group, group = orders.set_platform_status(order, st.order_status, st.order_status_group)
         # BR-21 làm rõ (DEC-494): chỉ nhóm CANCELLED là hủy; CANCEL_REQUESTED chỉ gắn cờ phiên đang đóng, kiện
         # vẫn theo vận chuyển như thường (sàn có thể từ chối yêu cầu hủy).

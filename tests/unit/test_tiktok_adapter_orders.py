@@ -191,16 +191,32 @@ async def test_shipping_statuses_from_detail(adapter: TikTokAdapter) -> None:
             detail("5761020", "IN_TRANSIT", [line("TTS1")]),
             detail("5761021", "IN_TRANSIT", [line("TTS2", package_status="DELIVERY_FAILED")]),
             detail("5761022", "AWAITING_SHIPMENT", [line("TTS3")], is_buyer_request_cancel=True),
+            detail("5761023", "AWAITING_COLLECTION", [line("TTS4")]),  # cờ vắng, yêu cầu hủy PENDING
         ]
     )
-    refs = [ShipmentRef("5761020", "tts1"), ShipmentRef("5761021", "TTS2"), ShipmentRef("5761022", "TTS3")]
+    cancels = respx.post(f"{API}/return_refund/202309/cancellations/search").mock(
+        return_value=ok(
+            {
+                "cancellations": [
+                    {"cancel_id": "C23", "order_id": "5761023", "cancel_status": "PENDING", "update_time": 1}
+                ]
+            }
+        )
+    )
+    refs = [
+        ShipmentRef("5761020", "tts1"), ShipmentRef("5761021", "TTS2"), ShipmentRef("5761022", "TTS3"),
+        ShipmentRef("5761023", "TTS4"),
+    ]  # fmt: skip
     out = await adapter.get_shipping_statuses(CREDS, refs)
     assert [(s.tracking_number, s.warehouse_hint, s.order_status_group) for s in out] == [
         ("TTS1", "HANDED_OVER", "SHIPPED"),
         ("TTS2", "RETURN_EXPECTED", "RETURNING"),
         ("TTS3", None, "CANCEL_REQUESTED"),
+        ("TTS4", None, "CANCEL_REQUESTED"),  # G3-MS-2: tra yêu cầu hủy theo lô
     ]
     assert out[0].order_status == "IN_TRANSIT"
+    assert cancels.call_count == 1  # một lời gọi cho cả lô, chỉ đơn còn hủy được
+    assert json.loads(cancels.calls[0].request.content)["order_ids"] == ["5761022", "5761023"]
 
 
 @respx.mock

@@ -6,12 +6,14 @@ Chưa test với TikTok thật (thiếu tài khoản đối tác).
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aicam.core import clock
 from aicam.core.security import Cipher
 from aicam.core.settings import Settings
-from aicam.modules.orders.models import Shop
+from aicam.modules.orders import service as orders
+from aicam.modules.orders.models import Order, Shop
 from aicam.modules.platforms import grants, sync
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms.base import ShopCredentials
@@ -101,3 +103,89 @@ async def test_ms1_refresh_grant_returns_full_credentials(
     assert creds is not None
     assert (creds.shop_cipher, creds.grant_ref, creds.region) == (cipher_of("TTMOCKA"), MOCK_OPEN_ID, "VN")
     assert creds.access_token.startswith("mock-tt-access-")
+
+
+# ---------------------------------------------------------------- G3-MS-2
+
+
+def _tt_detail(sn: str, tracking: str, status: str = "AWAITING_COLLECTION") -> dict[str, object]:
+    return {
+        "id": sn,
+        "status": status,
+        "fulfillment_type": "FULFILLMENT_BY_SELLER",
+        "buyer_message": "",
+        "line_items": [
+            {
+                "id": f"LI{sn}",
+                "product_name": "Áo thun TikTok",
+                "sku_name": "Trắng / M",
+                "seller_sku": "TT-AO-TRANG-M",
+                "package_id": f"PK{sn}",
+                "tracking_number": tracking,
+            }
+        ],
+        "packages": [{"id": f"PK{sn}"}],
+    }
+
+
+async def test_ms2_j06_keeps_cancel_requested_without_buyer_flag(
+    db: AsyncSession, tiktok: MockTikTokAdapter, test_settings: Settings
+) -> None:
+    """Đơn đã đóng gói (`PACKED`), người mua xin hủy (`PENDING`) nhưng chi tiết đơn **không** có cờ
+    `is_buyer_request_cancel`: J-04 → `CANCEL_REQUESTED`; J-06 (chữ trạng thái đơn không đổi) không được hạ
+    nhóm."""
+    shop = await _tt_shop(db, test_settings)
+    sn, code = "5761TT0000000900", "TTTST0000000900"
+    tiktok.data.put_order("TTMOCKA", _tt_detail(sn, code))
+    out = await sync.sync_orders(db, tiktok, test_settings, shop.id)
+    assert out[str(shop.id)]["status"] == "OK"
+    package = await orders.find_package(db, code)
+    assert package is not None
+    await orders.transition(db, package, "PACKING", source="WAREHOUSE")
+    await orders.transition(db, package, "PACKED", source="WAREHOUSE")
+    await db.flush()
+    stamp = int(clock.now().timestamp()) - 1
+    tiktok.data.cancellations["TTMOCKA"].append(
+        {"cancel_id": "CC900", "order_id": sn, "cancel_status": "PENDING", "create_time": stamp,
+         "update_time": stamp}
+    )  # fmt: skip
+    clock.advance(timedelta(minutes=5))
+    await sync.sync_orders(db, tiktok, test_settings, shop.id)
+    order = await db.scalar(select(Order).where(Order.platform_order_sn == sn))
+    assert order is not None
+    await db.refresh(order)
+    assert order.platform_status_group == "CANCEL_REQUESTED"
+
+    clock.advance(timedelta(minutes=5))
+    await sync.sync_shipping_status(db, tiktok, test_settings, shop.id)
+    await db.refresh(order)
+    await db.refresh(package)
+    assert order.platform_status_group == "CANCEL_REQUESTED"
+    assert package.warehouse_status == "PACKED"
+
+
+async def test_ms2_j06_applies_cancelled_from_cancel_requested(
+    db: AsyncSession, tiktok: MockTikTokAdapter, test_settings: Settings
+) -> None:
+    """Chữ trạng thái đơn đổi sang `CANCELLED` → J-06 vẫn áp (kiện `PACKED` → `CANCELLED_AFTER_PACK`)."""
+    shop = await _tt_shop(db, test_settings)
+    sn, code = "5761TT0000000901", "TTTST0000000901"
+    tiktok.data.put_order("TTMOCKA", _tt_detail(sn, code))
+    await sync.sync_orders(db, tiktok, test_settings, shop.id)
+    package = await orders.find_package(db, code)
+    assert package is not None
+    await orders.transition(db, package, "PACKING", source="WAREHOUSE")
+    await orders.transition(db, package, "PACKED", source="WAREHOUSE")
+    await db.flush()
+    stamp = int(clock.now().timestamp()) - 1
+    tiktok.data.cancellations["TTMOCKA"].append(
+        {"cancel_id": "CC901", "order_id": sn, "cancel_status": "PENDING", "create_time": stamp,
+         "update_time": stamp}
+    )  # fmt: skip
+    clock.advance(timedelta(minutes=5))
+    await sync.sync_orders(db, tiktok, test_settings, shop.id)
+    tiktok.data.set_status("TTMOCKA", sn, "CANCELLED")
+    clock.advance(timedelta(minutes=5))
+    await sync.sync_shipping_status(db, tiktok, test_settings, shop.id)
+    await db.refresh(package)
+    assert package.warehouse_status == "CANCELLED_AFTER_PACK"

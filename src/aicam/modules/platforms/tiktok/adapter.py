@@ -354,12 +354,20 @@ class TikTokAdapter:
         for ref in refs:
             wanted.setdefault(ref.platform_order_sn, []).append(ref.tracking_number.upper())
         out: list[ShippingStatus] = []
-        for d in await self._details(creds, list(wanted)):
+        details = await self._details(creds, list(wanted))
+        # G3-MS-2: cờ `is_buyer_request_cancel` có thể vắng → tra yêu cầu hủy theo lô cho đơn còn hủy được
+        # (một lời gọi / ≤ 50 đơn), nhóm từ yêu cầu mới nhất như J-04 — không hạ nhầm `CANCEL_REQUESTED`.
+        open_ids = [
+            str(d["id"]) for d in details if str(d.get("status") or "").upper() in mapping.NOT_SHIPPED
+        ]
+        cancels = await self._cancellations(creds, {"order_ids": open_ids}) if open_ids else {}
+        for d in details:
             sn = str(d["id"])
             status = str(d.get("status") or "")
             lines = [li for li in d.get("line_items") or [] if isinstance(li, dict)]
             group = mapping.order_group(
-                status, None, buyer_request_flag=bool(d.get("is_buyer_request_cancel")),
+                status, mapping.latest_cancel(cancels.get(sn, [])),
+                buyer_request_flag=bool(d.get("is_buyer_request_cancel")),
                 package_statuses=[str(li.get("package_status") or "") for li in lines],
             )  # fmt: skip
             for code in wanted.get(sn, []):
