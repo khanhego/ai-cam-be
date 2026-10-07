@@ -507,11 +507,13 @@ async def test_c3_dispute_without_tracking_never_missing(db: AsyncSession, test_
 async def test_c4_br10_key_by_group_resolved_stays(
     api: AsyncClient, db: AsyncSession, test_settings: Settings
 ) -> None:
-    """C4: BR-10 xử lý tay rồi sàn tiến SHIPPED → COMPLETED → không bắn lại; BR-11 IN_CANCEL → CANCELLED cũng
-    vậy."""
+    """C4: BR-10 xử lý tay rồi sàn tiến SHIPPED → COMPLETED → không bắn lại; BR-11 xử lý tay giữ nguyên.
+    Phase 3 (T-285, DEC-519): `IN_CANCEL` (yêu cầu hủy) + `PACKED` không bật BR-11 — sàn có thể từ chối."""
     package = await _package(db, 64, "NEW", platform="SHIPPED")
-    cancel = await _package(db, 65, "PACKED", platform="IN_CANCEL")
+    cancel = await _package(db, 65, "PACKED", platform="CANCELLED")
+    requested = await _package(db, 63, "PACKED", platform="IN_CANCEL")
     await _run(db, test_settings)
+    assert await _alerts(db, requested) == []
     headers = await _login(api, db, "SUPERVISOR", "c4")
     for p in (package, cancel):
         (alert,) = await _alerts(db, p)
