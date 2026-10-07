@@ -1696,6 +1696,28 @@
             ],
             "title": "Platform Claim Ref"
           },
+          "primary_unavailable": {
+            "default": false,
+            "title": "Primary Unavailable",
+            "type": "boolean"
+          },
+          "primary_unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "CLIP_PENDING",
+                  "CLIP_FAILED",
+                  "CLIP_DELETED",
+                  "CLIP_MISSING"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Unavailable Reason"
+          },
           "prior_return_sessions": {
             "default": [],
             "items": {
@@ -5919,6 +5941,22 @@
             ],
             "title": "Ended At"
           },
+          "evidence_exclusion": {
+            "anyOf": [
+              {
+                "enum": [
+                  "STATION_CANCEL",
+                  "SUPERVISOR_CANCEL",
+                  "MARKED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Exclusion"
+          },
           "excluded": {
             "default": false,
             "title": "Excluded",
@@ -9603,6 +9641,28 @@
             ],
             "title": "Platform Claim Ref"
           },
+          "primary_unavailable": {
+            "default": false,
+            "title": "Primary Unavailable",
+            "type": "boolean"
+          },
+          "primary_unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "CLIP_PENDING",
+                  "CLIP_FAILED",
+                  "CLIP_DELETED",
+                  "CLIP_MISSING"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Unavailable Reason"
+          },
           "prior_return_sessions": {
             "default": [],
             "items": {
@@ -10924,6 +10984,28 @@
           },
           "limits": {
             "$ref": "#/components/schemas/OptionLimits"
+          },
+          "primary_unavailable": {
+            "default": false,
+            "title": "Primary Unavailable",
+            "type": "boolean"
+          },
+          "primary_unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "CLIP_PENDING",
+                  "CLIP_FAILED",
+                  "CLIP_DELETED",
+                  "CLIP_MISSING"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Primary Unavailable Reason"
           },
           "review_pending_count": {
             "default": 0,

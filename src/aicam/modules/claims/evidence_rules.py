@@ -42,6 +42,28 @@ __all__ = [
 ]
 
 
+_CAM1_REASONS = {"FAILED": "CLIP_FAILED", "DELETED": "CLIP_DELETED", "MISSING": "CLIP_MISSING"}
+
+
+def cam1_unavailable_reason(cam1: Clip | None) -> str | None:
+    """Cam 1 của phiên chưa dùng được (02 API-164 `unavailable_reason`): `CLIP_PENDING` (chưa có / đang cắt) ·
+    `CLIP_FAILED` · `CLIP_DELETED` · `CLIP_MISSING`; None = `READY` có tệp."""
+    if cam1 is None or cam1.status == "PENDING":
+        return "CLIP_PENDING"
+    if cam1.status == "READY" and cam1.path:
+        return None
+    return _CAM1_REASONS.get(cam1.status, "CLIP_PENDING")
+
+
+async def primary_unavailable_reason(db: AsyncSession, primary_id: uuid.UUID | None) -> str | None:
+    """G3-EV-4 (giữ BR-39: phiên chính = lần mở hộp **đầu tiên** có clip, kể cả khi Cam 1 không còn tệp): lý
+    do Cam 1 của phiên chính không `READY` — API-132 / API-164 `primary_unavailable_reason`, README J-16."""
+    if primary_id is None:
+        return None
+    cam1 = await db.scalar(select(Clip).where(Clip.session_id == primary_id, Clip.camera_role == "CAM1"))
+    return cam1_unavailable_reason(cam1)
+
+
 def evidence_exclusion(s: PackSession) -> str | None:
     """02 §5.1 SESSION `evidence_exclusion`: `MARKED` (đánh dấu quét nhầm — API-189), `SUPERVISOR_CANCEL`
     (lý do Supervisor chọn ở API-21), `STATION_CANCEL` (station tự hủy ≤ 60 giây); null = không bị loại."""

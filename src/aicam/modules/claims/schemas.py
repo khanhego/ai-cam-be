@@ -229,6 +229,12 @@ class ClaimDetail(BaseModel):
     # Phase 3 link chia sẻ (02 §6.2 API-132, FR-07.09): ≤ 3 link mới nhất của hồ sơ (trừ `FAILED`).
     shares: list[ShareBrief] = []
     shares_active_count: int = 0
+    # G3-EV-4 (chỉ thêm): Cam 1 của phiên chính (BR-39 — lần mở hộp đầu) không `READY` → D17 báo "Phiên chính
+    # thiếu tệp" (không đổi phiên chính).
+    primary_unavailable: bool = False
+    primary_unavailable_reason: (
+        Literal["CLIP_PENDING", "CLIP_FAILED", "CLIP_DELETED", "CLIP_MISSING"] | None
+    ) = None
     missing: list[Missing]
     notes: list[NoteOut]
     allowed_transitions: list[ClaimStatus]

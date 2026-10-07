@@ -121,14 +121,7 @@ class _Candidate:
     @property
     def unavailable_reason(self) -> str | None:
         """EX-S3 + `MISSING` (02 API-164 v0.3): Cam 1 chưa `READY` → không chọn được."""
-        cam1 = self.cam1
-        if cam1 is None or cam1.status == "PENDING":
-            return "CLIP_PENDING"
-        if cam1.status == "READY" and cam1.path:
-            return None
-        return {"FAILED": "CLIP_FAILED", "DELETED": "CLIP_DELETED", "MISSING": "CLIP_MISSING"}.get(
-            cam1.status, "CLIP_PENDING"
-        )
+        return evidence_rules.cam1_unavailable_reason(self.cam1)
 
     @property
     def duration_s(self) -> int | None:
@@ -310,9 +303,12 @@ async def options(
                 cameras=c.cameras,
                 review_needed=evidence_rules.review_needed(s),
                 excluded=evidence_rules.excluded(s),
+                evidence_exclusion=evidence_rules.evidence_exclusion(s),
                 snapshot_count=len(c.snapshots),
             )
         )
+    # G3-EV-4: phiên chính (BR-39 — lần mở hộp đầu) không dùng được Cam 1 → FE báo "Phiên chính thiếu tệp".
+    primary_reason = next((c.unavailable_reason for c in src.candidates if c.primary), None)
     review_pending = 0
     if src.claim is not None:
         review_pending = len(
@@ -321,6 +317,8 @@ async def options(
     return ShareOptions(
         storage_configured=cloud.share_configured(settings),
         review_pending_count=review_pending,
+        primary_unavailable=primary_reason is not None,
+        primary_unavailable_reason=primary_reason,
         source=src.source,
         sessions=sessions,
         snapshot_count=sum(len(c.snapshots) for c in src.candidates if c.selectable),

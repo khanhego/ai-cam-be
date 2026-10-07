@@ -392,6 +392,7 @@ async def claim_detail(
     with_clip = await evidence_rules.live_clip_sessions(db, active_sessions)
     effective = await effective_pack_session(db, claim.package_id)
     primary = primary_session(in_evidence, with_clip, effective.id if effective else None)
+    primary_reason = await evidence_rules.primary_unavailable_reason(db, primary)
     latest_done = await evidence_rules.latest_completed_return_start(
         db, claim.package_id, claim.return_case_id
     )
@@ -466,6 +467,8 @@ async def claim_detail(
         created_at=claim.created_at,
         closed_at=claim.closed_at,
         evidence=evidence,
+        primary_unavailable=primary_reason is not None,
+        primary_unavailable_reason=primary_reason,
         other_sessions=others,
         removed_evidence=removed_evidence,
         prior_return_sessions=[

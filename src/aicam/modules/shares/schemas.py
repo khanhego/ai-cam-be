@@ -15,6 +15,7 @@ ShareStep = Literal["RENDERING", "UPLOADING", "PUBLISHING"]
 ShareErrorCode = Literal["RENDER_FAILED", "UPLOAD_FAILED", "TIMEOUT"]
 ShareListStatus = Literal["ACTIVE", "REVOKED", "EXPIRED", "ALL"]
 UnavailableReason = Literal["CLIP_PENDING", "CLIP_FAILED", "CLIP_DELETED", "CLIP_MISSING"]
+EvidenceExclusion = Literal["STATION_CANCEL", "SUPERVISOR_CANCEL", "MARKED"]  # = claims.schemas
 
 
 class UserBrief(BaseModel):
@@ -152,6 +153,8 @@ class OptionSession(BaseModel):
     review_needed: bool = False
     excluded: bool = False  # phiên bị loại theo BR-39 nhưng có trong bằng chứng (thêm tay) — không chọn sẵn
     snapshot_count: int = 0  # ảnh READY của phiên trong bằng chứng (đi theo phiên khi chọn — DEC-667)
+    # G3-EV-4 (chỉ thêm): lý do loại như API-132 `session.evidence_exclusion` (FE khỏi đọc API-132).
+    evidence_exclusion: EvidenceExclusion | None = None
 
 
 class OptionLimits(BaseModel):
@@ -169,5 +172,8 @@ class ShareOptions(BaseModel):
     snapshot_count: int
     # v0.4 (DEC-531): số phiên "Cần soát" của hồ sơ (= API-132 `review_sessions`); nguồn `SESSION` → 0.
     review_pending_count: int = 0
+    # G3-EV-4 (chỉ thêm): Cam 1 của phiên chính không `READY` (nguồn `SESSION` → false).
+    primary_unavailable: bool = False
+    primary_unavailable_reason: UnavailableReason | None = None
     limits: OptionLimits
     default_expires_days: int

@@ -82,7 +82,7 @@ Thư mục:
 - …-mo-hoan-phien-truoc-…: phiên mở hàng hoàn trước đó đã bị hủy / bỏ dở (vd. mất điện) — như trên.
 - …-mo-hoan-can-soat-…: phiên mở hàng hoàn do quản lý hủy, chưa rõ lý do — cần xem lại trước khi dùng.
 - 03-phien-khac-…: phiên khác được thêm làm bằng chứng — chỉ clip gốc + info.json.
-
+{primary_note}
 Phần còn thiếu (ho-so.json "missing"): CLIP_MISSING / SNAPSHOT_MISSING = Thiếu tệp — hệ thống có ghi nhận
 clip / ảnh nhưng máy chủ không còn tệp (mất khi khôi phục hoặc không thấy tại kho); CLIP_DELETED = đã xóa
 theo chính sách lưu trữ; CLIP_FAILED / CLIP_NOT_READY = không cắt được / chưa cắt xong.
@@ -391,6 +391,55 @@ async def _session_rows(
     return rows, snapshots
 
 
+PRIMARY_REASON_TEXT = {
+    "CLIP_MISSING": "thiếu tệp (máy chủ không còn tệp clip)",
+    "CLIP_DELETED": "clip đã bị xóa theo chính sách lưu trữ",
+    "CLIP_FAILED": "clip không cắt được",
+    "CLIP_PENDING": "clip chưa cắt xong",
+}
+
+
+async def _primary_note(db: AsyncSession, claim: Claim, tz: ZoneInfo) -> str:
+    """G3-EV-4: phiên chính (lần mở hộp đầu — BR-39, không đổi) mà Cam 1 không dùng được → README ghi rõ
+    "phiên chính thiếu tệp" để người nhận gói không tưởng thiếu video là lỗi gói."""
+    _, sessions_with_clip, primary = await _primary_of(db, claim)
+    reason = await evidence_rules.primary_unavailable_reason(db, primary)
+    if reason is None or primary is None:
+        return ""
+    s = sessions_with_clip[primary]
+    at = s.started_at.astimezone(tz).strftime("%H:%M %d/%m/%Y")
+    return (
+        f"\nLƯU Ý — PHIÊN CHÍNH THIẾU TỆP: phiên mở hộp đầu tiên ({at}) là phiên chính nhưng Cam 1 "
+        f"{PRIMARY_REASON_TEXT.get(reason, reason)} ({reason}). Gói không có video ghép của phiên này; "
+        "xem clip còn lại / các phiên mở hoàn khác trong gói.\n"
+    )
+
+
+async def _primary_of(
+    db: AsyncSession, claim: Claim
+) -> tuple[list[PackSession], dict[uuid.UUID, PackSession], uuid.UUID | None]:
+    ids = [
+        sid
+        for sid in (
+            await db.scalars(
+                select(ClaimEvidence.session_id).where(
+                    ClaimEvidence.claim_id == claim.id,
+                    ClaimEvidence.removed_at.is_(None),
+                    ClaimEvidence.session_id.is_not(None),
+                )
+            )
+        ).all()
+        if sid is not None
+    ]
+    sessions = (
+        list((await db.scalars(select(PackSession).where(PackSession.id.in_(ids)))).all()) if ids else []
+    )
+    with_clip = await evidence_rules.live_clip_sessions(db, ids)
+    effective = await effective_pack_session(db, claim.package_id)
+    primary = evidence_rules.primary_session(sessions, with_clip, effective.id if effective else None)
+    return sessions, {s.id: s for s in sessions}, primary
+
+
 async def _session_info(
     db: AsyncSession, pack: PackSession, claim: Claim, copied: list[Clip], rendered: Rendered | None, who: Any
 ) -> dict[str, Any]:
@@ -533,6 +582,7 @@ async def _build(db: AsyncSession, pack_id: uuid.UUID, settings: Settings, rende
                 code=claim.code,
                 at=clock.now().astimezone(b.tz).strftime("%H:%M %d/%m/%Y"),
                 who=who["display_name"] or who["id"],
+                primary_note=await _primary_note(db, claim, b.tz),
             ),
             encoding="utf-8",
         )

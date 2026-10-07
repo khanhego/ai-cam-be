@@ -334,3 +334,39 @@ async def test_excluded_session_clip_still_protected_and_not_counted(
         db, tz=test_settings.tz_display, page=1, page_size=20, return_dropped=True
     )
     assert [i.id for i in page.items] == [package.id]
+
+
+async def test_primary_kept_but_flagged_when_cam1_missing(db: AsyncSession, test_settings: Settings) -> None:
+    """G3-EV-4: giữ BR-39 — phiên chính = lần mở hộp đầu (A) dù Cam 1 thiếu tệp; API-132 / API-164 báo
+    `primary_unavailable` + lý do; README J-16 ghi "phiên chính thiếu tệp"."""
+    from zoneinfo import ZoneInfo
+
+    from aicam.modules.shares import service as shares
+
+    station, package, case, _pack = await _setup(db)
+    a = await _return(db, station, package, case, T0, "ABANDONED", clip_status="MISSING")
+    b = await _return(
+        db, station, package, case, T0 + timedelta(minutes=84), "COMPLETED", conclusion="EMPTY_BOX"
+    )
+    created = await claims.create_from_return(db, b, case)
+    assert created is not None
+    detail = await claim_views.claim_detail(db, created.claim.id, uuid.uuid4(), test_settings)
+    assert [e.session.id for e in detail.evidence if e.session and e.primary] == [a.id]
+    assert (detail.primary_unavailable, detail.primary_unavailable_reason) == (True, "CLIP_MISSING")
+    opts = await shares.options(db, created.claim.id, None, test_settings)
+    assert (opts.primary_unavailable, opts.primary_unavailable_reason) == (True, "CLIP_MISSING")
+    claim = await db.get(Claim, created.claim.id)
+    assert claim is not None
+    note = await claim_pack._primary_note(db, claim, ZoneInfo("Asia/Ho_Chi_Minh"))
+    assert "PHIÊN CHÍNH THIẾU TỆP" in note
+    assert "08:51 06/10/2026" in note
+    assert "CLIP_MISSING" in note
+
+    # Cam 1 về lại READY → hết cờ
+    cam1 = await db.scalar(select(Clip).where(Clip.session_id == a.id, Clip.camera_role == "CAM1"))
+    assert cam1 is not None
+    cam1.status = "READY"
+    await db.flush()
+    detail = await claim_views.claim_detail(db, created.claim.id, uuid.uuid4(), test_settings)
+    assert (detail.primary_unavailable, detail.primary_unavailable_reason) == (False, None)
+    assert await claim_pack._primary_note(db, claim, ZoneInfo("Asia/Ho_Chi_Minh")) == ""
