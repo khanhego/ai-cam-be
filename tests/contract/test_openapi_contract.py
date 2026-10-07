@@ -140,3 +140,23 @@ def test_openapi_snapshot_up_to_date(openapi: dict[str, Any]) -> None:
     assert SNAPSHOT.read_text(encoding="utf-8") == generated, (
         "openapi.json lệch code — chạy `uv run python scripts/export_openapi.py` rồi commit"
     )
+
+
+# T-228: mọi API HTTP Phase 3 mới (02 §6.1 "Mới") + API mở rộng có trong bảng hợp đồng.
+PHASE3_NEW = (
+    *(f"API-{n}" for n in range(150, 157) if n != 155),
+    *(f"API-{n}" for n in range(160, 165)),
+    *(f"API-{n}" for n in range(170, 177)),
+    *(f"API-{n}" for n in (180, 181, 182, 183, 184, 185, 187, 188, 189)),
+)
+PHASE3_EXTENDED = (
+    "API-04", "API-10", "API-11", "API-12", "API-20", "API-21", "API-30", "API-31", "API-32", "API-40",
+    "API-41", "API-42", "API-43", "API-46", "API-70", "API-71", "API-72", "API-73", "API-80", "API-81",
+    "API-92", "API-104", "API-110", "API-120", "API-130", "API-131", "API-132", "API-134", "API-136",
+)  # fmt: skip
+
+
+def test_phase3_apis_covered() -> None:
+    ids = {a.id.split()[0] for a in CONTRACT}
+    missing = [i for i in (*PHASE3_NEW, "API-155", *PHASE3_EXTENDED) if i not in ids]
+    assert not missing, f"02 §6 Phase 3 chưa có trong tests/contract/spec.py: {missing}"

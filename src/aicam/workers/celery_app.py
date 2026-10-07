@@ -9,7 +9,7 @@ from celery.schedules import crontab
 from celery.signals import after_setup_logger, after_setup_task_logger, beat_init, worker_init
 
 from aicam.core import schema_guard
-from aicam.core.logging import install_stdlib_redaction
+from aicam.core.logging import configure_structlog, install_stdlib_redaction
 from aicam.core.settings import get_settings
 
 settings = get_settings()
@@ -77,8 +77,11 @@ app.conf.update(
 
 
 def _redact_logs(logger: logging.Logger | None = None, **_: Any) -> None:
-    """Worker / beat: httpx / httpcore lên WARNING + che query (token / sign Shopee) — G3-N1."""
+    """Worker / beat: httpx / httpcore lên WARNING + che query (token / sign Shopee) — G3-N1; structlog có bộ
+    che + giá trị secret đã đăng ký (T-228, DEC-781 — trước đó worker dùng cấu hình mặc định, không che)."""
     install_stdlib_redaction(*([logger] if logger is not None else []))
+    cfg = get_settings()
+    configure_structlog(cfg.log_level, cfg.log_json, cfg.secret_values())
 
 
 after_setup_logger.connect(_redact_logs, weak=False)

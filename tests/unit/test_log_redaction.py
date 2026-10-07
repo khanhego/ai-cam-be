@@ -97,10 +97,18 @@ def test_celery_logger_signal_installs_redaction() -> None:
     handler = logging.StreamHandler()
     logger.addHandler(handler)
     logging.getLogger("httpx").setLevel(logging.INFO)
-    celery_app._redact_logs(logger=logger)
-    assert logging.getLogger("httpx").level == logging.WARNING
-    assert any(isinstance(f, RedactQueryFilter) for f in handler.filters)
-    logger.removeHandler(handler)
+    import structlog
+
+    saved = structlog.get_config()
+    try:
+        celery_app._redact_logs(logger=logger)
+        assert logging.getLogger("httpx").level == logging.WARNING
+        assert any(isinstance(f, RedactQueryFilter) for f in handler.filters)
+        # T-228 (DEC-781): worker / beat cũng có bộ che structlog (trước đó dùng cấu hình mặc định).
+        assert redact in structlog.get_config()["processors"]
+    finally:
+        structlog.configure(**saved)
+        logger.removeHandler(handler)
 
 
 def test_dockerfile_disables_uvicorn_access_log() -> None:
@@ -126,3 +134,94 @@ def test_caddy_default_logger_redacts_query() -> None:
     assert "request>uri query" in body
     assert "replace sig REDACTED" in body
     assert "replace token REDACTED" in body
+
+
+# ---------------------------------------------------------------- T-228 (Phase 3: TikTok / Zalo / Telegram /
+# khóa sao lưu / URL ký S3 / token link — 02a §2 core/logging.py, NFR-41, NFR-42, DEC-781)
+
+SHARE_TOKEN = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-ABCD"  # 43 ký tự như token_urlsafe(32)
+
+
+def test_redact_phase3_patterns() -> None:
+    tiktok = "https://auth.tiktok-shops.com/api/v2/token/get?app_key=k&app_secret=tt-secret&auth_code=ac1&x=1"
+    out = redact_query(tiktok)
+    assert "tt-secret" not in out
+    assert "ac1" not in out
+    assert "app_key=k" in out
+    tg = "POST https://api.telegram.org/bot123456:AAH-tg_secret/sendMessage"
+    assert redact_query(tg) == "POST https://api.telegram.org/bot[token đã che]/sendMessage"
+    s3 = "https://s3.x/aicam-share/share/k/index.html?X-Amz-Credential=AKIA%2F1&X-Amz-Signature=deadbeef"
+    assert "deadbeef" not in redact_query(s3)
+    assert "AKIA" not in redact_query(s3)
+    key = f"share/{SHARE_TOKEN}/index.html"
+    assert redact_query(f"NoSuchKey: {key}") == "NoSuchKey: share/[token đã che]/index.html"
+    zalo = '{"access_token": "zalo-acc-1", "refresh_token":"zalo-ref-2", "expires_in": "90000"}'
+    out = redact_query(zalo)
+    assert "zalo-acc-1" not in out
+    assert "zalo-ref-2" not in out
+    assert '"expires_in": "90000"' in out
+
+
+def test_registered_secret_values_redacted_everywhere() -> None:
+    from aicam.core.logging import SECRET_MASK, register_secrets
+
+    backup_key = "S0VZLUJBQ0tVUC0zMi1CWVRFUy0xMjM0NTY3ODkwYWI="
+    register_secrets([backup_key, "short"])
+    # Dưới tên trường không nhạy cảm, trong chuỗi tự do, trong log stdlib.
+    event = redact(None, "info", {"event": "x", "detail": f"pg_restore failed key={backup_key}", "n": 1})
+    assert backup_key not in str(event)
+    assert SECRET_MASK in event["detail"]
+    record = logging.LogRecord("celery", logging.ERROR, __file__, 1, "boom %s", (backup_key,), None)
+    RedactQueryFilter().filter(record)
+    assert backup_key not in record.getMessage()
+    assert redact_query("short") == "short"  # < 8 ký tự không đăng ký (tránh che nhầm chữ thường)
+
+
+def test_structlog_exception_traceback_redacted(capsys: pytest.CaptureFixture[str]) -> None:
+    import structlog
+
+    from aicam.core.logging import configure_structlog
+
+    saved = structlog.get_config()
+    secret = "tg-bot-secret-value-xyz"
+    try:
+        configure_structlog("INFO", json=True, secrets=[secret])
+        log = structlog.get_logger("t228")
+        try:
+            raise RuntimeError(f"call failed https://api.telegram.org/bot1:{secret}/x token={secret}")
+        except RuntimeError:
+            log.exception("notify_send_failed", share=f"share/{SHARE_TOKEN}/v.mp4")
+        out = capsys.readouterr().out
+        assert "notify_send_failed" in out
+        assert "RuntimeError" in out
+        assert secret not in out
+        assert SHARE_TOKEN not in out
+    finally:
+        structlog.configure(**saved)
+
+
+def test_settings_hide_secrets_in_repr_and_errors() -> None:
+    import base64
+
+    from aicam.core.settings import SECRET_FIELDS, Settings
+
+    key = base64.b64encode(b"K" * 32).decode()
+    values = {
+        "backup_encryption_key": key,
+        "telegram_bot_token": "123:tg-token-in-env",
+        "zalo_app_secret": "zalo-app-secret-1",
+        "zalo_oa_refresh_token": "zalo-refresh-1",
+        "tiktok_app_secret": "tiktok-secret-1",
+        "s3_secret_access_key": "s3-secret-key-1",
+    }
+    cfg = Settings(_env_file=None, app_env="test", **values)  # type: ignore[call-arg]
+    text = repr(cfg) + str(cfg)
+    assert not any(v in text for v in values.values())
+    assert set(values) <= set(SECRET_FIELDS)
+    assert key in cfg.secret_values()
+    assert "123:tg-token-in-env" in cfg.secret_values()
+    # Lỗi validator khi khởi động (log container) không in dict đầu vào.
+    with pytest.raises(ValueError, match="TIKTOK_ADAPTER") as err:
+        Settings(_env_file=None, app_env="test", tiktok_adapter="bad", **values)  # type: ignore[call-arg]
+    assert not any(v in str(err.value) for v in values.values())
+    assert "TIKTOK_ADAPTER" in str(err.value)

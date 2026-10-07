@@ -21,7 +21,7 @@ from aicam.realtime.bus import Bus
 
 async def main() -> None:
     settings = get_settings()
-    configure_logging(settings.log_level, settings.log_json)
+    configure_logging(settings.log_level, settings.log_json, settings.secret_values())
     await schema_guard.enforce(settings, "vision")  # G3 M-F1
     init_engine(settings.database_url)
     redis = init_redis(settings.redis_url)

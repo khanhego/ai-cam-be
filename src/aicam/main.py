@@ -42,7 +42,7 @@ from aicam.realtime.hub import router as ws_router
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    configure_logging(settings.log_level, settings.log_json)
+    configure_logging(settings.log_level, settings.log_json, settings.secret_values())
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
