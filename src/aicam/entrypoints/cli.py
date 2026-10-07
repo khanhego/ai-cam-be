@@ -5,6 +5,7 @@
 - `aicam seed-demo`: dữ liệu demo / test theo 04-test-cases §1 (tiền tố TST, mật khẩu `matkhau123`)
   + hàng hoàn mẫu (`seed_returns`, T-116) + 4 shop mock Phase 3 (`seed_phase3`, T-211). Chặn trên production.
 - `aicam fix-cancel-requests [--apply]`: trả lại kiện hủy oan do Phase 2 coi yêu cầu hủy là hủy (T-285).
+- `aicam backup-keygen`: sinh khóa sao lưu 256 bit + dấu vân tay (02 API-186, FR-02.13, T-219).
 """
 
 import argparse
@@ -205,6 +206,21 @@ async def fix_cancel_requests(apply: bool) -> int:
     return 1 if report.failed else 0
 
 
+def backup_keygen() -> list[str]:
+    """API-186 `aicam backup-keygen`: khóa chỉ in ra màn hình cho IT chép — không ghi log / tệp / DB."""
+    from aicam.modules.cloud import crypto
+
+    key = crypto.generate_key()
+    return [
+        f"BACKUP_ENCRYPTION_KEY={key}",
+        f"Dấu vân tay: {crypto.fingerprint(crypto.parse_key(key))}",
+        "1. Chép dòng BACKUP_ENCRYPTION_KEY vào docker/.env của máy kho, khởi động lại api + worker-backup.",
+        "2. Cất bản sao khóa NGOÀI máy kho (két / trình quản lý mật khẩu) — mất khóa = bản sao vô dụng.",
+        "3. Dashboard → Sao lưu cloud: đối chiếu dấu vân tay rồi bấm 'Đã cất bản sao khóa giải mã'.",
+        "Đổi khóa: thêm khóa cũ vào BACKUP_OLD_KEYS (cách dấu phẩy) để khôi phục bản cũ (ops.md §6.2).",
+    ]
+
+
 def _read_password() -> str:
     password = os.environ.get("AICAM_ADMIN_PASSWORD") or getpass.getpass("Mật khẩu: ")
     if len(password) < MIN_PASSWORD:
@@ -230,7 +246,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     fix.add_argument("--apply", action="store_true", help="ghi thay đổi (không có = chỉ in danh sách)")
 
+    sub.add_parser("backup-keygen", help="Sinh khóa sao lưu cloud 256 bit + dấu vân tay (không lưu ở đâu)")
+
     args = parser.parse_args(argv)
+    if args.command == "backup-keygen":
+        print("\n".join(backup_keygen()))
+        return 0
     if args.command == "fix-cancel-requests":
         return asyncio.run(fix_cancel_requests(args.apply))
     if args.command == "create-admin":
