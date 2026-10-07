@@ -195,3 +195,77 @@ async def test_get_provider_by_transport(db: AsyncSession, notify_settings: Sett
     notify_settings.notify_transport = "real"
     assert isinstance(get_provider("TELEGRAM", notify_settings, db), TelegramProvider)
     assert isinstance(get_provider("ZALO_OA", notify_settings, db), ZaloProvider)
+
+
+class _SlowSaveStore:
+    """Kho token có `save` chậm (DB chậm) — để hủy lời gọi ngoài đúng lúc đang lưu cặp token mới."""
+
+    def __init__(self, inner: DbTokenStore, delay_s: float) -> None:
+        self.inner = inner
+        self.delay_s = delay_s
+
+    async def load(self) -> ZaloToken:
+        return await self.inner.load()
+
+    async def save(self, token: ZaloToken) -> None:
+        await asyncio.sleep(self.delay_s)
+        await self.inner.save(token)
+
+
+@respx.mock
+async def test_zalo_cancel_after_refresh_still_saves_new_refresh_token(
+    db: AsyncSession, redis_client: object, notify_settings: Settings
+) -> None:
+    """G3-NT-1: refresh token Zalo dùng một lần — lời gọi ngoài bị hủy (timeout gửi 10 giây / API-174) ngay
+    sau khi Zalo trả cặp token mới, đang lưu → cặp mới **vẫn** được lưu DB (không mất refresh token),
+    khóa nhả."""
+    from aicam.core.redis import get_redis
+    from aicam.modules.notify.providers import zalo as zalo_mod
+
+    respx.post(REFRESH).mock(
+        return_value=httpx.Response(
+            200, json={"access_token": "acc-1", "refresh_token": "ref-2", "expires_in": 3600}
+        )
+    )
+    inner = DbTokenStore(db.bind, Cipher(notify_settings.fernet_key))  # type: ignore[arg-type]
+    zalo = ZaloProvider(app_id="app-1", app_secret="secret-1", initial_refresh_token="ref-env",
+                        api_base=ZALO_API, oauth_base=ZALO_OAUTH,
+                        store=_SlowSaveStore(inner, 0.3))  # fmt: skip
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.1):
+            await zalo.access_token()
+    await zalo_mod.drain_pending(5)
+    assert (await inner.load()).refresh_token == "ref-2"
+    assert await get_redis().get(zalo_mod.LOCK_KEY) is None
+
+
+def test_zalo_lock_wait_below_send_budget() -> None:
+    """G3-NT-1: chờ khóa `zalo:token` phải ngắn hơn ngân sách gửi (J-27 `HTTP_TIMEOUT_S + 2`, API-174 10
+    giây)."""
+    from aicam.modules.notify.providers import zalo as zalo_mod
+    from aicam.modules.notify.providers.base import HTTP_TIMEOUT_S
+
+    assert zalo_mod.LOCK_WAIT_S < HTTP_TIMEOUT_S + 2 - HTTP_TIMEOUT_S / 2
+
+
+async def test_zalo_reset_stored_token_falls_back_to_env(
+    db: AsyncSession, redis_client: object, notify_settings: Settings
+) -> None:
+    """G3-NT-1 đường khôi phục: chuỗi token trong DB hỏng → `aicam notify-reset-zalo-token` xóa bản DB → lần
+    làm mới kế dùng `ZALO_OA_REFRESH_TOKEN` (IT vừa cấp lại)."""
+    from aicam.modules.notify.providers import zalo as zalo_mod
+
+    store = DbTokenStore(db.bind, Cipher(notify_settings.fernet_key))  # type: ignore[arg-type]
+    await store.save(ZaloToken("acc-x", "ref-hong", NOW - timedelta(minutes=1)))
+    assert await zalo_mod.reset_stored_token(db) is True
+    await db.flush()
+    assert (await store.load()).refresh_token is None
+    with respx.mock:
+        refresh = respx.post(REFRESH).mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "acc-1", "refresh_token": "ref-2", "expires_in": 3600}
+            )
+        )
+        assert await _zalo(db, notify_settings).access_token() == "acc-1"
+    assert "refresh_token=ref-env" in refresh.calls.last.request.content.decode()
+    assert await zalo_mod.reset_stored_token(db) is True  # dòng mới vừa lưu

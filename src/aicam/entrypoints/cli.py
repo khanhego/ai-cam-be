@@ -5,6 +5,7 @@
 - `aicam seed-demo`: dữ liệu demo / test theo 04-test-cases §1 (tiền tố TST, mật khẩu `matkhau123`)
   + hàng hoàn mẫu (`seed_returns`, T-116) + 4 shop mock Phase 3 (`seed_phase3`, T-211). Chặn trên production.
 - `aicam fix-cancel-requests [--apply]`: trả lại kiện hủy oan do Phase 2 coi yêu cầu hủy là hủy (T-285).
+- `aicam notify-reset-zalo-token`: xóa token Zalo OA trong DB để dùng lại `ZALO_OA_REFRESH_TOKEN` (G3-NT-1).
 - `aicam backup-keygen`: sinh khóa sao lưu 256 bit + dấu vân tay (02 API-186, FR-02.13, T-219).
 - `aicam backup-restore` / `aicam backup-verify`: khôi phục từ cloud, kiểm SHA-256 (API-186, docs/ops.md
 §6.2).
@@ -208,6 +209,29 @@ async def fix_cancel_requests(apply: bool) -> int:
     return 1 if report.failed else 0
 
 
+async def notify_reset_zalo_token() -> int:
+    """G3-NT-1: xóa cặp token Zalo OA trong DB → lần gửi kế dùng `ZALO_OA_REFRESH_TOKEN` (ops §10)."""
+    from aicam.modules.notify.providers import zalo
+
+    settings = get_settings()
+    if not settings.zalo_oa_refresh_token.strip():
+        print("ZALO_OA_REFRESH_TOKEN trống — đặt refresh token mới vào docker/.env, tạo lại api + "
+              "worker-notify (dc up -d api worker-notify) rồi chạy lại lệnh này.")  # fmt: skip
+        return 2
+    init_engine(settings.database_url)
+    try:
+        async with sessionmaker()() as session:
+            removed = await zalo.reset_stored_token(session)
+            await session.commit()
+    finally:
+        await dispose_engine()
+    print(
+        ("Đã xóa token Zalo OA lưu trong DB" if removed else "DB chưa có token Zalo OA")
+        + " — lần gửi kế làm mới bằng ZALO_OA_REFRESH_TOKEN. Kiểm: Dashboard → Thông báo → Gửi thử kênh Zalo."
+    )
+    return 0
+
+
 def backup_keygen() -> list[str]:
     """API-186 `aicam backup-keygen`: khóa chỉ in ra màn hình cho IT chép — không ghi log / tệp / DB."""
     from aicam.modules.cloud import crypto
@@ -293,6 +317,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     fix.add_argument("--apply", action="store_true", help="ghi thay đổi (không có = chỉ in danh sách)")
 
+    sub.add_parser(
+        "notify-reset-zalo-token",
+        help="Xóa token Zalo OA lưu trong DB — lần gửi kế dùng ZALO_OA_REFRESH_TOKEN mới (ops §10)",
+    )
     sub.add_parser("backup-keygen", help="Sinh khóa sao lưu cloud 256 bit + dấu vân tay (không lưu ở đâu)")
     rst = sub.add_parser(
         "backup-restore", help="Khôi phục DB (+ bằng chứng) từ kho lưu cloud (docs/ops.md §6.2)"
@@ -344,6 +372,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(backup_restore(args))
     if args.command == "backup-verify":
         return asyncio.run(backup_verify(args))
+    if args.command == "notify-reset-zalo-token":
+        return asyncio.run(notify_reset_zalo_token())
     if args.command == "backup-keygen":
         print("\n".join(backup_keygen()))
         return 0

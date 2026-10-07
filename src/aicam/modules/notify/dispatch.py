@@ -36,6 +36,7 @@ from aicam.modules.notify import catalog, providers, render
 from aicam.modules.notify.conditions import Draft, collect
 from aicam.modules.notify.models import NotifyChannel, NotifyEvent, NotifyMessage
 from aicam.modules.notify.providers import SendError
+from aicam.modules.notify.providers import zalo as zalo_provider
 from aicam.modules.notify.providers.base import HTTP_TIMEOUT_S
 from aicam.modules.notify.service import channel_error, in_quiet, quiet_end_after
 from aicam.modules.settings import service as settings_service
@@ -398,6 +399,8 @@ async def dispatch(db: AsyncSession, settings: Settings) -> dict[str, Any]:
             out[status] = out.get(status, 0) + 1
         return out
     finally:
+        # G3-NT-1: lượt làm mới token Zalo bị che khỏi hủy phải xong trước khi `asyncio.run` của worker đóng.
+        await zalo_provider.drain_pending()
         await _unlock(DISPATCH_LOCK, token)
 
 

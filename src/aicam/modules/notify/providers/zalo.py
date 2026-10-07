@@ -7,7 +7,9 @@
   Zalo **xoay vòng, dùng một lần** → làm mới dưới khóa Redis `zalo:token` (SET NX, chờ ≤ 10 giây), đọc lại
   sau khi có khóa, lưu cặp mới vào `notify_provider_token` (Fernet) và **commit trước khi nhả khóa**
   (như DEC-433).
-  Lần đầu lấy refresh token từ `ZALO_OA_REFRESH_TOKEN`; sau đó luôn dùng bản trong DB.
+  Lần đầu lấy refresh token từ `ZALO_OA_REFRESH_TOKEN`; sau đó luôn dùng bản trong DB. Cặp (làm mới → lưu →
+  nhả khóa) che khỏi hủy bằng `asyncio.shield` (G3-NT-1); mất chuỗi token → IT cấp lại refresh token, đặt
+  `ZALO_OA_REFRESH_TOKEN`, chạy `aicam notify-reset-zalo-token` (ops §10).
 - Mã lỗi (giả định): `-216` access token sai / hết hạn → làm mới (ép) rồi gửi lại một lần; `-213` người
   nhận chưa quan tâm OA; `-230` người nhận không tương tác với OA trong 7 ngày (hết hạn tương tác — EX-N2).
 """
@@ -37,8 +39,14 @@ TEXT_MAX = 2000  # giới hạn tin văn bản OA (giả định)
 REFRESH_MARGIN = timedelta(minutes=5)
 LOCK_KEY = "zalo:token"
 LOCK_TTL_S = 60
-LOCK_WAIT_S = 10.0
+# G3-NT-1: chờ khóa ngắn hơn ngân sách gửi (J-27 `HTTP_TIMEOUT_S + 2` = 10 giây, API-174 10 giây) — chờ hết
+# ngân sách thì bị hủy trước khi kịp gửi; bận → `TOKEN_LOCK_BUSY`, lượt sau.
+LOCK_WAIT_S = 3.0
 LOCK_POLL_S = 0.2
+
+# Lượt làm mới đang chạy (đã che khỏi hủy — G3-NT-1). Worker Celery chạy `asyncio.run` mỗi task: J-27 chờ các
+# lượt này xong (`drain_pending`) trước khi vòng lặp đóng (đóng vòng lặp sẽ hủy task còn lại).
+_PENDING: set[asyncio.Task[Any]] = set()
 
 ERR_TOKEN_INVALID = -216
 ERR_NOT_FOLLOWER = -213
@@ -158,6 +166,7 @@ class ZaloProvider:
             if time.monotonic() >= end:
                 raise SendError(MSG_BUSY, provider_code="TOKEN_LOCK_BUSY")
             await asyncio.sleep(LOCK_POLL_S)
+        handed_off = False
         try:
             current = await self._store.load()  # đọc lại dưới khóa
             if self._fresh(current) and current.access_token and current.access_token != stale:
@@ -165,11 +174,26 @@ class ZaloProvider:
             refresh = current.refresh_token or self._initial_refresh
             if not refresh:
                 raise SendError(MSG_TOKEN, provider_code="NO_REFRESH_TOKEN")
-            new = await self._refresh(refresh)
-            await self._store.save(new)  # commit trước khi nhả khóa
+            # G3-NT-1: refresh token Zalo dùng **một lần** — cặp (gọi làm mới → lưu DB → nhả khóa) chạy trong
+            # task riêng che bằng `asyncio.shield`: lời gọi ngoài bị hủy (timeout gửi / API-174) không bỏ dở
+            # giữa lúc Zalo đã xoay token mà DB chưa lưu.
+            task = asyncio.create_task(self._refresh_save_release(refresh, owner))
+            _PENDING.add(task)
+            task.add_done_callback(_forget)
+            handed_off = True
+            new = await asyncio.shield(task)
             return new.access_token or ""
         finally:
-            await redis.eval(_RELEASE_IF_OWNER, 1, LOCK_KEY, owner)  # type: ignore[misc]
+            if not handed_off:
+                await _release(owner)
+
+    async def _refresh_save_release(self, refresh: str, owner: str) -> ZaloToken:
+        try:
+            new = await self._refresh(refresh)
+            await self._store.save(new)  # commit trước khi nhả khóa
+            return new
+        finally:
+            await _release(owner)
 
     async def _refresh(self, refresh_token: str) -> ZaloToken:
         form = {"app_id": self._app_id, "refresh_token": refresh_token, "grant_type": "refresh_token"}
@@ -237,6 +261,38 @@ class ZaloProvider:
         if code != 0:
             log.warning("zalo_rejected", http_status=resp.status_code, provider_code=code)
         return code
+
+
+async def reset_stored_token(db: AsyncSession) -> bool:
+    """`aicam notify-reset-zalo-token` (G3-NT-1 — đường khôi phục): xóa cặp token đã lưu → lần gửi kế lấy lại
+    refresh token từ `ZALO_OA_REFRESH_TOKEN` (IT vừa cấp lại trên Zalo Developers khi chuỗi token trong DB bị
+    mất / hỏng). True = đã có dòng để xóa. Người gọi commit."""
+    from sqlalchemy import delete
+
+    res = await db.execute(delete(NotifyProviderToken).where(NotifyProviderToken.provider == PROVIDER))
+    return bool(res.rowcount)  # type: ignore[attr-defined]
+
+
+def _forget(task: asyncio.Task[Any]) -> None:
+    _PENDING.discard(task)
+    if not task.cancelled():
+        task.exception()  # lỗi đã log ở `_refresh` / đã ném cho người chờ — tránh cảnh báo "never retrieved"
+
+
+async def _release(owner: str) -> None:
+    await get_redis().eval(_RELEASE_IF_OWNER, 1, LOCK_KEY, owner)  # type: ignore[misc]
+
+
+async def drain_pending(timeout_s: float = 15.0) -> int:
+    """Chờ các lượt làm mới token đang chạy (đã che khỏi hủy) xong — gọi trước khi vòng lặp sự kiện đóng
+    (cuối J-27). Trả số lượt còn dở sau `timeout_s` (log)."""
+    pending = [t for t in _PENDING if not t.done()]
+    if not pending:
+        return 0
+    _done, left = await asyncio.wait(pending, timeout=timeout_s)
+    if left:
+        log.error("zalo_token_refresh_unfinished", pending=len(left))
+    return len(left)
 
 
 def _json(resp: httpx.Response) -> dict[str, Any]:

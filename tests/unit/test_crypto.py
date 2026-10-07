@@ -179,3 +179,18 @@ def test_backup_restore_cli_list(monkeypatch: pytest.MonkeyPatch, capsys: pytest
     monkeypatch.setattr(restore, "restore", no_restore)
     assert cli.main(["backup-restore", "--list"]) == 0
     assert "← --db latest" in capsys.readouterr().out
+
+
+def test_notify_reset_zalo_token_cli_requires_env(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """G3-NT-1: `aicam notify-reset-zalo-token` không xóa gì khi `ZALO_OA_REFRESH_TOKEN` trống (mã 2)."""
+    from aicam.core.settings import get_settings
+
+    monkeypatch.setenv("ZALO_OA_REFRESH_TOKEN", "")
+    get_settings.cache_clear()
+    try:
+        assert cli.main(["notify-reset-zalo-token"]) == 2
+    finally:
+        get_settings.cache_clear()
+    assert "ZALO_OA_REFRESH_TOKEN trống" in capsys.readouterr().out
