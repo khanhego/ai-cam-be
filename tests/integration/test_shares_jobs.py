@@ -341,3 +341,58 @@ async def test_stuck_creating_fails_and_versions_purged(
         assert versioned.versions(f"{link.object_prefix}v1.mp4") == []  # mọi phiên bản bị xóa
     finally:
         cloud.use_store(cloud.SHARE, None)
+
+
+async def test_timeout_leaves_cloud_cleanup_to_j25_g3_sh1(
+    share_api: AsyncClient, db: AsyncSession, w: ShareWorld, store: SignedStore, share_settings: Settings
+) -> None:
+    """G3-SH-1: hết thời gian dựng → `FAILED TIMEOUT` **không** đặt `cloud_deleted_at` (lời tải đang chạy
+    trong luồng có thể ghi xong sau lần xóa) — J-25 xóa lại + kiểm danh sách rỗng rồi mới đặt."""
+    headers, _ = await login(share_api, db, "CSKH")
+    created = await _create(share_api, headers, w, [w.ret_a.id])
+
+    async def slow(*args: Any) -> Rendered:
+        await asyncio.sleep(5)
+        return await fake_render(*args)
+
+    share_settings.share_build_timeout_s = 1
+    assert await build.build(db, created.id, share_settings, render=slow) == "FAILED"
+    link = await _link(db, created.id)
+    assert (link.error_code, link.cloud_deleted_at) == ("TIMEOUT", None)
+    out = await cleanup.cleanup(db, share_settings, created.id)
+    assert out["deleted"] == 1
+    assert (await _link(db, created.id)).cloud_deleted_at is not None
+
+
+async def test_fail_deletes_without_holding_row_lock_g3_sh2(
+    share_api: AsyncClient,
+    db: AsyncSession,
+    w: ShareWorld,
+    store: SignedStore,
+    share_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """G3-SH-2: dựng lỗi → xóa đối tượng đã tải **không** giữ khóa dòng link (không transaction mở)."""
+    headers, _ = await login(share_api, db, "CSKH")
+    created = await _create(share_api, headers, w, [w.ret_a.id, w.ret_b.id])
+    calls = {"n": 0}
+    in_tx: list[bool] = []
+    real_delete = store.delete_prefix
+
+    def spy_delete(prefix: str, *, all_versions: bool = False) -> int:
+        in_tx.append(db.in_transaction())
+        return real_delete(prefix, all_versions=all_versions)
+
+    monkeypatch.setattr(store, "delete_prefix", spy_delete)
+
+    async def render_then_fail(*args: Any) -> Rendered:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise ffmpeg.FFmpegError("hỏng")
+        return await fake_render(*args)
+
+    assert await build.build(db, created.id, share_settings, render=render_then_fail) == "FAILED"
+    assert in_tx == [False]
+    link = await _link(db, created.id)
+    assert link.error_code == "RENDER_FAILED"
+    assert store.keys(link.object_prefix) == []

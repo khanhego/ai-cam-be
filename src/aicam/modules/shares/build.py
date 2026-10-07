@@ -407,6 +407,11 @@ async def _fail(
     uploaded: list[str],
 ) -> str:
     log.warning("share_build_failed", share_id=str(share_id), code=code, detail=detail[:200])
+    prefix = await db.scalar(select(ShareLink.object_prefix).where(ShareLink.id == share_id))
+    if prefix is None:
+        return "SKIPPED"
+    await db.commit()  # G3-SH-2: không giữ transaction / khóa dòng link khi xóa qua mạng (02a §6)
+    deleted = await _delete_uploaded(store, prefix, uploaded)
     link = await db.scalar(
         select(ShareLink)
         .where(ShareLink.id == share_id)
@@ -415,12 +420,13 @@ async def _fail(
     )
     if link is None:
         return "SKIPPED"
-    deleted = await _delete_uploaded(store, link.object_prefix, uploaded)
     if link.status == "CREATING":
         link.status = "FAILED"
         link.error_code, link.error_message = code, MESSAGES[code]
         link.step = link.step_index = link.step_total = None
-    if deleted and link.status in ("FAILED", "REVOKED"):
+    # G3-SH-1: TIMEOUT — lời tải trong `to_thread` không hủy được, có thể ghi xong **sau** lần xóa này → để
+    # J-25 xóa lại + kiểm danh sách rỗng rồi mới đặt `cloud_deleted_at` (lifecycle 8 ngày: lưới cuối).
+    if deleted and code != "TIMEOUT" and link.status in ("FAILED", "REVOKED"):
         link.cloud_deleted_at = clock.now()
     publish_updated(db, link)
     await commit(db)
