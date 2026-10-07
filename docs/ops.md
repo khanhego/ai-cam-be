@@ -158,7 +158,8 @@ nhập lại mật khẩu camera, link cũ không sao chép được); `S3_ENDPO
 `SITE_ADDRESS`, `LAN_IP`. Cách nhanh: cất nguyên `docker/.env` + danh sách khóa cũ.
 
 **Đổi khóa sao lưu** (lộ khóa / nhân sự nghỉ — EX-K7): `aicam backup-keygen` → đặt khóa mới vào
-`BACKUP_ENCRYPTION_KEY`, **chuyển khóa cũ sang `BACKUP_OLD_KEYS`** (cách dấu phẩy) → `dc up -d api worker-backup`.
+`BACKUP_ENCRYPTION_KEY`, **chuyển khóa cũ sang `BACKUP_OLD_KEYS`** (cách dấu phẩy) → `dc up -d api worker-backup
+worker-notify` (chỉ 3 service này nhận khóa sao lưu — G3-BK-7).
 Sao lưu dừng ("Khóa đã đổi") tới khi Admin xác nhận dấu vân tay mới ở D23. Sau đó D23 hiện "{N} tệp bằng chứng và
 {M} bản DB mã hóa bằng khóa cũ" + nút **Tải lại bằng chứng bằng khóa mới** (chỉ tệp còn ở kho; bản DB cũ hết hạn
 theo chính sách 30 ngày / tháng). **Giữ khóa cũ** (cất ngoài máy + `BACKUP_OLD_KEYS`) tới khi D23 không còn dòng
