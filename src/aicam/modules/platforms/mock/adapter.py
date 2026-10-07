@@ -115,6 +115,7 @@ def _order(n: int) -> PlatformOrder:
 
 class MockAdapter:
     code = "SHOPEE"
+    is_mock = True  # tra không cần token (lookup.targets)
 
     def __init__(self, delay_s: float = 0.0) -> None:
         self.delay_s = delay_s

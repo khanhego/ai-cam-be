@@ -7,6 +7,7 @@ adapter (5 lần, giãn cách mũ — FR-05.08); lỗi cuối ghi `shop.last_err
 
 import json
 import secrets
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -23,7 +24,7 @@ from aicam.core.security import Cipher
 from aicam.core.settings import Settings
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package, Shop
-from aicam.modules.platforms import budget, grants, registry
+from aicam.modules.platforms import budget, grants, lookup, registry
 from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms.base import (
     PlatformAdapter,
@@ -403,14 +404,16 @@ async def sync_orders(
 
 
 async def verify_unverified(
-    session: AsyncSession, adapter: PlatformAdapter, settings: Settings
+    session: AsyncSession,
+    adapter: PlatformAdapter | Mapping[str, PlatformAdapter] | None,
+    settings: Settings,
 ) -> dict[str, int]:
-    """J-05 (10 phút): kiện `verified=false` (BR-04) (7 ngày) → tra sàn; có → gắn đơn."""
+    """J-05 (10 phút): kiện `verified=false` (BR-04) (7 ngày) → `lookup.find_everywhere` (mọi shop của mọi sàn
+    bật, song song, mỗi kiện ≤ 2 giây — BR-32); đúng 1 shop có → gắn đơn của shop đó; ≥ 2 → giữ chưa xác minh
+    (log `platform_verify_ambiguous`). Hết ngân sách lượt (`budget`) / mọi shop lỗi → dừng, lượt sau."""
     out = {"checked": 0, "verified": 0}
-    if not platforms.is_configured(settings):
-        return out
-    targets = await platforms.lookup_targets(session, adapter, settings)
-    if not targets:
+    adapters = lookup.adapters_for(settings, adapter)
+    if not adapters:
         return out
     packages = (
         await session.scalars(
@@ -428,28 +431,23 @@ async def verify_unverified(
     codes = [p.tracking_number for p in packages]
     await commit(session)
     for code in codes:
+        if budget.expired():
+            log.warning("platform_verify_budget_exceeded", checked=out["checked"])
+            break
         out["checked"] += 1
-        # §5.1 #2 (T-204): tra từng shop đang kết nối, ghi đơn vào đúng shop trả về. ≥ 2 shop cùng trả →
-        # mơ hồ, giữ chưa xác minh (tra song song + `AMBIGUOUS_SHOP`: T-206).
-        hits: list[tuple[PlatformOrder, Any]] = []
-        failed = False
-        for target in targets:
-            try:
-                found = await adapter.find_by_tracking(target.creds, code)
-            except PlatformError as exc:
-                log.warning("platform_verify_failed", code=code, shop_id=str(target.shop_id), error=str(exc))
-                failed = True
-                continue
-            if found is not None and code.upper() in found.tracking_numbers:
-                hits.append((found, target.shop_id))
-        if len(hits) > 1:
-            log.warning("platform_verify_ambiguous", code=code, shops=[str(s) for _, s in hits])
+        found = await lookup.find_everywhere(session, code, settings, adapters)
+        await commit(session)  # `credentials()` có thể vừa đánh EXPIRED (token không giải mã được)
+        if found.shops == 0:
+            break
+        if found.ambiguous:
+            log.warning("platform_verify_ambiguous", code=code, shops=found.shops_brief())
             continue
-        if not hits:
-            if failed and len(targets) == 1:
-                break  # sàn lỗi: để lượt sau, giữ unverified
+        hit = found.single
+        if hit is None:
+            if found.failed == found.shops:
+                break  # sàn lỗi hết: để lượt sau, giữ unverified
             continue
-        await _upsert(session, hits[0][0], hits[0][1])
+        await _upsert(session, hit.order, hit.shop_id)
         out["verified"] += 1
         await commit(session)
     await commit(session)

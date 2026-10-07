@@ -1,6 +1,5 @@
 """Phiên đóng gói: trạng thái station (API-10) và xử lý quét (API-11) — 02a §4.1, BR-01..06, BR-18."""
 
-import asyncio
 import re
 import uuid
 from datetime import date, datetime, time, timedelta
@@ -24,8 +23,8 @@ from aicam.modules.media import jobs as media_jobs
 from aicam.modules.media.queries import clips_of_session
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import RETURN_STATUSES, Order, Package
-from aicam.modules.platforms import service as platforms
-from aicam.modules.platforms.base import PlatformAdapter, PlatformError
+from aicam.modules.platforms import lookup
+from aicam.modules.platforms.base import PlatformAdapter
 from aicam.modules.returns import service as returns
 from aicam.modules.sessions import return_scan, return_state
 from aicam.modules.sessions.events import record_event as record_event
@@ -286,35 +285,32 @@ async def lock_station(session: AsyncSession, station_id: uuid.UUID) -> None:
 
 async def _lookup_platform(
     session: AsyncSession, code: str, adapter: PlatformAdapter, settings: Settings
-) -> Package | None:
-    """BR-04: tra sàn tối đa `PLATFORM_LOOKUP_TIMEOUT_S` (2 giây); có → ghi đơn; không / quá hạn / lỗi → None.
+) -> list[dict[str, str | None]] | None:
+    """BR-04 + BR-32: tra mọi shop đang kết nối song song, cắt `PLATFORM_LOOKUP_TIMEOUT_S` (2 giây) mỗi shop.
 
-    Gọi ngoài lock station; ghi đơn trong savepoint (station khác có thể vừa ghi cùng đơn — review M1 #5).
+    Đúng 1 shop có → ghi đơn vào shop đó (savepoint — station khác có thể vừa ghi cùng đơn, review M1 #5).
+    ≥ 2 shop → không ghi, trả danh sách shop `[{platform, name}]` để phiên mở chưa xác minh + cờ
+    `AMBIGUOUS_SHOP` (FR-05.19). 0 / quá hạn / lỗi → None (chưa xác minh như Phase 1). Gọi ngoài lock station.
     """
     try:
-        target = await platforms.lookup_target(session, adapter, settings)
-        if target is None:
-            return None
-        found = await asyncio.wait_for(
-            adapter.find_by_tracking(target.creds, code), timeout=settings.platform_lookup_timeout_s
-        )
-    except (TimeoutError, PlatformError) as exc:
-        log.info("platform_lookup_failed", code=code, error=type(exc).__name__)
-        return None
+        found = await lookup.find_everywhere(session, code, settings, adapter)
     except SQLAlchemyError:
         raise  # lỗi DB: transaction quét đã hỏng, không giả như "không tìm thấy"
     except Exception:  # tra sàn lỗi bất ngờ không được làm quét 500 (BR-04 → UNVERIFIED, G3-P2-6)
         log.exception("platform_lookup_error", code=code)
         return None
-    if found is None:
+    if found.ambiguous:
+        return found.shops_brief()
+    hit = found.single
+    if hit is None:
         return None
     try:
         # Station khác vừa ghi cùng đơn (tra ngoài lock): bỏ qua, bước mở phiên đọc lại từ DB (review #5).
         async with session.begin_nested():
-            result = await orders.upsert_platform_order(session, found, shop_id=target.shop_id)
+            await orders.upsert_platform_order(session, hit.order, shop_id=hit.shop_id)
     except IntegrityError:
         return None
-    return next((p for p in result.packages if p.tracking_number == code), None)
+    return None
 
 
 def _hhmm(at: datetime, tz: str) -> str:
@@ -322,18 +318,26 @@ def _hhmm(at: datetime, tz: str) -> str:
 
 
 async def _open_session(
-    session: AsyncSession, station: Station, code: str, settings: Settings
+    session: AsyncSession,
+    station: Station,
+    code: str,
+    settings: Settings,
+    ambiguous_shops: list[dict[str, str | None]] | None = None,
 ) -> tuple[str, AlertOut | None]:
     """Hai station tranh cùng kiện / cùng mã mới: unique index chặn → ALERT thay vì 500 (review #5)."""
     try:
         async with session.begin_nested():
-            return await _open_session_unsafe(session, station, code, settings)
+            return await _open_session_unsafe(session, station, code, settings, ambiguous_shops)
     except IntegrityError:
         return "ALERT", _alert("PACKED_ELSEWHERE_IN_PROGRESS", f"{code} đang được đóng gói ở station khác.")
 
 
 async def _open_session_unsafe(
-    session: AsyncSession, station: Station, code: str, settings: Settings
+    session: AsyncSession,
+    station: Station,
+    code: str,
+    settings: Settings,
+    ambiguous_shops: list[dict[str, str | None]] | None = None,
 ) -> tuple[str, AlertOut | None]:
     # Khóa kiện (DEC-266, sau station): API-122 chỉnh tay cùng lúc không bị bên quét ghi đè (DEC-303 d).
     package = await orders.find_package(session, code, for_update=True)
@@ -398,6 +402,11 @@ async def _open_session_unsafe(
     await orders.transition(session, package, "PACKING", source="WAREHOUSE", actor_label=station.name)
     await session.flush()
     record_event(session, pack, "SCAN_OPEN", code=code)
+    if ambiguous_shops and not package.verified:
+        # BR-32 / FR-05.19: mã có ở ≥ 2 shop → phiên chưa xác minh + cờ + sự kiện liệt kê shop (D4 dòng thời
+        # gian "Mã có ở 2 shop: …" — API-31 `timeline[].shops`, DEC-561).
+        set_flag(pack, "AMBIGUOUS_SHOP")
+        record_event(session, pack, "AMBIGUOUS_SHOP", code=code, shops=ambiguous_shops)
     # Khay đã có phiếu khác trước khi quét: vision không phát sự kiện mới nên xét ngay (BR-06, DEC-111).
     if apply_tray(session, pack, tray) == "MISMATCH":
         return "MISMATCH", None
@@ -523,6 +532,7 @@ async def scan(
 
     valid = re.fullmatch(settings.scan_code_regex, code) is not None
     prepared: return_scan.Prepared | None = None
+    ambiguous_shops: list[dict[str, str | None]] | None = None
     need_operator = (
         operator_required((await settings_service.get(session)).packer_name_required, station)
         and not station.operator_name
@@ -538,7 +548,7 @@ async def scan(
         and await orders.find_package(session, code) is None
     ):
         # Tra sàn ngoài khóa station (02a §4.1): chỉ khi mã hợp lệ, station rảnh và mã chưa có.
-        await _lookup_platform(session, code, adapter, settings)
+        ambiguous_shops = await _lookup_platform(session, code, adapter, settings)
         await session.flush()
 
     await lock_station(session, station.id)
@@ -572,7 +582,7 @@ async def scan(
             _alert("OPERATOR_REQUIRED", "Nhập tên người đóng gói trước khi đóng gói.", mode="PACK"),
         )
     elif pack is None:
-        outcome, alert = await _open_session(session, station, code, settings)
+        outcome, alert = await _open_session(session, station, code, settings, ambiguous_shops)
     else:
         outcome, alert, closed = await _continue_session(session, station, pack, code)
 

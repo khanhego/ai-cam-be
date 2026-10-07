@@ -688,6 +688,7 @@ CONTRACT: tuple[Api, ...] = (
             "timeline[].from_status",
             "timeline[].to_status",
             "timeline[].actor",
+            "timeline[].shops",  # Phase 3 BR-32 (DEC-561): dòng sự kiện `AMBIGUOUS_SHOP`
         ),
         {"sessions[].clips[].protection.reasons[]": _e("CLAIM", "RETURN_CASE", "HELD")},
     ),

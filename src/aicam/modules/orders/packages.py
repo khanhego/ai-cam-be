@@ -28,7 +28,7 @@ from aicam.modules.returns import views as return_views
 from aicam.modules.returns.models import OPEN_CASE_STATUSES, ReturnCase, ReturnCasePackage
 from aicam.modules.returns.schemas import ReturnCaseItem
 from aicam.modules.sessions import inspection
-from aicam.modules.sessions.models import SESSION_STATUSES, PackSession
+from aicam.modules.sessions.models import SESSION_STATUSES, PackSession, SessionEvent
 from aicam.modules.sessions.queries import dropped_return_filter
 from aicam.modules.sessions.schemas import InspectionLineOut, InspectionOut
 from aicam.modules.settings import service as settings_service
@@ -203,12 +203,20 @@ class PackageClaimBrief(BaseModel):
     status: str
 
 
+class TimelineShop(BaseModel):
+    platform: str
+    name: str | None
+
+
 class TimelineItem(BaseModel):
     at: datetime
     source: str
     from_status: str | None
     to_status: str
     actor: str | None
+    # Phase 3 (02 §6.2 API-31, BR-32, DEC-561): dòng của sự kiện phiên `AMBIGUOUS_SHOP` — mã có ở ≥ 2 shop khi
+    # quét (`source = WAREHOUSE`, `to_status = PACKING`, `actor` = station); dòng trạng thái thường → null.
+    shops: list[TimelineShop] | None = None
 
 
 class PackageDetail(BaseModel):
@@ -647,6 +655,30 @@ async def detail(
         )
         for h, display in history
     ]
+    # BR-32 (DEC-561): mỗi sự kiện phiên `AMBIGUOUS_SHOP` thêm một dòng `shops` (D4 "Mã có ở 2 shop: …").
+    station_of = {s.id: name for s, name in rows}
+    ambiguous = (
+        await db.scalars(
+            select(SessionEvent)
+            .where(
+                SessionEvent.session_id.in_(list(station_of)),
+                SessionEvent.type == "AMBIGUOUS_SHOP",
+            )
+            .order_by(SessionEvent.at, SessionEvent.id)
+        )
+    ).all()
+    for ev in ambiguous:
+        timeline.append(
+            TimelineItem(
+                at=ev.at, source="WAREHOUSE", from_status=None, to_status="PACKING",
+                actor=station_of.get(ev.session_id),
+                shops=[
+                    TimelineShop(platform=str(x.get("platform")), name=x.get("name"))
+                    for x in (ev.payload or {}).get("shops") or []
+                ],
+            )
+        )  # fmt: skip
+    timeline.sort(key=lambda t: t.at)
     case_ids = set(
         (
             await db.scalars(

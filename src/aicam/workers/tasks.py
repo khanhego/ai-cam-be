@@ -20,7 +20,6 @@ from aicam.modules.media import exports, jobs, snapshots
 from aicam.modules.media import service as media
 from aicam.modules.platforms import budget
 from aicam.modules.platforms import dispatch as platform_dispatch
-from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms import sync as platform_sync
 from aicam.modules.reconciliation import service as reconciliation
 from aicam.modules.sessions import service as sessions
@@ -207,7 +206,7 @@ def verify_unverified() -> dict[str, int]:
 
     async def _job(db: AsyncSession) -> dict[str, int]:
         with budget.time_budget(settings.sync_task_budget_s):
-            return await platform_sync.verify_unverified(db, platforms.get_adapter(settings), settings)
+            return await platform_sync.verify_unverified(db, None, settings)
 
     return _run(_job)
 

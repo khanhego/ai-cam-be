@@ -8693,6 +8693,20 @@
             ],
             "title": "From Status"
           },
+          "shops": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TimelineShop"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shops"
+          },
           "source": {
             "title": "Source",
             "type": "string"
@@ -8710,6 +8724,31 @@
           "actor"
         ],
         "title": "TimelineItem",
+        "type": "object"
+      },
+      "TimelineShop": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "name"
+        ],
+        "title": "TimelineShop",
         "type": "object"
       },
       "TokenOut": {
@@ -11205,7 +11244,8 @@
                     "UNANNOUNCED",
                     "UNIDENTIFIED",
                     "INSPECTION_CORRECTED",
-                    "ORDER_CANCEL_REQUESTED"
+                    "ORDER_CANCEL_REQUESTED",
+                    "AMBIGUOUS_SHOP"
                   ],
                   "type": "string"
                 },

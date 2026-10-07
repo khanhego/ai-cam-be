@@ -37,6 +37,8 @@ SESSION_FLAGS = (
     "INSPECTION_CORRECTED",
     # Phase 3 (02 §5.1 SESSION, DEC-494): người mua đang xin hủy khi phiên PACK mở.
     "ORDER_CANCEL_REQUESTED",
+    # BR-32 / FR-05.19 (T-206): mã có ở ≥ 2 shop khi quét → phiên chưa xác minh, không đoán shop.
+    "AMBIGUOUS_SHOP",
 )
 # Kết luận phiên hoàn / tình trạng dòng (02 §5.2).
 INSPECTION_CONCLUSIONS = ("OK", "DAMAGED", "MISSING_ITEM", "WRONG_ITEM", "EMPTY_BOX", "OTHER")
