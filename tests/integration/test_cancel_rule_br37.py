@@ -211,6 +211,8 @@ async def test_supervisor_cancel_return_needs_note_and_summary(desk: Desk, db: A
     )
     from aicam.core.audit import AuditLog
 
-    audit = await db.scalar(select(AuditLog).where(AuditLog.action == "APPROVAL_DECISION"))
+    audit = await db.scalar(
+        select(AuditLog).where(AuditLog.action == "APPROVAL_DECISION", AuditLog.object_id == approval_id)
+    )
     assert audit is not None
     assert audit.data["reason_code"] == "WRONG_SCAN"

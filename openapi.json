@@ -11204,7 +11204,8 @@
                     "NO_PACK_CLIP",
                     "UNANNOUNCED",
                     "UNIDENTIFIED",
-                    "INSPECTION_CORRECTED"
+                    "INSPECTION_CORRECTED",
+                    "ORDER_CANCEL_REQUESTED"
                   ],
                   "type": "string"
                 },
