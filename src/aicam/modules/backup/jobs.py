@@ -532,6 +532,10 @@ async def _upload_one(
             return "SOURCE_DELETED"
         first = obj.last_error != SOURCE_MISSING
         _fail(obj, now, SOURCE_MISSING)
+        if obj.resolution_action == "RETRY":
+            # "Thử lại ngay" mà tệp vẫn không có → vấn đề còn nguyên, hiện lại như mới (dấu vết ở audit —
+            # DEC-662).
+            obj.resolution_action = obj.resolution_note = obj.resolved_by = obj.resolved_at = None
         await db.commit()
         log.warning(
             "backup_source_missing", object_id=str(obj.id), kind=obj.kind, attempts=obj.attempts, first=first
