@@ -85,6 +85,18 @@ class ReturnShopRow(BaseModel):
     rate: float | None
 
 
+class SeriesRow(BaseModel):
+    """FR-09.07 (C): một cột biểu đồ — `bucket` = ngày đầu của ngày / tuần / tháng (cắt theo đầu kỳ)."""
+
+    bucket: date
+    packed: int
+    return_cases: int
+    claims: int
+
+
+Granularity = Literal["day", "week", "month"]
+
+
 class ReturnsReportOut(BaseModel):
     period: PeriodOut
     filters: Filters
@@ -94,6 +106,8 @@ class ReturnsReportOut(BaseModel):
     reason_by_conclusion: ReasonByConclusion
     top_products: list[ProductRow]
     by_shop: list[ReturnShopRow]
+    series: list[SeriesRow]
+    series_granularity: Granularity
 
 
 # ---------------------------------------------------------------- API-151
@@ -146,6 +160,8 @@ class ClaimsReportOut(BaseModel):
     by_type_result: list[ClaimTypeRow]
     by_counterparty: list[ClaimCounterpartyRow]
     by_shop: list[ClaimShopRow]
+    series: list[SeriesRow]
+    series_granularity: Granularity
 
 
 # ---------------------------------------------------------------- API-152

@@ -743,3 +743,100 @@ async def test_report_timeout_returns_503(
         "details": {},
     }
     assert (await db.execute(text("SELECT 1"))).scalar() == 1
+
+
+# ---------------------------------------------------------------- T-217: series (FR-09.07) + API-153 CSV
+
+
+async def test_returns_series_by_day(api: AsyncClient, db: AsyncSession) -> None:
+    """FR-09.07 (C): kỳ 30 ngày → cột theo ngày giờ VN, đủ ngày (0 khi trống)."""
+    await _returns_dataset(db)
+    sup = await _login(api, db, "SUPERVISOR")
+
+    body = (await api.get("/api/v1/reports/returns", headers=sup, params=PERIOD)).json()
+
+    assert body["series_granularity"] == "day"
+    assert len(body["series"]) == 30
+    assert body["series"][0] == {"bucket": "2026-09-06", "packed": 0, "return_cases": 0, "claims": 0}
+    by_day = {r["bucket"]: r for r in body["series"]}
+    assert by_day["2026-09-20"]["return_cases"] == 40  # 10:00 VN 20/09
+    long = (
+        await api.get(
+            "/api/v1/reports/claims", headers=sup, params={"from": "2026-01-01", "to": "2026-10-05"}
+        )
+    ).json()
+    assert long["series_granularity"] == "month"
+    assert [r["bucket"] for r in long["series"]][:2] == ["2026-01-01", "2026-02-01"]
+
+
+async def test_export_csv_returns_with_audit(api: AsyncClient, db: AsyncSession) -> None:
+    """AC-47 / FR-09.06: CSV UTF-8 BOM, tên file, mọi bảng của tab, số khớp màn; audit `REPORT_EXPORT`."""
+    a, _ = await _returns_dataset(db)
+    cskh = await _login(api, db, "CSKH")
+    params = {**PERIOD, "platform": "SHOPEE", "shop_id": str(a.id)}
+
+    res = await api.get("/api/v1/reports/returns/export", headers=cskh, params=params)
+
+    assert res.status_code == 200, res.text
+    assert res.headers["content-type"] == "text/csv; charset=utf-8"
+    assert res.headers["content-disposition"] == (
+        'attachment; filename="bao-cao-hang-hoan-2026-09-06_2026-10-05.csv"'
+    )
+    assert res.content.startswith(b"\xef\xbb\xbf")
+    text_ = res.content.decode("utf-8-sig")
+    assert text_.startswith(
+        "Báo cáo hàng hoàn\r\nKỳ,06/09/2026 – 05/10/2026\r\nSàn,Shopee\r\nShop,Áo Đẹp\r\n"
+    )
+    for title in (
+        "Chỉ số",
+        "Theo loại hồ sơ",
+        "Lý do khách × kết luận kho",
+        "Top sản phẩm bị trả",
+        "Theo sàn / shop",
+        "Biểu đồ — theo ngày",
+    ):
+        assert f"\r\n\r\n{title}\r\n" in text_
+    assert 'Tỷ lệ hoàn,"3,7%",26,700\r\n' in text_
+    assert 'Tỷ lệ có vấn đề,"20,7%",6,29\r\n' in text_
+    assert 'Shopee,Áo Đẹp,700,26,"3,7%"\r\n' in text_
+    rows = (
+        await db.execute(
+            text(
+                "SELECT user_id, data FROM audit_log WHERE action = 'REPORT_EXPORT' ORDER BY id DESC LIMIT 1"
+            )
+        )
+    ).one()
+    assert rows.data == {
+        "report": "returns",
+        "from": "2026-09-06",
+        "to": "2026-10-05",
+        "platform": "SHOPEE",
+        "shop_id": str(a.id),
+        "station_id": None,
+    }
+
+
+async def test_export_permissions_and_errors(api: AsyncClient, db: AsyncSession) -> None:
+    """API-153: CSKH + productivity → 403 (không audit); `report` lạ → 404; kỳ sai → 422; Admin xuất năng
+    suất."""
+    cskh = await _login(api, db, "CSKH")
+    admin = await _login(api, db, "ADMIN")
+
+    denied = await api.get("/api/v1/reports/productivity/export", headers=cskh, params=PERIOD)
+    unknown = await api.get("/api/v1/reports/sales/export", headers=admin, params=PERIOD)
+    bad = await api.get(
+        "/api/v1/reports/claims/export", headers=admin, params={"from": "2026-10-05", "to": "2026-10-01"}
+    )
+    ok = await api.get("/api/v1/reports/productivity/export", headers=admin, params=PERIOD)
+    claims = await api.get("/api/v1/reports/claims/export", headers=cskh, params=PERIOD)
+
+    assert (denied.status_code, denied.json()["error"]["code"]) == (403, "FORBIDDEN")
+    assert (unknown.status_code, unknown.json()["error"]["code"]) == (404, "NOT_FOUND")
+    assert bad.status_code == 422
+    assert ok.status_code == 200
+    assert 'filename="bao-cao-nang-suat-2026-09-06_2026-10-05.csv"' in ok.headers["content-disposition"]
+    assert "Kiện đã đóng gói,0" in ok.content.decode("utf-8-sig")
+    assert claims.status_code == 200
+    assert "Tỷ lệ thắng,—,0,0" in claims.content.decode("utf-8-sig")
+    n = (await db.execute(text("SELECT count(*) FROM audit_log WHERE action = 'REPORT_EXPORT'"))).scalar()
+    assert n == 2

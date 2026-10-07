@@ -288,6 +288,14 @@ Log không chứa bí mật trong URL (G3-F3, G3-N1): uvicorn tắt access log (
 
 Log Docker giới hạn 20 MB × 5 file / service. Khung **Sức khỏe hệ thống** ở Cài đặt → Lưu trữ (`/admin/settings/storage`, API-81): DB, Redis, MediaMTX, ổ đĩa, từng camera, lần đồng bộ sàn. Tổng quan (`/admin`) có mục "Cần xử lý": camera mất tín hiệu, lệch giờ, clip lỗi, ổ ≥ 80 %, lỗi đồng bộ.
 
+**Báo cáo (D20, API-150..153 — Phase 3).** Tính trực tiếp trên DB, cache Redis 60 giây theo bộ lọc; mỗi lần tính ghi
+log `report_built {report, days, seconds}` (WARNING khi kỳ ≤ 92 ngày mà > 3 giây — NFR-37), quá 15 giây bị hủy
+(`report_timeout`, người dùng thấy "Không tải được báo cáo."). Xuất CSV ghi audit `REPORT_EXPORT`. Đo trên **máy dev**
+(Apple M4 Pro, Postgres Docker Desktop — **chưa đo máy kho**; T-217, `RUN_PERF=1 uv run python
+tests/load/perf_reports.py`, DB tạm, 183.000 đơn / kiện 366 ngày, 20 lần mỗi tab): kỳ 92 ngày p95 hàng hoàn 0,50
+giây · khiếu nại 0,13 · năng suất 0,25; kỳ 366 ngày p95 1,41 · 0,43 · 0,91 giây (giới hạn 3 / 10 giây). Chạy lại
+lệnh trên máy kho trước go-live (dùng `TEST_DATABASE_URL` trỏ Postgres của máy kho; DB tạm bị xóa sau khi đo).
+
 ## 9. Dọn đĩa
 
 - Tự động: J-02 (02:00 hằng ngày) xóa video thô quá `retention_raw_days` (30) và clip quá `retention_clip_days` (90), trừ clip đang **Giữ**. Cấu hình ở **Cài đặt → Lưu trữ** (`/admin/settings/storage`). MediaMTX không tự xóa (`recordDeleteAfter: 0s`).

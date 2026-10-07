@@ -1897,6 +1897,22 @@
           },
           "period": {
             "$ref": "#/components/schemas/PeriodOut"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesRow"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "series_granularity": {
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ],
+            "title": "Series Granularity",
+            "type": "string"
           }
         },
         "required": [
@@ -1907,7 +1923,9 @@
           "by_status",
           "by_type_result",
           "by_counterparty",
-          "by_shop"
+          "by_shop",
+          "series",
+          "series_granularity"
         ],
         "title": "ClaimsReportOut",
         "type": "object"
@@ -7856,6 +7874,22 @@
           "reason_by_conclusion": {
             "$ref": "#/components/schemas/ReasonByConclusion"
           },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/SeriesRow"
+            },
+            "title": "Series",
+            "type": "array"
+          },
+          "series_granularity": {
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ],
+            "title": "Series Granularity",
+            "type": "string"
+          },
           "top_products": {
             "items": {
               "$ref": "#/components/schemas/ProductRow"
@@ -7872,7 +7906,9 @@
           "by_kind",
           "reason_by_conclusion",
           "top_products",
-          "by_shop"
+          "by_shop",
+          "series",
+          "series_granularity"
         ],
         "title": "ReturnsReportOut",
         "type": "object"
@@ -8144,6 +8180,36 @@
           "state"
         ],
         "title": "ScanOut",
+        "type": "object"
+      },
+      "SeriesRow": {
+        "description": "FR-09.07 (C): một cột biểu đồ — `bucket` = ngày đầu của ngày / tuần / tháng (cắt theo đầu kỳ).",
+        "properties": {
+          "bucket": {
+            "format": "date",
+            "title": "Bucket",
+            "type": "string"
+          },
+          "claims": {
+            "title": "Claims",
+            "type": "integer"
+          },
+          "packed": {
+            "title": "Packed",
+            "type": "integer"
+          },
+          "return_cases": {
+            "title": "Return Cases",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "bucket",
+          "packed",
+          "return_cases",
+          "claims"
+        ],
+        "title": "SeriesRow",
         "type": "object"
       },
       "SessionDetail": {
@@ -13341,6 +13407,141 @@
           }
         },
         "summary": "Returns Report",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/{report}/export": {
+      "get": {
+        "description": "API-153 xuất CSV tab đang xem (FR-09.06): `report` = returns | claims | productivity.\n\nAudit `REPORT_EXPORT`; quyền như API tương ứng (CSKH + productivity → 403); `report` lạ → 404.",
+        "operationId": "export_report_api_v1_reports__report__export_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "report",
+            "required": true,
+            "schema": {
+              "title": "Report",
+              "type": "string"
+            }
+          },
+          {
+            "description": "YYYY-MM-DD giờ VN; mặc định to − 29 ngày",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "YYYY-MM-DD giờ VN; mặc định to − 29 ngày",
+              "title": "From"
+            }
+          },
+          {
+            "description": "YYYY-MM-DD giờ VN, ≤ hôm nay; mặc định hôm nay",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "YYYY-MM-DD giờ VN, ≤ hôm nay; mặc định hôm nay",
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHOPEE",
+                    "TIKTOK"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "station_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Station Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "CSV UTF-8 có BOM"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Report",
         "tags": [
           "reports"
         ]

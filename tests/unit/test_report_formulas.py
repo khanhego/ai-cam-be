@@ -88,3 +88,66 @@ def test_cache_key_ignores_station_except_productivity() -> None:
     assert a.cache_key("returns", base) == a.cache_key("returns", with_station)
     assert a.cache_key("productivity", base) != a.cache_key("productivity", with_station)
     assert a.cache_key("returns", base).startswith("report:returns:")
+
+
+# ---------------------------------------------------------------- T-217: biểu đồ (FR-09.07) + CSV (FR-09.06)
+
+
+def test_series_granularity_and_buckets() -> None:
+    def f(days: int) -> a.ReportFilters:
+        return a.ReportFilters(date(2026, 10, 5) - timedelta(days=days - 1), date(2026, 10, 5))
+
+    assert [a.granularity(f(n)) for n in (1, 31, 32, 180, 181, 366)] == [
+        "day",
+        "day",
+        "week",
+        "week",
+        "month",
+        "month",
+    ]
+    assert len(a.bucket_starts(f(31), "day")) == 31
+    # 32 ngày từ thứ Sáu 04/09 tới thứ Hai 05/10: cột đầu cắt về 04/09, các cột sau bắt đầu thứ Hai
+    weeks = a.bucket_starts(f(32), "week")
+    assert weeks[0] == date(2026, 9, 4)
+    assert all(w.weekday() == 0 for w in weeks[1:])
+    assert weeks[-1] == date(2026, 10, 5)
+    assert len(weeks) == 6
+    months = a.bucket_starts(f(366), "month")
+    assert months[0] == date(2025, 10, 5)
+    assert months[1:3] == [date(2025, 11, 1), date(2025, 12, 1)]
+    assert months[-1] == date(2026, 10, 1)
+    assert len(months) == 13
+
+
+def test_csv_percent_and_render() -> None:
+    from aicam.modules.reports import csv_export
+    from aicam.modules.reports import schemas as s
+
+    assert [csv_export.percent(v) for v in (0.04, 0.006, 0.2, 0.0457, None)] == [
+        "4,0%",
+        "0,6%",
+        "20,0%",
+        "4,6%",
+        "—",
+    ]
+    out = s.ProductivityReportOut(
+        period=s.PeriodOut(from_=date(2026, 9, 6), to=date(2026, 10, 5)),
+        filters=s.ProductivityFilters(platform="TIKTOK", shop_id=None, station_id=None),
+        generated_at=datetime(2026, 10, 6, tzinfo=UTC),
+        cards=s.ProductivityCards(
+            packed=3, pack_avg_seconds=90, returns_inspected=0, return_avg_seconds=None
+        ),
+        by_station=[],
+        by_operator=[
+            s.OperatorRow(
+                operator_name=None, packed=3, avg_seconds=90, mismatch=0, abandoned=0, cancelled=0, repacked=0
+            )
+        ],
+        return_by_operator=[],
+    )
+    body = csv_export.render("productivity", out, station_name="Station 01").decode("utf-8")
+    assert body.startswith("﻿Báo cáo năng suất\r\n")
+    assert "Kỳ,06/09/2026 – 05/10/2026\r\nSàn,TikTok Shop\r\nShop,Tất cả\r\nStation,Station 01\r\n" in body
+    assert "\r\n\r\nTheo người đứng bàn\r\n" in body
+    assert "(Không ghi tên),3,90,0,0,0,0\r\n" in body
+    assert "TB / kiện hoàn (giây),—\r\n" in body

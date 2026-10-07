@@ -153,6 +153,14 @@ def _prefixed_enums(prefix: str, enums: dict[str, frozenset[str]]) -> dict[str, 
 PAGE = ("page", "page_size", "total")
 # API-150..152 (02 §6.2): khung chung + tỷ lệ `{numerator, denominator, value}`.
 REPORT_HEAD = ("period.from", "period.to", "filters.platform", "filters.shop_id", "generated_at")
+# FR-09.07 (C, T-217) — API-150 / 151.
+REPORT_SERIES = (
+    "series[].bucket",
+    "series[].packed",
+    "series[].return_cases",
+    "series[].claims",
+    "series_granularity",
+)
 RATIO = ("numerator", "denominator", "value")
 PRODUCTIVITY_COLS = ("packed", "avg_seconds", "mismatch", "abandoned", "cancelled", "repacked")
 # `closed_session` của API-11 (02 §6.2) — cũng là WS-01 `alert SESSION_AUTO_CLOSED`.
@@ -1109,10 +1117,12 @@ CONTRACT: tuple[Api, ...] = (
             *_prefixed(
                 "by_shop[]", ("platform", "shop_id", "shop_name", "handed_over", "return_cases", "rate")
             ),
+            *REPORT_SERIES,
         ),
         {
             "by_kind[].kind": _e("BUYER_RETURN", "FAILED_DELIVERY", "UNANNOUNCED", "UNIDENTIFIED"),
             "filters.platform": _e("SHOPEE", "TIKTOK"),
+            "series_granularity": _e("day", "week", "month"),
         },
     ),
     Api(
@@ -1134,6 +1144,7 @@ CONTRACT: tuple[Api, ...] = (
             *_prefixed(
                 "by_shop[]", ("platform", "shop_id", "shop_name", "count", "won", "lost", "recovered_amount")
             ),
+            *REPORT_SERIES,
         ),
         {
             "by_status[].status": _e("NEW", "SUBMITTED", "WAITING", "WON", "LOST", "CLOSED"),
@@ -1160,6 +1171,7 @@ CONTRACT: tuple[Api, ...] = (
             *_prefixed("return_by_operator[].issue_rate", RATIO),
         ),
     ),
+    Api("API-153", "GET", "/reports/{report}/export", 200),  # text/csv (T-217)
     Api("API-40", "GET", "/clips/{clip_id}/play-url", 200, ("url", "expires_at")),
     Api("API-41", "GET", "/media/clips/{clip_id}", 200),
     Api(

@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 import structlog
 from pydantic import BaseModel
-from sqlalchemy import Text, and_, case, cast, func, literal, not_, or_, select, text, type_coerce
+from sqlalchemy import Date, Text, and_, case, cast, func, literal, not_, or_, select, text, type_coerce
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -338,6 +338,7 @@ async def returns_report(db: AsyncSession, f: ReportFilters, tz: str) -> s.Retur
         reason_by_conclusion=s.ReasonByConclusion(conclusions=list(INSPECTION_CONCLUSIONS), rows=reason_rows),
         top_products=await _top_products(db, f, start, end),
         by_shop=by_shop,
+        **await series(db, f, tz),
     )
 
 
@@ -568,7 +569,91 @@ async def claims_report(db: AsyncSession, f: ReportFilters, tz: str) -> s.Claims
             for sid in sorted(shop_n, key=_shop_sort_key(meta))
             if (v := shop_n[sid])
         ],
+        **await series(db, f, tz),
     )
+
+
+# ---------------------------------------------------------------- FR-09.07 (C) biểu đồ cột
+
+
+def granularity(f: ReportFilters) -> str:
+    """02 §6.2 API-150: kỳ ≤ 31 ngày → ngày, ≤ 180 → tuần (thứ Hai), còn lại → tháng."""
+    return "day" if f.days <= 31 else "week" if f.days <= 180 else "month"
+
+
+def bucket_starts(f: ReportFilters, unit: str) -> list[date]:
+    """Đầu mỗi cột trong kỳ; cột đầu cắt về `from` (tuần / tháng bắt đầu trước kỳ)."""
+    out: list[date] = []
+    day = f.from_
+    while day <= f.to:
+        out.append(day)
+        if unit == "day":
+            day += timedelta(days=1)
+        elif unit == "week":
+            day += timedelta(days=7 - day.weekday())
+        else:
+            day = date(day.year + day.month // 12, day.month % 12 + 1, 1)
+    return out
+
+
+def _bucket_of(day: date, unit: str, f: ReportFilters) -> date:
+    if unit == "week":
+        day -= timedelta(days=day.weekday())
+    elif unit == "month":
+        day = day.replace(day=1)
+    return max(day, f.from_)
+
+
+async def series(db: AsyncSession, f: ReportFilters, tz: str) -> dict[str, Any]:
+    """Số kiện đóng gói (phiên PACK hoàn tất theo `ended_at`), hồ sơ hàng hoàn (tử số tỷ lệ hoàn), hồ sơ khiếu
+    nại (tạo trong kỳ, không `LEGACY_HOLD`) theo cột giờ VN; cùng bộ lọc sàn / shop (không lọc station)."""
+    start, end = bounds(f, tz)
+    unit = granularity(f)
+    o, by_claim, by_package = aliased(Order), aliased(Order), aliased(Order)
+    case_shop = func.coalesce(ReturnCase.shop_id, o.shop_id)
+    claim_shop = func.coalesce(by_claim.shop_id, by_package.shop_id)
+
+    def day_of(col: Any) -> Any:
+        return cast(func.timezone(tz, col), Date)
+
+    counts: dict[date, dict[str, int]] = {
+        b: {"packed": 0, "return_cases": 0, "claims": 0} for b in bucket_starts(f, unit)
+    }
+    queries = {
+        "packed": select(day_of(PackSession.ended_at), func.count())
+        .select_from(PackSession)
+        .join(Package, Package.id == PackSession.package_id)
+        .outerjoin(o, o.id == Package.order_id)
+        .where(
+            PackSession.type == "PACK",
+            PackSession.status == "COMPLETED",
+            _in(PackSession.ended_at, start, end),
+            *_shop(o.shop_id, f),
+        ),
+        "return_cases": select(day_of(ReturnCase.created_at), func.count())
+        .select_from(ReturnCase)
+        .outerjoin(o, o.id == ReturnCase.order_id)
+        .where(
+            ReturnCase.kind.in_(RETURN_RATE_KINDS),
+            ReturnCase.status != "CANCELLED",
+            _in(ReturnCase.created_at, start, end),
+            *_shop(case_shop, f),
+        ),
+        "claims": select(day_of(Claim.created_at), func.count())
+        .select_from(Claim)
+        .join(Package, Package.id == Claim.package_id)
+        .outerjoin(by_claim, by_claim.id == Claim.order_id)
+        .outerjoin(by_package, by_package.id == Package.order_id)
+        .where(Claim.source != "LEGACY_HOLD", _in(Claim.created_at, start, end), *_shop(claim_shop, f)),
+    }
+    for name, query in queries.items():
+        rows = (await db.execute(query.group_by(text("1")))).all()  # theo vị trí: tham số `tz` không lặp
+        for day, n in rows:
+            counts[_bucket_of(day, unit, f)][name] += int(n)
+    return {
+        "series": [s.SeriesRow(bucket=b, **v) for b, v in counts.items()],
+        "series_granularity": unit,
+    }
 
 
 # ---------------------------------------------------------------- API-152 năng suất
@@ -757,6 +842,13 @@ MODELS: dict[str, type[BaseModel]] = {
     "claims": s.ClaimsReportOut,
     "productivity": s.ProductivityReportOut,
 }
+
+
+async def filter_names(db: AsyncSession, f: ReportFilters) -> tuple[str | None, str | None]:
+    """Tên shop / station của bộ lọc cho đầu file CSV."""
+    shop = await db.get(Shop, f.shop_id) if f.shop_id else None
+    station = await db.get(Station, f.station_id) if f.station_id else None
+    return (shop.name if shop else None), (station.name if station else None)
 
 
 def cache_key(name: str, f: ReportFilters) -> str:

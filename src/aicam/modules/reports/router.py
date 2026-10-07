@@ -5,12 +5,15 @@ from datetime import date
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aicam.core.db import get_session
+from aicam.core import audit
+from aicam.core.db import commit, get_session
 from aicam.core.deps import Principal, require_roles
+from aicam.core.errors import AppError
 from aicam.core.settings import Settings, get_settings
-from aicam.modules.reports import analytics, service
+from aicam.modules.reports import analytics, csv_export, service
 from aicam.modules.reports import schemas as s
 
 router = APIRouter(tags=["reports"])
@@ -79,3 +82,57 @@ async def productivity_report(
     """API-152 báo cáo năng suất (FR-09.02, 09.05, FR-03.16; BR-41) — CSKH 403."""
     f = analytics.make_filters(from_, to, platform, shop_id, station_id, settings.tz_display)
     return await analytics.get_report(db, "productivity", f, settings.tz_display, s.ProductivityReportOut)
+
+
+@router.get(
+    "/reports/{report}/export",
+    response_class=StreamingResponse,
+    responses={
+        200: {"content": {"text/csv": {"schema": {"type": "string"}}}, "description": "CSV UTF-8 có BOM"}
+    },
+)
+async def export_report(
+    report: str,
+    p: Annotated[Principal, Depends(require_roles(*ALL_ROLES))],
+    db: Annotated[AsyncSession, Depends(get_session)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    from_: FromQuery = None,
+    to: ToQuery = None,
+    platform: PlatformQuery = None,
+    shop_id: uuid.UUID | None = None,
+    station_id: uuid.UUID | None = None,
+) -> StreamingResponse:
+    """API-153 xuất CSV tab đang xem (FR-09.06): `report` = returns | claims | productivity.
+
+    Audit `REPORT_EXPORT`; quyền như API tương ứng (CSKH + productivity → 403); `report` lạ → 404."""
+    if report not in analytics.REPORTS:
+        raise AppError("NOT_FOUND", "Không tìm thấy báo cáo.", 404)
+    if report == "productivity" and p.role not in MANAGER_ROLES:
+        raise AppError("FORBIDDEN", "Tài khoản không có quyền thực hiện thao tác này.", 403)
+    tz = settings.tz_display
+    f = analytics.make_filters(
+        from_, to, platform, shop_id, station_id if report == "productivity" else None, tz
+    )
+    out = await analytics.get_report(db, report, f, tz, analytics.MODELS[report])
+    shop_name, station_name = await analytics.filter_names(db, f)
+    body = csv_export.render(report, out, shop_name=shop_name, station_name=station_name)
+    audit.record(
+        db,
+        "REPORT_EXPORT",
+        user_id=p.user_id,
+        ip=p.ip,
+        data={
+            "report": report,
+            "from": f.from_.isoformat(),
+            "to": f.to.isoformat(),
+            "platform": platform,
+            "shop_id": str(shop_id) if shop_id else None,
+            "station_id": str(station_id) if station_id else None,
+        },
+    )
+    await commit(db)
+    return StreamingResponse(
+        iter([body]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{csv_export.filename(report, f)}"'},
+    )
