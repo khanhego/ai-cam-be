@@ -108,6 +108,19 @@ async def _pack_and_ship(session: AsyncSession, package: Package, station: Stati
         await orders.transition(session, package, "DELIVERED", source="PLATFORM", actor_label="Sàn")
 
 
+async def upsert_seed_order(session: AsyncSession, data: PlatformOrder) -> None:
+    """Ghi đơn mock của seed như J-04 Phase 1 (chưa shop) — nhưng nếu mã đơn đã thuộc một shop (seed Phase 3
+    đã cho `990001` nhận ở lần chạy trước) thì ghi vào đúng shop đó: chạy lại `seed-demo` không tạo đơn trùng
+    mã không shop và không gắn kiện sang đơn mới (T-229, DEC-821)."""
+    shop_id = await session.scalar(
+        select(Order.shop_id)
+        .where(Order.platform_order_sn == data.platform_order_sn, Order.shop_id.is_not(None))
+        .order_by(Order.id)
+        .limit(1)
+    )
+    await orders.upsert_platform_order(session, data, shop_id=shop_id)
+
+
 async def seed_returns(
     session: AsyncSession, settings: Settings, station: Station, supervisor: User
 ) -> list[str]:
@@ -121,7 +134,7 @@ async def seed_returns(
             created_at=base, updated_at=base, raw={"seed": "demo-returns", "n": demo.n},
             status_group=shopee_mapping.order_group(status),
         )  # fmt: skip
-        await orders.upsert_platform_order(session, data)
+        await upsert_seed_order(session, data)
         for code in _codes(demo):
             package = await orders.find_package(session, code, for_update=True)
             if package is not None and package.warehouse_status == "NEW":

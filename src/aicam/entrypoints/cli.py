@@ -98,7 +98,7 @@ async def seed_demo() -> list[str]:
     from aicam.modules.stations.schemas import CameraIn
 
     from .seed_phase3 import seed_phase3
-    from .seed_returns import seed_returns
+    from .seed_returns import seed_returns, upsert_seed_order
 
     settings = get_settings()
     init_engine(settings.database_url)
@@ -140,7 +140,7 @@ async def seed_demo() -> list[str]:
 
             adapter = MockAdapter()
             for order in adapter.orders.values():
-                await orders.upsert_platform_order(session, order)
+                await upsert_seed_order(session, order)  # chạy lại: giữ đơn trong shop đã nhận (DEC-821)
             lines.append(f"= {len(adapter.orders)} đơn SPXTST0000001..30")
 
             for code, final in (("SPXTST0000010", "PACKED"), ("SPXTST0000011", "HANDED_OVER")):

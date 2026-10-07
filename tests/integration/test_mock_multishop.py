@@ -304,3 +304,27 @@ async def test_seed_phase3_claims_phase1_orders_long_after_mock_date(
                                                        Order.shop_id.is_(None))
     )  # fmt: skip
     assert unclaimed == 0
+
+
+async def test_seed_demo_rerun_keeps_phase1_orders_in_shop(db: AsyncSession, test_settings: Settings) -> None:
+    """T-229 (DEC-821): `seed-demo` chạy lại sau khi `990001` đã nhận đơn Phase 1 → không tạo đơn trùng mã
+    không shop, kiện không bị gắn sang đơn mới (trước đây +34 đơn ở lần chạy thứ hai)."""
+    from aicam.entrypoints.seed_returns import upsert_seed_order
+
+    clock.freeze(NOW + timedelta(days=30))
+    for _ in range(2):
+        for order in MockAdapter().orders.values():  # như `aicam seed-demo`
+            await upsert_seed_order(db, order)
+        await db.commit()
+        await seed_phase3(db, test_settings)
+        if _ == 0:
+            counts = [await db.scalar(select(func.count()).select_from(t)) for t in (Shop, Order, Package)]
+    again = [await db.scalar(select(func.count()).select_from(t)) for t in (Shop, Order, Package)]
+    assert again == counts
+    shop_a = await db.scalar(select(Shop).where(Shop.platform_shop_id == "990001"))
+    assert shop_a is not None
+    package = await orders.find_package(db, "SPXTST0000001")
+    assert package is not None
+    owner = await db.scalar(select(Order).where(Order.id == package.order_id))
+    assert owner is not None
+    assert owner.shop_id == shop_a.id
