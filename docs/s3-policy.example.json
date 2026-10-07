@@ -1,0 +1,57 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "BackupBucketAppAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": ["arn:aws:s3:::aicam-backup"]
+    },
+    {
+      "Sid": "BackupObjectsAppAccess",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:DeleteObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": ["arn:aws:s3:::aicam-backup/*"]
+    },
+    {
+      "Sid": "BackupBucketNoPermanentDelete",
+      "Effect": "Deny",
+      "Action": [
+        "s3:DeleteObjectVersion",
+        "s3:PutBucketVersioning",
+        "s3:PutLifecycleConfiguration",
+        "s3:PutBucketObjectLockConfiguration",
+        "s3:PutObjectRetention",
+        "s3:PutObjectLegalHold",
+        "s3:BypassGovernanceRetention",
+        "s3:PutBucketPolicy",
+        "s3:DeleteBucketPolicy",
+        "s3:DeleteBucket"
+      ],
+      "Resource": ["arn:aws:s3:::aicam-backup", "arn:aws:s3:::aicam-backup/*"]
+    },
+    {
+      "Sid": "ShareBucketAppAccess",
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:ListBucketVersions", "s3:GetBucketLocation"],
+      "Resource": ["arn:aws:s3:::aicam-share"]
+    },
+    {
+      "Sid": "ShareObjectsAppAccess",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject", "s3:DeleteObjectVersion",
+                 "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+      "Resource": ["arn:aws:s3:::aicam-share/*"]
+    }
+  ]
+}

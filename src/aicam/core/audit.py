@@ -57,6 +57,8 @@ ACTIONS = frozenset(
         "SESSION_RETURN_CONFIRM",
         "PACKAGE_CANCEL_REVERT",  # BR-21 v0.4 (T-285)
         "REPORT_EXPORT",  # API-153 (T-217, FR-09.06)
+        # Sao lưu cloud (02 §6.2 API-180..188, API-186 CLI — M15).
+        "BACKUP_TEST",
     }
 )
 

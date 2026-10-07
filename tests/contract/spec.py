@@ -1172,6 +1172,8 @@ CONTRACT: tuple[Api, ...] = (
         ),
     ),
     Api("API-153", "GET", "/reports/{report}/export", 200),  # text/csv (T-217)
+    # Phase 3 M15 sao lưu cloud (02 §6.2 API-180..188).
+    Api("API-183", "POST", "/backup/test", 200, ("ok", "elapsed_ms")),
     Api("API-40", "GET", "/clips/{clip_id}/play-url", 200, ("url", "expires_at")),
     Api("API-41", "GET", "/media/clips/{clip_id}", 200),
     Api(

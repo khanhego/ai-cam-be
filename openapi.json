@@ -9900,6 +9900,25 @@
         "title": "TabCounts",
         "type": "object"
       },
+      "TestOut": {
+        "description": "API-183: ghi → đọc → xóa một đối tượng 1 KB dưới `backup/_probe/` (≤ 10 giây).",
+        "properties": {
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "elapsed_ms"
+        ],
+        "title": "TestOut",
+        "type": "object"
+      },
       "TimelineItem": {
         "properties": {
           "actor": {
@@ -10943,6 +10962,28 @@
         "summary": "Refresh",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/api/v1/backup/test": {
+      "post": {
+        "description": "API-183 (FR-02.17): kiểm tra kết nối kho lưu (ghi / đọc / xóa một tệp 1 KB, ≤ 10 giây).",
+        "operationId": "test_connection_api_v1_backup_test_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Test Connection",
+        "tags": [
+          "backup"
         ]
       }
     },

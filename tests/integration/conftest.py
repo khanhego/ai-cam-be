@@ -125,3 +125,7 @@ async def api(db: AsyncSession, redis_client: object, test_settings: Settings) -
     app.dependency_overrides[get_settings] = lambda: test_settings
     async with AsyncClient(transport=ASGITransport(app=app), base_url="https://testserver") as client:
         yield client
+
+
+# Sao lưu cloud (M15): kho MemoryStore, settings có khóa, client API (tests/integration/backup_fixtures.py).
+from .backup_fixtures import backup_api, backup_settings, memory_store  # noqa: E402, F401

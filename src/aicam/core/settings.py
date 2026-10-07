@@ -1,5 +1,7 @@
 """Cấu hình đọc từ biến môi trường (02a §9)."""
 
+import base64
+import binascii
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -123,6 +125,28 @@ class Settings(BaseSettings):
     sync_task_budget_s: float = 120.0
     sync_long_task_budget_s: float = 300.0
 
+    # Phase 3 — kho lưu cloud S3-compatible (02a §9, ADR-010, DEC-501). Rỗng → sao lưu + link
+    # `NOT_CONFIGURED`.
+    # Chưa có nhà cung cấp thật (Q20): dev / test dùng MinIO (compose dev) hoặc `MemoryStore`.
+    s3_endpoint: str = ""
+    s3_region: str = "us-east-1"
+    s3_bucket: str = ""  # bucket sao lưu (versioning + lifecycle — DEC-501)
+    s3_share_bucket: str = ""  # bucket link chia sẻ (không versioning)
+    s3_addressing_style: Literal["path", "virtual", "auto"] = "path"
+    s3_access_key_id: str = ""
+    s3_secret_access_key: str = ""
+    s3_public_endpoint: str = ""  # rỗng = S3_ENDPOINT (host ký URL link)
+    # Sao lưu (02a §9). Khóa base64 32 byte — không bao giờ vào DB / log / bản sao (FR-02.13, NFR-41).
+    backup_encryption_key: str = ""
+    backup_old_keys: str = ""  # khóa cũ (base64, cách dấu phẩy) chỉ để giải mã — DEC-495
+    backup_tmp_dir: Path = Path("/tmp/aicam-backup")  # noqa: S108 — thư mục tạm của container worker-backup
+    backup_db_budget_s: int = 3600
+    backup_upload_budget_s: int = 240
+    backup_source_missing_mark_after: int = 4  # DEC-530 (T-291)
+    # `pg_dump` / `pg_restore` (image: postgresql-client-16). Máy dev không cài → trỏ wrapper chạy container.
+    backup_pg_dump_bin: str = "pg_dump"
+    backup_pg_restore_bin: str = "pg_restore"
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
@@ -166,7 +190,48 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"Môi trường {self.app_env} không được dùng TIKTOK_ADAPTER=mock khi bật TikTok"
                 )
+        self._validate_cloud()
         return self
+
+    def _validate_cloud(self) -> None:
+        """02a §9: khóa sao lưu hợp lệ ở mọi môi trường (sai khóa = bản sao vô dụng — RK-19); production /
+        staging có `S3_ENDPOINT` → đủ khóa truy cập, **hai** bucket khác nhau, không trỏ localhost."""
+        for name, value in (("BACKUP_ENCRYPTION_KEY", self.backup_encryption_key),):
+            if value.strip() and not _is_key(value):
+                raise ValueError(f"{name} phải là base64 của đúng 32 byte (`aicam backup-keygen`)")
+        old = [k.strip() for k in self.backup_old_keys.split(",") if k.strip()]
+        for k in old:
+            if not _is_key(k):
+                raise ValueError("Mỗi khóa trong BACKUP_OLD_KEYS phải là base64 của đúng 32 byte")
+            if self.backup_encryption_key.strip() and _key_bytes(k) == _key_bytes(self.backup_encryption_key):
+                raise ValueError("BACKUP_OLD_KEYS không được chứa khóa hiện tại BACKUP_ENCRYPTION_KEY")
+        if self.app_env in ("dev", "test") or not self.s3_endpoint.strip():
+            return
+        missing = [
+            n.upper()
+            for n in ("s3_access_key_id", "s3_secret_access_key", "s3_bucket", "s3_share_bucket")
+            if not getattr(self, n).strip()
+        ]
+        if missing:
+            raise ValueError(f"S3_ENDPOINT cần đặt: {', '.join(missing)}")
+        if self.s3_bucket.strip() == self.s3_share_bucket.strip():
+            raise ValueError("S3_BUCKET (sao lưu) và S3_SHARE_BUCKET (link) phải là hai bucket khác nhau")
+        if self.is_production:
+            for n in ("s3_endpoint", "s3_public_endpoint"):
+                host = getattr(self, n).lower()
+                if "localhost" in host or "127.0.0.1" in host:
+                    raise ValueError(f"Production không được dùng {n.upper()} trỏ localhost")
+
+
+def _key_bytes(value: str) -> bytes:
+    return base64.b64decode(value.strip(), validate=True)
+
+
+def _is_key(value: str) -> bool:
+    try:
+        return len(_key_bytes(value)) == 32  # AES-256
+    except (binascii.Error, ValueError):
+        return False
 
 
 @lru_cache
