@@ -211,6 +211,12 @@ COLUMN_ARCHIVES: tuple[tuple[str, str, str], ...] = (
         f"SELECT id, {_SESSION_COLS} FROM session WHERE num_nonnulls({_SESSION_COLS}) > 0",
     ),
     ("setting_cols", "setting", f"SELECT id, {_SETTING_COLS} FROM setting"),
+    # G3-EV-1: nguồn hạn Phase 3 (BR-42) — Phase 2 không biết giá trị này (schema Literal) → lùi đổi `DEFAULT`.
+    (
+        "claim_deadline_cols",
+        "claim",
+        "SELECT id, deadline_source FROM claim WHERE deadline_source = 'DEFAULT_PLATFORM_PASSED'",
+    ),
 )
 # Dòng / quan hệ cần trả lại khi nâng cấp lại.
 ROW_ARCHIVES: tuple[tuple[str, str], ...] = (
@@ -1004,6 +1010,11 @@ def _restore_phase3(bind: sa.Connection) -> dict[str, int]:
         ).rowcount
         or 0
     )
+    if _scalar(bind, f"SELECT to_regclass('{ARCHIVE}.claim_deadline_cols')") is not None:
+        # G3-EV-1: trả nguồn hạn Phase 3 nếu Phase 2 chưa đổi (vẫn `DEFAULT`).
+        out["claim_deadline_cols"] = _update_from(
+            bind, "claim_deadline_cols", "claim", "deadline_source", "t.deadline_source = 'DEFAULT'"
+        )
     out["claim_evidence_cols"] = _update_from(
         bind, "claim_evidence_cols", "claim_evidence", "removed_at, removed_by, removed_reason, backfilled"
     )
@@ -1441,6 +1452,14 @@ def _prepare_phase2(bind: sa.Connection) -> None:
         )
     ).rowcount
     removed = bind.execute(sa.text("DELETE FROM shop WHERE platform = 'TIKTOK'")).rowcount
+    deadlines = bind.execute(
+        sa.text(
+            "UPDATE claim SET deadline_source = 'DEFAULT' WHERE deadline_source = 'DEFAULT_PLATFORM_PASSED'"
+        )
+    ).rowcount
+    log.info(
+        "0006 downgrade: %s hồ sơ khiếu nại nguồn hạn DEFAULT_PLATFORM_PASSED → DEFAULT (G3-EV-1)", deadlines
+    )
     log.info(
         "0006 downgrade: ngắt %s shop Shopee (Phase 2 một shop), %s đơn TikTok rời shop, xóa %s shop TikTok",
         disconnected,

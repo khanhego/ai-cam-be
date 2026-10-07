@@ -811,3 +811,31 @@ def test_reupgrade_keeps_excluded_and_removed_sessions_out(
     assert run(removed_sql) == removed_before
     assert run(sessions_sql) == sessions_before
     assert not [w for w in warnings if "restore_removed_conflict" in w]
+
+
+def test_deadline_source_platform_passed_archived_on_downgrade(
+    mig_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-EV-1: `deadline_source = DEFAULT_PLATFORM_PASSED` (Phase 3) không có ở Phase 2 → lùi: chép `(id,
+    deadline_source)` vào `phase3_archive.claim_deadline_cols`, đổi thành `DEFAULT`; lên lại: trả về nếu vẫn
+    `DEFAULT` (Phase 2 đã đổi nguồn → giữ giá trị Phase 2)."""
+    cfg = alembic_config()
+    seed_phase2_platform_data()
+    seed_return_claims()
+    command.upgrade(cfg, SCHEMA_HEAD)
+    run(
+        "UPDATE claim SET deadline_source = 'DEFAULT_PLATFORM_PASSED' "
+        f"WHERE id IN ('{CLAIM_OPEN}', '{CLAIM_SUBMITTED}')"
+    )
+    monkeypatch.setenv(DETACH_ENV, "1")
+    command.downgrade(cfg, "0005")
+    assert run(
+        f"SELECT DISTINCT deadline_source FROM claim WHERE id IN ('{CLAIM_OPEN}', '{CLAIM_SUBMITTED}')"
+    ) == [("DEFAULT",)]
+    assert run("SELECT count(*) FROM claim WHERE deadline_source = 'DEFAULT_PLATFORM_PASSED'") == [(0,)]
+    assert run("SELECT count(*) FROM phase3_archive.claim_deadline_cols") == [(2,)]
+    run(f"UPDATE claim SET deadline_source = 'MANUAL' WHERE id = '{CLAIM_SUBMITTED}'")  # Phase 2 sửa hạn tay
+    command.upgrade(cfg, SCHEMA_HEAD)
+    assert dict(run(f"SELECT id::text, deadline_source FROM claim WHERE id IN ('{CLAIM_OPEN}', '{CLAIM_SUBMITTED}')")) == {
+        CLAIM_OPEN: "DEFAULT_PLATFORM_PASSED", CLAIM_SUBMITTED: "MANUAL"
+    }  # fmt: skip
