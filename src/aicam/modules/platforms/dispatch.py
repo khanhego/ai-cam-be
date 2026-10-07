@@ -5,8 +5,8 @@ không tham số) → đọc shop `CONNECTED` của sàn **bật + đã cấu h�
 shop tự lấy khóa `sync:{shop}` / `sync_returns:{shop}` (không chờ), chạy trong `budget.time_budget` riêng —
 shop chậm / lỗi chỉ hỏng task của nó, không kéo chu kỳ shop khác.
 
-Queue: J-04 → `sync_fast`, J-06 / J-13 → `sync` (DEC-503). Hạ tầng queue `sync_fast` + `worker-sync-long` là
-T-276 (M17) — tới lúc đó cả hai hằng trỏ queue `sync` mà `worker-sync` đang nghe (DEC-560).
+Queue: J-04 → `sync_fast` (`worker-sync -c 3`), J-06 / J-13 → `sync` (`worker-sync-long -c 2`) — DEC-503,
+T-276. Route beat cùng hằng ở `workers/celery_app.py` (`SYNC_ROUTES`).
 """
 
 import uuid
@@ -34,7 +34,7 @@ SHOP_TASKS = {
     SHIPPING: "platforms.sync_shop_shipping",
     RETURNS: "platforms.sync_shop_returns",
 }
-QUEUE_FAST = "sync"  # J-04 — T-276 đổi sang `sync_fast`
+QUEUE_FAST = "sync_fast"  # J-04, J-05, J-12 (T-276)
 QUEUE_LONG = "sync"  # J-06, J-13
 QUEUES = {ORDERS: QUEUE_FAST, SHIPPING: QUEUE_LONG, RETURNS: QUEUE_LONG}
 

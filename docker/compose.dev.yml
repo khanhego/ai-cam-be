@@ -135,6 +135,11 @@ services:
       S3_SECRET_ACCESS_KEY: aicam-app-dev-secret
       BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-ZGV2LW9ubHktYmFja3VwLWtleS0zMi1ieXRlcyEhISE=}
       BACKUP_OLD_KEYS: ${BACKUP_OLD_KEYS:-}
+      # Phase 3 thông báo (02a §7.2, §9 — T-226 / T-276): bot / OA thật chưa có (Q21) → mock ghi Redis
+      # `notify:mock:{TELEGRAM|ZALO_OA}` + log. Link "Xem:" trong tin trỏ FE dev.
+      NOTIFY_TRANSPORT: ${NOTIFY_TRANSPORT:-mock}
+      NOTIFY_MOCK_FAIL: ${NOTIFY_MOCK_FAIL:-}
+      SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost:5180}
     ports: ["8180:8000"]
     volumes: [video:/data/video, imports:/data/imports]
     depends_on:
@@ -163,12 +168,31 @@ services:
     volumes: [video:/data/video, imports:/data/imports]
     depends_on: [api]
 
-  # Queue `sync` (Shopee) tách khỏi cắt clip (G3-F11, NFR-03).
+  # Queue `sync_fast` (J-04, J-05, J-12 — gọi sàn ngắn) tách khỏi cắt clip (G3-F11, NFR-03) và khỏi job sàn dài
+  # (02a §7, DEC-503 — T-276): shop chậm ở J-06 / J-13 không chiếm slot J-04 (NFR-39).
   worker-sync:
     image: aicam-dev
-    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync", "-c", "2", "-n", "sync@%h", "--loglevel", "info"]
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync_fast", "-c", "3", "-n", "sync@%h", "--loglevel", "info"]
     env_file: [../.env.example]
     environment: *app_env
+    depends_on: [api]
+
+  # Queue `sync` (J-06, J-13 — ngân sách 300 giây / shop), -c 2 (DEC-503).
+  worker-sync-long:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync", "-c", "2", "-n", "sync-long@%h", "--loglevel", "info"]
+    env_file: [../.env.example]
+    environment: *app_env
+    depends_on: [api]
+
+  # Thông báo J-26..J-28 (queue `notify`, -c 1 — tuần tự, không chờ J-20 / J-24 — DEC-504). Video chỉ đọc: N07
+  # đo dung lượng ổ lưu video (DEC-733).
+  worker-notify:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "notify", "-c", "1", "-n", "notify@%h", "--loglevel", "info"]
+    env_file: [../.env.example]
+    environment: *app_env
+    volumes: ["video:/data/video:ro"]
     depends_on: [api]
 
   # Encode bản xuất tách riêng, mỗi lần 1 job: không chặn cắt clip (DEC-32).

@@ -64,8 +64,8 @@ def test_tc_n2_07_j13_sync_returns_beat_within_15_minutes() -> None:
     assert task.name == tasks.sync_returns.name
     assert task.time_limit is not None
     assert task.time_limit < schedule
-    queues = [r["queue"] for pattern, r in app.conf.task_routes.items() if fnmatch(task.name, pattern)]
-    assert queues == ["sync"]
+    queues = {r["queue"] for pattern, r in app.conf.task_routes.items() if fnmatch(task.name, pattern)}
+    assert queues == {"sync"}  # tên chính xác + mẫu `platforms.*` cùng trỏ queue `sync` (T-276)
 
 
 def test_j20_backup_db_schedule_route_and_retry(monkeypatch: pytest.MonkeyPatch) -> None:

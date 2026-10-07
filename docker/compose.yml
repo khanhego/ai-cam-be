@@ -60,6 +60,15 @@ x-app: &app
     EVIDENCE_PACK_TIMEOUT_S: ${EVIDENCE_PACK_TIMEOUT_S:-900}
     RETURN_LOOKUP_PREFIX_MIN: ${RETURN_LOOKUP_PREFIX_MIN:-6}
     ORDER_SN_REGEX: ${ORDER_SN_REGEX:-^[A-Z0-9]{10,20}$$}
+    # Phase 3 thông báo (02a §9 — T-226 / T-276): bot token / khóa OA chỉ ở docker/.env (DEC-408); token Zalo
+    # xoay vòng server tự lưu DB mã hóa (DEC-445). Thiếu → loại kênh đó "chưa cấu hình" (EX-N1).
+    NOTIFY_ENABLED: ${NOTIFY_ENABLED:-true}
+    NOTIFY_TRANSPORT: ${NOTIFY_TRANSPORT:-real}
+    TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+    ZALO_APP_ID: ${ZALO_APP_ID:-}
+    ZALO_APP_SECRET: ${ZALO_APP_SECRET:-}
+    ZALO_OA_REFRESH_TOKEN: ${ZALO_OA_REFRESH_TOKEN:-}
+    SITE_ADDRESS: ${SITE_ADDRESS:-}
 
 services:
   postgres:
@@ -179,10 +188,25 @@ services:
     depends_on:
       api: { condition: service_healthy }
 
-  # J-04, J-05, J-06, J-12 (queue `sync`): 2 tiến trình, prefetch 1.
+  # J-04, J-05, J-12 (queue `sync_fast`): 3 tiến trình, prefetch 1, acks_late (02a §7, DEC-503 — T-276).
   worker-sync:
     <<: *app
-    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync", "-c", "2", "-n", "sync@%h", "--loglevel", "info"]
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync_fast", "-c", "3", "-n", "sync@%h", "--loglevel", "info"]
+    depends_on:
+      api: { condition: service_healthy }
+
+  # J-06, J-13 (queue `sync`, ngân sách 300 giây / shop): 2 tiến trình — shop chậm không chiếm slot J-04 (NFR-39).
+  worker-sync-long:
+    <<: *app
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync", "-c", "2", "-n", "sync-long@%h", "--loglevel", "info"]
+    depends_on:
+      api: { condition: service_healthy }
+
+  # Thông báo J-26..J-28 (queue `notify`, -c 1 — DEC-504, ~60 MB RAM). Video chỉ đọc cho N07 (DEC-733).
+  worker-notify:
+    <<: *app
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "notify", "-c", "1", "-n", "notify@%h", "--loglevel", "info"]
+    volumes: ["video:/data/video:ro"]
     depends_on:
       api: { condition: service_healthy }
 

@@ -1,4 +1,5 @@
-"""Celery app + lịch beat (02a §7). Queue: default, video, export, sync (DEC-46)."""
+"""Celery app + lịch beat (02a §7). Queue: default, video, export, sync_fast, sync, backup, notify (DEC-46,
+DEC-503, DEC-504 — T-276)."""
 
 import logging
 from typing import Any
@@ -15,6 +16,7 @@ settings = get_settings()
 
 app = Celery("aicam", broker=settings.redis_url, backend=None, include=["aicam.workers.tasks"])
 app.conf.update(
+    # Mọi queue (gồm `sync*` — 02a §7): task dài không giữ task khác trong bộ đệm; worker chết → task về hàng.
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=1,
@@ -26,7 +28,18 @@ app.conf.update(
         "media.render_export": {"queue": "export"},
         "media.capture_pack_snapshot": {"queue": "video"},  # J-17
         "claims.build_evidence_pack": {"queue": "export"},  # J-16 — cùng worker encode J-03
-        "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12, J-13 (gọi Shopee) tách khỏi cắt clip
+        # Sàn (02a §7, DEC-503): J-04 / J-05 / J-12 ngắn → `sync_fast` (worker-sync -c 3); J-06 / J-13 dài
+        # (300 giây / shop) → `sync` (worker-sync-long -c 2) — NFR-39.
+        "platforms.sync_orders": {"queue": "sync_fast"},
+        "platforms.sync_shop_orders": {"queue": "sync_fast"},
+        "platforms.verify_unverified": {"queue": "sync_fast"},
+        "platforms.refresh_tokens": {"queue": "sync_fast"},
+        "platforms.sync_shipping_status": {"queue": "sync"},
+        "platforms.sync_shop_shipping": {"queue": "sync"},
+        "platforms.sync_returns": {"queue": "sync"},
+        "platforms.sync_shop_returns": {"queue": "sync"},
+        "platforms.*": {"queue": "sync"},  # task sàn khác (nếu thêm) — không lẫn vào cắt clip
+        "notify.*": {"queue": "notify"},  # J-26..J-28 (worker-notify -c 1 — DEC-504)
         "backup.*": {"queue": "backup"},  # J-20..J-23 (worker-backup -c 1 — 02a §7, DEC-434)
         "shares.build": {"queue": "export"},  # J-24 — cùng worker encode J-03 / J-16 (02a §7)
         "shares.cleanup": {"queue": "default"},  # J-25

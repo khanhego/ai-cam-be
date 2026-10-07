@@ -289,7 +289,7 @@ async def enqueue_sync(shop_id: uuid.UUID, *, lock_held: bool | str) -> None:
     """`lock_held`: token lock API-73 đã giữ (job nhả bằng token), hoặc False."""
     from aicam.modules.media import jobs  # gửi Celery theo tên task (test thay sender)
 
-    await jobs.send(SYNC_TASK, [str(shop_id), lock_held], "sync")
+    await jobs.send(SYNC_TASK, [str(shop_id), lock_held], "sync_fast")  # J-04 (DEC-503, T-276)
 
 
 async def enqueue_sync_returns(shop_id: uuid.UUID) -> None:

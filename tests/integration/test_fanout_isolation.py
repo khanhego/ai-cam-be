@@ -89,7 +89,10 @@ async def test_dispatch_one_task_per_connected_shop(
     assert out["queued"] == 2
     sent = sorted((t, args[0], q) for t, args, q, _ in sent_jobs)
     assert sent == sorted(
-        [("platforms.sync_shop_orders", str(a.id), "sync"), ("platforms.sync_shop_orders", str(b.id), "sync")]
+        [
+            ("platforms.sync_shop_orders", str(a.id), "sync_fast"),
+            ("platforms.sync_shop_orders", str(b.id), "sync_fast"),
+        ]
     )
     sent_jobs.clear()
     await dispatch.dispatch(db, test_settings, dispatch.SHIPPING)
