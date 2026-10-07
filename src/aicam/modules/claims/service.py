@@ -666,6 +666,11 @@ async def patch(session: AsyncSession, claim: Claim, data: ClaimPatchIn, p: Prin
             raise _validation("reason", "Nhập lý do đóng hồ sơ 5–500 ký tự")
         text_ = f"{STATUS_LABELS[claim.status]} → {STATUS_LABELS[target]}"
         claim.status = target
+        # BR-41 / DEC-461: mốc báo cáo — lần đầu sang `SUBMITTED`; lần cuối sang `WON` / `LOST` (DEC-570).
+        if target == "SUBMITTED" and claim.submitted_at is None:
+            claim.submitted_at = clock.now()
+        if target in ("WON", "LOST"):
+            claim.result_at = clock.now()
         if target == "CLOSED":
             claim.closed_at = clock.now()
             claim.close_reason = reason

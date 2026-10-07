@@ -903,6 +903,74 @@
         "title": "ClaimBrief",
         "type": "object"
       },
+      "ClaimCards": {
+        "properties": {
+          "created": {
+            "title": "Created",
+            "type": "integer"
+          },
+          "overdue_unsent_now": {
+            "title": "Overdue Unsent Now",
+            "type": "integer"
+          },
+          "recovered_amount": {
+            "title": "Recovered Amount",
+            "type": "integer"
+          },
+          "submitted_before_deadline": {
+            "$ref": "#/components/schemas/Ratio"
+          },
+          "win_rate": {
+            "$ref": "#/components/schemas/Ratio"
+          }
+        },
+        "required": [
+          "created",
+          "win_rate",
+          "recovered_amount",
+          "submitted_before_deadline",
+          "overdue_unsent_now"
+        ],
+        "title": "ClaimCards",
+        "type": "object"
+      },
+      "ClaimCounterpartyRow": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "counterparty": {
+            "enum": [
+              "PLATFORM",
+              "CARRIER"
+            ],
+            "title": "Counterparty",
+            "type": "string"
+          },
+          "lost": {
+            "title": "Lost",
+            "type": "integer"
+          },
+          "recovered_amount": {
+            "title": "Recovered Amount",
+            "type": "integer"
+          },
+          "won": {
+            "title": "Won",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "counterparty",
+          "count",
+          "won",
+          "lost",
+          "recovered_amount"
+        ],
+        "title": "ClaimCounterpartyRow",
+        "type": "object"
+      },
       "ClaimCreateIn": {
         "description": "API-131.",
         "properties": {
@@ -1661,6 +1729,187 @@
           "return_tracking_number"
         ],
         "title": "ClaimReturnCase",
+        "type": "object"
+      },
+      "ClaimShopRow": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "lost": {
+            "title": "Lost",
+            "type": "integer"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "enum": [
+                  "SHOPEE",
+                  "TIKTOK"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "recovered_amount": {
+            "title": "Recovered Amount",
+            "type": "integer"
+          },
+          "shop_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Id"
+          },
+          "shop_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Name"
+          },
+          "won": {
+            "title": "Won",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "platform",
+          "shop_id",
+          "shop_name",
+          "count",
+          "won",
+          "lost",
+          "recovered_amount"
+        ],
+        "title": "ClaimShopRow",
+        "type": "object"
+      },
+      "ClaimStatusRow": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "NEW",
+              "SUBMITTED",
+              "WAITING",
+              "WON",
+              "LOST",
+              "CLOSED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "count"
+        ],
+        "title": "ClaimStatusRow",
+        "type": "object"
+      },
+      "ClaimTypeRow": {
+        "properties": {
+          "lost": {
+            "title": "Lost",
+            "type": "integer"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          },
+          "won": {
+            "title": "Won",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "type",
+          "won",
+          "lost",
+          "pending"
+        ],
+        "title": "ClaimTypeRow",
+        "type": "object"
+      },
+      "ClaimsReportOut": {
+        "properties": {
+          "by_counterparty": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimCounterpartyRow"
+            },
+            "title": "By Counterparty",
+            "type": "array"
+          },
+          "by_shop": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimShopRow"
+            },
+            "title": "By Shop",
+            "type": "array"
+          },
+          "by_status": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimStatusRow"
+            },
+            "title": "By Status",
+            "type": "array"
+          },
+          "by_type_result": {
+            "items": {
+              "$ref": "#/components/schemas/ClaimTypeRow"
+            },
+            "title": "By Type Result",
+            "type": "array"
+          },
+          "cards": {
+            "$ref": "#/components/schemas/ClaimCards"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/Filters"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/PeriodOut"
+          }
+        },
+        "required": [
+          "period",
+          "filters",
+          "generated_at",
+          "cards",
+          "by_status",
+          "by_type_result",
+          "by_counterparty",
+          "by_shop"
+        ],
+        "title": "ClaimsReportOut",
         "type": "object"
       },
       "ClipDetail": {
@@ -2866,6 +3115,43 @@
         "title": "ExportOut",
         "type": "object"
       },
+      "Filters": {
+        "properties": {
+          "platform": {
+            "anyOf": [
+              {
+                "enum": [
+                  "SHOPEE",
+                  "TIKTOK"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "shop_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Id"
+          }
+        },
+        "required": [
+          "platform",
+          "shop_id"
+        ],
+        "title": "Filters",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -3549,6 +3835,43 @@
           "image_url"
         ],
         "title": "ItemOut",
+        "type": "object"
+      },
+      "KindRow": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "BUYER_RETURN",
+              "FAILED_DELIVERY",
+              "UNANNOUNCED",
+              "UNIDENTIFIED",
+              "REFUND_ONLY"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "share": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Share"
+          }
+        },
+        "required": [
+          "kind",
+          "count",
+          "share"
+        ],
+        "title": "KindRow",
         "type": "object"
       },
       "LastSession": {
@@ -4290,6 +4613,63 @@
           "name"
         ],
         "title": "OperatorIn",
+        "type": "object"
+      },
+      "OperatorRow": {
+        "properties": {
+          "abandoned": {
+            "title": "Abandoned",
+            "type": "integer"
+          },
+          "avg_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Seconds"
+          },
+          "cancelled": {
+            "title": "Cancelled",
+            "type": "integer"
+          },
+          "mismatch": {
+            "title": "Mismatch",
+            "type": "integer"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "packed": {
+            "title": "Packed",
+            "type": "integer"
+          },
+          "repacked": {
+            "title": "Repacked",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "operator_name",
+          "packed",
+          "avg_seconds",
+          "mismatch",
+          "abandoned",
+          "cancelled",
+          "repacked"
+        ],
+        "title": "OperatorRow",
         "type": "object"
       },
       "OrderBrief": {
@@ -5085,6 +5465,27 @@
         "title": "Page[UserListItem]",
         "type": "object"
       },
+      "PeriodOut": {
+        "description": "Kỳ giờ VN, gồm cả hai đầu. `from` là từ khóa Python → alias (FastAPI xuất theo alias).",
+        "properties": {
+          "from": {
+            "format": "date",
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "format": "date",
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "PeriodOut",
+        "type": "object"
+      },
       "PlatformInfo": {
         "properties": {
           "configured": {
@@ -5163,6 +5564,212 @@
         "title": "PriorReturnSession",
         "type": "object"
       },
+      "ProductRow": {
+        "properties": {
+          "issue": {
+            "title": "Issue",
+            "type": "integer"
+          },
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate"
+          },
+          "return_requests": {
+            "title": "Return Requests",
+            "type": "integer"
+          },
+          "shipped": {
+            "title": "Shipped",
+            "type": "integer"
+          },
+          "sku": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sku"
+          },
+          "variation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Variation"
+          }
+        },
+        "required": [
+          "sku",
+          "product_name",
+          "variation",
+          "shipped",
+          "return_requests",
+          "rate",
+          "issue"
+        ],
+        "title": "ProductRow",
+        "type": "object"
+      },
+      "ProductivityCards": {
+        "properties": {
+          "pack_avg_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pack Avg Seconds"
+          },
+          "packed": {
+            "title": "Packed",
+            "type": "integer"
+          },
+          "return_avg_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Return Avg Seconds"
+          },
+          "returns_inspected": {
+            "title": "Returns Inspected",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "packed",
+          "pack_avg_seconds",
+          "returns_inspected",
+          "return_avg_seconds"
+        ],
+        "title": "ProductivityCards",
+        "type": "object"
+      },
+      "ProductivityFilters": {
+        "properties": {
+          "platform": {
+            "anyOf": [
+              {
+                "enum": [
+                  "SHOPEE",
+                  "TIKTOK"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "shop_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Id"
+          },
+          "station_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Station Id"
+          }
+        },
+        "required": [
+          "platform",
+          "shop_id",
+          "station_id"
+        ],
+        "title": "ProductivityFilters",
+        "type": "object"
+      },
+      "ProductivityReportOut": {
+        "properties": {
+          "by_operator": {
+            "items": {
+              "$ref": "#/components/schemas/OperatorRow"
+            },
+            "title": "By Operator",
+            "type": "array"
+          },
+          "by_station": {
+            "items": {
+              "$ref": "#/components/schemas/StationRow"
+            },
+            "title": "By Station",
+            "type": "array"
+          },
+          "cards": {
+            "$ref": "#/components/schemas/ProductivityCards"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/ProductivityFilters"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/PeriodOut"
+          },
+          "return_by_operator": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnOperatorRow"
+            },
+            "title": "Return By Operator",
+            "type": "array"
+          }
+        },
+        "required": [
+          "period",
+          "filters",
+          "generated_at",
+          "cards",
+          "by_station",
+          "by_operator",
+          "return_by_operator"
+        ],
+        "title": "ProductivityReportOut",
+        "type": "object"
+      },
       "Protection": {
         "description": "02 §6.2 API-31 v0.2 (DEC-245, ADR-009): lý do clip / ảnh không bị retention xóa.",
         "properties": {
@@ -5223,6 +5830,98 @@
           }
         },
         "title": "QueuedOut",
+        "type": "object"
+      },
+      "Ratio": {
+        "properties": {
+          "denominator": {
+            "title": "Denominator",
+            "type": "integer"
+          },
+          "numerator": {
+            "title": "Numerator",
+            "type": "integer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "numerator",
+          "denominator",
+          "value"
+        ],
+        "title": "Ratio",
+        "type": "object"
+      },
+      "ReasonByConclusion": {
+        "properties": {
+          "conclusions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Conclusions",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/ReasonRow"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "conclusions",
+          "rows"
+        ],
+        "title": "ReasonByConclusion",
+        "type": "object"
+      },
+      "ReasonRow": {
+        "properties": {
+          "counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Counts",
+            "type": "object"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "reason_label": {
+            "title": "Reason Label",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "reason",
+          "reason_label",
+          "counts",
+          "total"
+        ],
+        "title": "ReasonRow",
         "type": "object"
       },
       "RebuildOut": {
@@ -5629,6 +6328,31 @@
         "title": "RefreshIn",
         "type": "object"
       },
+      "RefundOnlyCard": {
+        "properties": {
+          "count": {
+            "title": "Count",
+            "type": "integer"
+          },
+          "rate_of_handed_over": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate Of Handed Over"
+          }
+        },
+        "required": [
+          "count",
+          "rate_of_handed_over"
+        ],
+        "title": "RefundOnlyCard",
+        "type": "object"
+      },
       "RemovedInfo": {
         "description": "API-132 `removed_evidence[].removed` (BR-38): bằng chứng đã bỏ — dòng không bị xóa.",
         "properties": {
@@ -5858,6 +6582,31 @@
           "next_run_at"
         ],
         "title": "RetentionImpactOut",
+        "type": "object"
+      },
+      "ReturnCards": {
+        "properties": {
+          "expected_now": {
+            "title": "Expected Now",
+            "type": "integer"
+          },
+          "issue_rate": {
+            "$ref": "#/components/schemas/Ratio"
+          },
+          "refund_only": {
+            "$ref": "#/components/schemas/RefundOnlyCard"
+          },
+          "return_rate": {
+            "$ref": "#/components/schemas/Ratio"
+          }
+        },
+        "required": [
+          "return_rate",
+          "issue_rate",
+          "refund_only",
+          "expected_now"
+        ],
+        "title": "ReturnCards",
         "type": "object"
       },
       "ReturnCaseBrief": {
@@ -6758,6 +7507,47 @@
         "title": "ReturnLookupOut",
         "type": "object"
       },
+      "ReturnOperatorRow": {
+        "properties": {
+          "avg_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Seconds"
+          },
+          "inspected": {
+            "title": "Inspected",
+            "type": "integer"
+          },
+          "issue_rate": {
+            "$ref": "#/components/schemas/Ratio"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          }
+        },
+        "required": [
+          "operator_name",
+          "inspected",
+          "avg_seconds",
+          "issue_rate"
+        ],
+        "title": "ReturnOperatorRow",
+        "type": "object"
+      },
       "ReturnOrderBrief": {
         "properties": {
           "id": {
@@ -6930,6 +7720,77 @@
         "title": "ReturnSessionIn",
         "type": "object"
       },
+      "ReturnShopRow": {
+        "properties": {
+          "handed_over": {
+            "title": "Handed Over",
+            "type": "integer"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "enum": [
+                  "SHOPEE",
+                  "TIKTOK"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rate"
+          },
+          "return_cases": {
+            "title": "Return Cases",
+            "type": "integer"
+          },
+          "shop_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Id"
+          },
+          "shop_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Name"
+          }
+        },
+        "required": [
+          "platform",
+          "shop_id",
+          "shop_name",
+          "handed_over",
+          "return_cases",
+          "rate"
+        ],
+        "title": "ReturnShopRow",
+        "type": "object"
+      },
       "ReturnSummary": {
         "description": "API-20 (Phase 3, L11): tóm tắt phiên RETURN để Supervisor quyết hủy — D13 \"Đã có kết luận: Hộp rỗng ·\n3 ảnh · mở 4 phút\".",
         "properties": {
@@ -6960,6 +7821,60 @@
           "opened_at"
         ],
         "title": "ReturnSummary",
+        "type": "object"
+      },
+      "ReturnsReportOut": {
+        "properties": {
+          "by_kind": {
+            "items": {
+              "$ref": "#/components/schemas/KindRow"
+            },
+            "title": "By Kind",
+            "type": "array"
+          },
+          "by_shop": {
+            "items": {
+              "$ref": "#/components/schemas/ReturnShopRow"
+            },
+            "title": "By Shop",
+            "type": "array"
+          },
+          "cards": {
+            "$ref": "#/components/schemas/ReturnCards"
+          },
+          "filters": {
+            "$ref": "#/components/schemas/Filters"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "period": {
+            "$ref": "#/components/schemas/PeriodOut"
+          },
+          "reason_by_conclusion": {
+            "$ref": "#/components/schemas/ReasonByConclusion"
+          },
+          "top_products": {
+            "items": {
+              "$ref": "#/components/schemas/ProductRow"
+            },
+            "title": "Top Products",
+            "type": "array"
+          }
+        },
+        "required": [
+          "period",
+          "filters",
+          "generated_at",
+          "cards",
+          "by_kind",
+          "reason_by_conclusion",
+          "top_products",
+          "by_shop"
+        ],
+        "title": "ReturnsReportOut",
         "type": "object"
       },
       "ReviewIn": {
@@ -8555,6 +9470,62 @@
           }
         },
         "title": "StationPatchIn",
+        "type": "object"
+      },
+      "StationRow": {
+        "properties": {
+          "abandoned": {
+            "title": "Abandoned",
+            "type": "integer"
+          },
+          "avg_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Seconds"
+          },
+          "cancelled": {
+            "title": "Cancelled",
+            "type": "integer"
+          },
+          "mismatch": {
+            "title": "Mismatch",
+            "type": "integer"
+          },
+          "packed": {
+            "title": "Packed",
+            "type": "integer"
+          },
+          "repacked": {
+            "title": "Repacked",
+            "type": "integer"
+          },
+          "station_id": {
+            "format": "uuid",
+            "title": "Station Id",
+            "type": "string"
+          },
+          "station_name": {
+            "title": "Station Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "station_id",
+          "station_name",
+          "packed",
+          "avg_seconds",
+          "mismatch",
+          "abandoned",
+          "cancelled",
+          "repacked"
+        ],
+        "title": "StationRow",
         "type": "object"
       },
       "StationStateOut": {
@@ -11980,6 +12951,115 @@
         ]
       }
     },
+    "/api/v1/reports/claims": {
+      "get": {
+        "description": "API-151 báo cáo khiếu nại (FR-09.04, 09.05; BR-41).",
+        "operationId": "claims_report_api_v1_reports_claims_get",
+        "parameters": [
+          {
+            "description": "YYYY-MM-DD giờ VN; mặc định to − 29 ngày",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "YYYY-MM-DD giờ VN; mặc định to − 29 ngày",
+              "title": "From"
+            }
+          },
+          {
+            "description": "YYYY-MM-DD giờ VN, ≤ hôm nay; mặc định hôm nay",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "YYYY-MM-DD giờ VN, ≤ hôm nay; mặc định hôm nay",
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHOPEE",
+                    "TIKTOK"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimsReportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claims Report",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
     "/api/v1/reports/daily": {
       "get": {
         "description": "Số liệu ngày (giờ VN) + trạng thái station + mục cần xử lý (FR-09.01).",
@@ -12026,6 +13106,241 @@
           }
         },
         "summary": "Daily",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/productivity": {
+      "get": {
+        "description": "API-152 báo cáo năng suất (FR-09.02, 09.05, FR-03.16; BR-41) — CSKH 403.",
+        "operationId": "productivity_report_api_v1_reports_productivity_get",
+        "parameters": [
+          {
+            "description": "YYYY-MM-DD giờ VN; mặc định to − 29 ngày",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "YYYY-MM-DD giờ VN; mặc định to − 29 ngày",
+              "title": "From"
+            }
+          },
+          {
+            "description": "YYYY-MM-DD giờ VN, ≤ hôm nay; mặc định hôm nay",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "YYYY-MM-DD giờ VN, ≤ hôm nay; mặc định hôm nay",
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHOPEE",
+                    "TIKTOK"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "station_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Station Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductivityReportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Productivity Report",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v1/reports/returns": {
+      "get": {
+        "description": "API-150 báo cáo hàng hoàn (FR-09.03, 09.05; BR-41).",
+        "operationId": "returns_report_api_v1_reports_returns_get",
+        "parameters": [
+          {
+            "description": "YYYY-MM-DD giờ VN; mặc định to − 29 ngày",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "YYYY-MM-DD giờ VN; mặc định to − 29 ngày",
+              "title": "From"
+            }
+          },
+          {
+            "description": "YYYY-MM-DD giờ VN, ≤ hôm nay; mặc định hôm nay",
+            "in": "query",
+            "name": "to",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "date",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "YYYY-MM-DD giờ VN, ≤ hôm nay; mặc định hôm nay",
+              "title": "To"
+            }
+          },
+          {
+            "in": "query",
+            "name": "platform",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "SHOPEE",
+                    "TIKTOK"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Platform"
+            }
+          },
+          {
+            "in": "query",
+            "name": "shop_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Shop Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReturnsReportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Returns Report",
         "tags": [
           "reports"
         ]

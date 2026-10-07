@@ -151,6 +151,10 @@ def _prefixed_enums(prefix: str, enums: dict[str, frozenset[str]]) -> dict[str, 
 
 
 PAGE = ("page", "page_size", "total")
+# API-150..152 (02 §6.2): khung chung + tỷ lệ `{numerator, denominator, value}`.
+REPORT_HEAD = ("period.from", "period.to", "filters.platform", "filters.shop_id", "generated_at")
+RATIO = ("numerator", "denominator", "value")
+PRODUCTIVITY_COLS = ("packed", "avg_seconds", "mismatch", "abandoned", "cancelled", "repacked")
 # `closed_session` của API-11 (02 §6.2) — cũng là WS-01 `alert SESSION_AUTO_CLOSED`.
 CLOSED_SESSION = (
     "id",
@@ -1075,6 +1079,85 @@ CONTRACT: tuple[Api, ...] = (
             "stations[].cameras[].status",
             "stations[].last_scan_at",
             "attention",  # mỗi kind một dạng (dict tự do); `kind` kiểm ở test runtime
+        ),
+    ),
+    # Phase 3 M09 (02 §6.2 API-150..152 — T-216).
+    Api(
+        "API-150",
+        "GET",
+        "/reports/returns",
+        200,
+        (
+            *REPORT_HEAD,
+            *_prefixed("cards.return_rate", RATIO),
+            *_prefixed("cards.issue_rate", RATIO),
+            "cards.refund_only.count",
+            "cards.refund_only.rate_of_handed_over",
+            "cards.expected_now",
+            "by_kind[].kind",
+            "by_kind[].count",
+            "by_kind[].share",
+            "reason_by_conclusion.conclusions",
+            "reason_by_conclusion.rows[].reason",
+            "reason_by_conclusion.rows[].reason_label",
+            "reason_by_conclusion.rows[].counts",
+            "reason_by_conclusion.rows[].total",
+            *_prefixed(
+                "top_products[]",
+                ("sku", "product_name", "variation", "shipped", "return_requests", "rate", "issue"),
+            ),
+            *_prefixed(
+                "by_shop[]", ("platform", "shop_id", "shop_name", "handed_over", "return_cases", "rate")
+            ),
+        ),
+        {
+            "by_kind[].kind": _e("BUYER_RETURN", "FAILED_DELIVERY", "UNANNOUNCED", "UNIDENTIFIED"),
+            "filters.platform": _e("SHOPEE", "TIKTOK"),
+        },
+    ),
+    Api(
+        "API-151",
+        "GET",
+        "/reports/claims",
+        200,
+        (
+            *REPORT_HEAD,
+            "cards.created",
+            *_prefixed("cards.win_rate", RATIO),
+            "cards.recovered_amount",
+            *_prefixed("cards.submitted_before_deadline", RATIO),
+            "cards.overdue_unsent_now",
+            "by_status[].status",
+            "by_status[].count",
+            *_prefixed("by_type_result[]", ("type", "won", "lost", "pending")),
+            *_prefixed("by_counterparty[]", ("counterparty", "count", "won", "lost", "recovered_amount")),
+            *_prefixed(
+                "by_shop[]", ("platform", "shop_id", "shop_name", "count", "won", "lost", "recovered_amount")
+            ),
+        ),
+        {
+            "by_status[].status": _e("NEW", "SUBMITTED", "WAITING", "WON", "LOST", "CLOSED"),
+            "by_counterparty[].counterparty": _e("PLATFORM", "CARRIER"),
+        },
+    ),
+    Api(
+        "API-152",
+        "GET",
+        "/reports/productivity",
+        200,
+        (
+            *REPORT_HEAD,
+            "filters.station_id",
+            "cards.packed",
+            "cards.pack_avg_seconds",
+            "cards.returns_inspected",
+            "cards.return_avg_seconds",
+            *_prefixed("by_station[]", ("station_id", "station_name", *PRODUCTIVITY_COLS)),
+            *_prefixed("by_operator[]", ("operator_name", *PRODUCTIVITY_COLS)),
+            "return_by_operator[].operator_name",
+            "return_by_operator[].inspected",
+            "return_by_operator[].avg_seconds",
+            *_prefixed("return_by_operator[].issue_rate", RATIO),
         ),
     ),
     Api("API-40", "GET", "/clips/{clip_id}/play-url", 200, ("url", "expires_at")),
