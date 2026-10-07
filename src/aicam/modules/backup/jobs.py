@@ -553,6 +553,55 @@ async def _upload_one(
             marked_missing=marked,
         )
         return SOURCE_MISSING
+    if not obj.cloud_present:
+        return await _hash_and_upload(db, obj, settings, store, throttle, source, path)
+    # G3-BK-1: đối tượng đã có bản trên cloud (tải lại khi đổi khóa — API-187, "Thử lại"): PUT cùng
+    # `object_key` thay bản hiện hành **trước** khi biết nội dung tải lên khớp mã băm → chép tệp vào
+    # `BACKUP_TMP_DIR`, băm **bản chép** và tải bản chép — nội dung lên cloud luôn đúng nội dung đã kiểm.
+    try:
+        staged = await asyncio.to_thread(_stage_copy, settings, path, obj.id)
+    except OSError as exc:
+        _fail(
+            obj,
+            now,
+            error_text("BACKUP_TMP_ERROR", f"Không chép được tệp vào thư mục tạm ({type(exc).__name__})."),
+        )
+        await db.commit()
+        log.warning("backup_stage_copy_failed", object_id=str(obj.id), error=type(exc).__name__)
+        return "FAILED"
+    try:
+        return await _hash_and_upload(db, obj, settings, store, throttle, source, staged)
+    finally:
+        await asyncio.to_thread(staged.unlink, missing_ok=True)
+
+
+def _stage_copy(settings: Settings, path: Path, object_id: uuid.UUID) -> Path:
+    folder = settings.backup_tmp_dir / "reupload"
+    folder.mkdir(parents=True, exist_ok=True)
+    staged = folder / f"{object_id}.part"
+    shutil.copyfile(path, staged)
+    return staged
+
+
+def _cloud_fingerprint(store: ObjectStore, object_key: str) -> str | None:
+    """Dấu vân tay khóa của bản **hiện hành** trên kho (metadata `key-fp`) — None nếu không đọc được."""
+    try:
+        head = store.head(object_key)
+    except CloudError:
+        return None
+    return head.metadata.get("key-fp") if head is not None else None
+
+
+async def _hash_and_upload(
+    db: AsyncSession,
+    obj: BackupObject,
+    settings: Settings,
+    store: ObjectStore,
+    throttle: TokenBucket,
+    source: Any,
+    path: Path,
+) -> str:
+    now = clock.now()
     actual, size = await asyncio.to_thread(transfer.sha256_file, path)
     expected = source.sha256
     # "Vẫn sao lưu" (API-188 / --accept) chấp nhận **đúng nội dung** lệch đã xem (`sha256_actual`); tệp đổi
@@ -608,6 +657,13 @@ async def _upload_one(
     if uploaded is None:
         err = error or CloudError("CLOUD_ERROR")
         _fail(obj, now, SOURCE_MISSING if err.code == SOURCE_MISSING else error_text(err.code, err.message))
+        if obj.cloud_present:
+            # G3-BK-1: PUT có thể đã thay bản hiện hành trước khi bước kiểm sau đó lỗi → đọc lại dấu vân tay
+            # khóa của bản thật (DB luôn khớp kho — API-180 `old_keys`, khôi phục chọn khóa).
+            fp = await asyncio.to_thread(_cloud_fingerprint, store, obj.object_key)
+            if fp and fp != obj.cloud_key_fingerprint:
+                log.warning("backup_cloud_fingerprint_synced", object_id=str(obj.id), fingerprint=fp)
+                obj.cloud_key_fingerprint = fp
         await db.commit()
         return "FAILED"
     obj.status, obj.uploaded_at, obj.updated_at, obj.last_error = "UPLOADED", now, now, None
