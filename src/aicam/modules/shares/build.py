@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import io
 import shutil
+import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -32,7 +33,7 @@ from aicam.core.security import Cipher
 from aicam.core.settings import Settings
 from aicam.modules.cloud import config as cloud
 from aicam.modules.cloud.ratelimit import TokenBucket, mark_share_active
-from aicam.modules.cloud.store import CloudError, ObjectStore
+from aicam.modules.cloud.store import CloudError, ObjectStore, cancellable
 from aicam.modules.media import ffmpeg
 from aicam.modules.media.exports import Rendered, render_side_by_side_to, session_lock
 from aicam.modules.media.models import Clip, Snapshot
@@ -99,18 +100,24 @@ async def _put(
     throttle: Callable[[int], None] | None,
     cache_control: str | None = None,
 ) -> int:
+    cancel = threading.Event()  # G3-BK-4 / SH-1: hết thời gian dựng → dừng luồng tải
+    guarded = cancellable(throttle, cancel)
+
     def _go() -> int:
         if isinstance(data, Path):
             with data.open("rb") as fh:
                 return store.put_stream(
-                    key, fh, content_type=content_type, throttle=throttle, cache_control=cache_control
+                    key, fh, content_type=content_type, throttle=guarded, cache_control=cache_control
                 )
         return store.put_stream(
-            key, io.BytesIO(data), content_type=content_type, throttle=throttle, cache_control=cache_control
+            key, io.BytesIO(data), content_type=content_type, throttle=guarded, cache_control=cache_control
         )
 
     try:
         return await asyncio.to_thread(_go)
+    except asyncio.CancelledError:
+        cancel.set()
+        raise
     except CloudError as exc:
         raise BuildError("UPLOAD_FAILED", exc.code) from exc
 

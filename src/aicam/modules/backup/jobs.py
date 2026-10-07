@@ -8,6 +8,7 @@ import asyncio
 import os
 import shutil
 import tarfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -29,7 +30,7 @@ from aicam.modules.backup.models import BackupObject, BackupRun
 from aicam.modules.cloud import config as cloud
 from aicam.modules.cloud import crypto
 from aicam.modules.cloud.ratelimit import TokenBucket
-from aicam.modules.cloud.store import CloudError, ObjectStore
+from aicam.modules.cloud.store import CloudError, ObjectStore, cancellable
 from aicam.modules.settings import service as settings_service
 
 log = structlog.get_logger()
@@ -175,9 +176,15 @@ async def _upload_artifact(
     )
     db.add(obj)
     await db.commit()
-    uploaded = await asyncio.to_thread(
-        transfer.upload_file, store, art.object_key, art.path, key, meta, throttle.throttle, expect_sha256=sha
-    )
+    cancel = threading.Event()  # G3-BK-4: hết ngân sách J-20 → dừng luồng tải
+    try:
+        uploaded = await asyncio.to_thread(
+            transfer.upload_file, store, art.object_key, art.path, key, meta,
+            cancellable(throttle.throttle, cancel), expect_sha256=sha,
+        )  # fmt: skip
+    except BaseException:
+        cancel.set()
+        raise
     # Bản đã nằm trên cloud: ghi sự thật trước khi kiểm đọc lại (DEC-522) — lượt lỗi vẫn dọn được ở J-23.
     obj.status, obj.cloud_present, obj.cloud_key_fingerprint = "UPLOADED", True, uploaded.fingerprint
     obj.size_bytes, obj.encrypted_size = uploaded.plain_size, uploaded.encrypted_size
@@ -634,6 +641,7 @@ async def _hash_and_upload(
     beat = asyncio.create_task(_heartbeat(db, obj.id, stop))
     error: CloudError | None = None
     uploaded: transfer.Uploaded | None = None
+    cancel = threading.Event()  # G3-BK-4: task bị hủy (soft time limit) → dừng luồng tải
     try:
         uploaded = await asyncio.to_thread(
             transfer.upload_file,
@@ -642,9 +650,12 @@ async def _hash_and_upload(
             path,
             service.current_key(settings),
             meta,
-            throttle.throttle,
+            cancellable(throttle.throttle, cancel),
             expect_sha256=actual,
         )
+    except asyncio.CancelledError:
+        cancel.set()
+        raise
     except CloudError as exc:
         error = exc
     except OSError as exc:  # tệp biến mất / không đọc được giữa chừng

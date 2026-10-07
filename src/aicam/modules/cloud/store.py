@@ -92,6 +92,25 @@ class ObjectStore(Protocol):
         ...
 
 
+CANCELLED = "CLOUD_UPLOAD_CANCELLED"
+
+
+def cancellable(throttle: Throttle | None, cancel: threading.Event) -> Throttle:
+    """G3-BK-4: throttle bọc cờ hủy — `asyncio.timeout` / hủy task không dừng được `to_thread`; người gọi đặt
+    `cancel` khi bị hủy → lần đọc kế của luồng tải ném `CloudError(CLOUD_UPLOAD_CANCELLED)` (boto3 hủy
+    multipart, PUT đơn chưa gửi) thay vì tải tiếp sau khi job đã coi là lỗi."""
+
+    def _guarded(n: int) -> None:
+        if cancel.is_set():
+            raise CloudError(CANCELLED, "Đã hủy tải lên (hết thời gian / job dừng).")
+        if throttle is not None:
+            throttle(n)
+        if cancel.is_set():
+            raise CloudError(CANCELLED, "Đã hủy tải lên (hết thời gian / job dừng).")
+
+    return _guarded
+
+
 class ThrottledReader(io.RawIOBase):
     """Bọc luồng đọc: mỗi lần `read` xong gọi `throttle(n)` (token bucket — NFR-44) và đếm byte."""
 

@@ -159,3 +159,33 @@ def test_s3_delete_prefix_checks_errors_and_versions(
     else:
         with pytest.raises(CloudError):
             s3.delete_prefix("share/x/", all_versions=True)
+
+
+async def test_cancelled_upload_stops_thread_g3_bk4() -> None:
+    """G3-BK-4: lời gọi tải trong `to_thread` bị hủy (hết thời gian) → cờ hủy làm luồng tải dừng ở lần đọc kế,
+    không ghi đối tượng sau khi job đã coi là lỗi."""
+    import asyncio
+    import threading
+    import time
+
+    from aicam.modules.cloud.store import CANCELLED, CloudError, MemoryStore, cancellable
+
+    store = MemoryStore("t")
+    cancel = threading.Event()
+    errors: list[str] = []
+
+    def slow_throttle(_n: int) -> None:
+        time.sleep(0.3)
+
+    def go() -> None:
+        try:
+            store.put_stream("k", io.BytesIO(b"x" * 1024), throttle=cancellable(slow_throttle, cancel))
+        except CloudError as exc:
+            errors.append(exc.code)
+
+    task = asyncio.create_task(asyncio.to_thread(go))
+    await asyncio.sleep(0.1)
+    cancel.set()  # người gọi bị hủy → đặt cờ
+    await task
+    assert errors == [CANCELLED]
+    assert store.head("k") is None
