@@ -15,6 +15,7 @@ from aicam.modules.claims.models import Claim
 from aicam.modules.orders.models import Order, Package
 from aicam.modules.orders.refs import shop_conditions, shop_ref, shops_by_id
 from aicam.modules.platforms.shopee.returns_mapping import REASON_LABELS
+from aicam.modules.platforms.tiktok.returns_mapping import REASON_LABELS as TIKTOK_REASON_LABELS
 from aicam.modules.returns import queries
 from aicam.modules.returns.models import ReturnCase, ReturnCasePackage
 from aicam.modules.returns.schemas import (
@@ -46,7 +47,7 @@ def reason_label(reason: str | None) -> str | None:
     """Mã lý do sàn → chữ tiếng Việt; mã lạ → giữ chữ gốc (02 §6.2 API-110)."""
     if not reason:
         return None
-    return REASON_LABELS.get(reason, reason)
+    return REASON_LABELS.get(reason) or TIKTOK_REASON_LABELS.get(reason, reason)
 
 
 def waiting_days(expected_since: datetime | None, received_at: datetime | None, tz: str) -> int | None:

@@ -33,7 +33,7 @@ from aicam.modules.platforms.base import (
     ShippingStatus,
     ShopCredentials,
 )
-from aicam.modules.platforms.tiktok import mapping
+from aicam.modules.platforms.tiktok import mapping, returns_mapping
 from aicam.modules.platforms.tiktok.client import VERSION, TikTokClient, TikTokRequestError, Token
 
 log = structlog.get_logger()
@@ -379,12 +379,28 @@ class TikTokAdapter:
                 )  # fmt: skip
         return out
 
-    # ------------------------------------------------------------ yêu cầu trả (T-210)
+    # ------------------------------------------------------------ yêu cầu trả (FR-05.18, BR-31)
     async def list_returns(
         self, creds: ShopCredentials | None, since: datetime
     ) -> AsyncIterator[PlatformReturn]:
-        raise PlatformError("TikTok: yêu cầu trả chưa hỗ trợ (T-210)")
-        yield  # pragma: no cover
+        """J-13: `POST /return_refund/202309/returns/search` (`update_time_ge/lt`, phân trang) →
+        `PlatformReturn` qua `returns_mapping` (BR-31)."""
+        if creds is None:
+            return
+        window = {"update_time_ge": int(since.timestamp()), "update_time_lt": int(clock.now().timestamp())}
+        for detail in await self._search(
+            f"/return_refund/{VERSION}/returns/search", "return_orders", creds, window
+        ):
+            if detail.get("return_id") and detail.get("order_id"):
+                yield returns_mapping.to_platform_return(detail)
 
     async def get_return(self, creds: ShopCredentials | None, return_sn: str) -> PlatformReturn | None:
-        raise PlatformError("TikTok: yêu cầu trả chưa hỗ trợ (T-210)")
+        """Chi tiết một yêu cầu = search theo `return_ids` (02a §7.1)."""
+        if creds is None:
+            return None
+        rows = await self._search(
+            f"/return_refund/{VERSION}/returns/search", "return_orders", creds, {"return_ids": [return_sn]},
+            max_pages=1,
+        )  # fmt: skip
+        found = next((r for r in rows if str(r.get("return_id")) == return_sn and r.get("order_id")), None)
+        return returns_mapping.to_platform_return(found) if found else None

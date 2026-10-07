@@ -91,6 +91,9 @@ class PlatformReturn:
     created_at: datetime | None = None
     updated_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # TikTok `REPLACEMENT` (BR-31): hồ sơ "Khách trả hàng", lý do `EXCHANGE` ("Đổi hàng") — không lưu cột
+    # riêng.
+    is_exchange: bool = False
 
 
 @dataclass(frozen=True)

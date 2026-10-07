@@ -22,6 +22,7 @@ from aicam.modules.platforms import sync
 from aicam.modules.platforms.base import ShopCredentials
 from aicam.modules.platforms.tiktok.adapter import TikTokAdapter
 from aicam.modules.platforms.tiktok.client import TikTokClient
+from aicam.modules.returns.models import ReturnCase
 
 pytestmark = pytest.mark.integration
 
@@ -177,3 +178,57 @@ async def test_j06_tiktok_shipping_hands_over_and_failed_delivery(
     assert second is not None
     assert first.warehouse_status == "HANDED_OVER"
     assert second.warehouse_status == "RETURN_EXPECTED"
+
+
+def _ret(rid: str, oid: str, rtype: str, status: str, tracking: str | None = None) -> dict[str, Any]:
+    return {
+        "return_id": rid, "order_id": oid, "return_type": rtype, "return_status": status,
+        "return_reason": "wrong_item", "return_tracking_number": tracking,
+        "return_line_items": [_line("x")], "create_time": 1790000000, "update_time": 1790000000,
+    }  # fmt: skip
+
+
+@respx.mock
+async def test_j13_tiktok_returns_br31(
+    db: AsyncSession, adapter: TikTokAdapter, test_settings: Settings
+) -> None:
+    """BR-31 / AC-42 (một phần — 6 kịch bản đủ ở mock T-211): chỉ hoàn tiền → hồ sơ `REFUND_ONLY`, kho không
+    đổi; trả + hoàn đã chấp nhận → `BUYER_RETURN`, kiện "Hoàn đang về"; đổi hàng → lý do `EXCHANGE`; mọi hồ sơ
+    nhóm trạng thái đúng §5.3; đơn chưa có → đọc chi tiết + ghi vào đúng shop TikTok."""
+    test_settings.tiktok_returns_enabled = True
+    shop = await _shop(db, test_settings)
+    details = [
+        _detail("5761061", "DELIVERED", "TTTST0000000061"),
+        _detail("5761062", "DELIVERED", "TTTST0000000062"),
+        _detail("5761063", "DELIVERED", "TTTST0000000063"),
+    ]
+    _mock_api(details)  # J-13 đọc chi tiết đơn chưa có (`get_order`)
+    respx.post(f"{API}/return_refund/202309/returns/search").mock(
+        return_value=ok(
+            {
+                "return_orders": [
+                    _ret("RT61", "5761061", "REFUND_ONLY", "RETURN_OR_REFUND_REQUEST_PENDING"),
+                    _ret("RT62", "5761062", "RETURN_AND_REFUND", "AWAITING_BUYER_SHIP", "ttrt62"),
+                    _ret("RT63", "5761063", "REPLACEMENT", "AWAITING_BUYER_SHIP", "ttrt63"),
+                ]
+            }
+        )
+    )
+    out = await sync.sync_returns(db, adapter, test_settings, shop.id)
+    assert out[str(shop.id)]["status"] == "OK"
+    cases = {c.platform_return_sn: c for c in (await db.scalars(select(ReturnCase))).all()}
+    assert (cases["RT61"].kind, cases["RT61"].platform_status_group) == ("REFUND_ONLY", "REQUESTED")
+    assert (cases["RT62"].kind, cases["RT62"].platform_status_group) == ("BUYER_RETURN", "ACCEPTED")
+    assert (cases["RT63"].kind, cases["RT63"].reason) == ("BUYER_RETURN", "EXCHANGE")
+    assert cases["RT62"].return_tracking_number == "TTRT62"
+    p61 = await orders.find_package(db, "TTTST0000000061")
+    p62 = await orders.find_package(db, "TTTST0000000062")
+    assert p61 is not None
+    assert p62 is not None
+    assert (p61.warehouse_status, p62.warehouse_status) == ("NEW", "RETURN_EXPECTED")
+    order62 = await db.scalar(select(Order).where(Order.platform_order_sn == "5761062"))
+    assert order62 is not None
+    assert order62.shop_id == shop.id
+
+    test_settings.tiktok_returns_enabled = False  # EX-T1: tắt riêng cờ trả hàng → J-13 không chạy
+    assert await sync.sync_returns(db, adapter, test_settings, shop.id) == {"skipped": "returns_disabled"}
