@@ -6,8 +6,10 @@ MinIO thật (tùy chọn): đặt `TEST_S3_ENDPOINT` (+ `TEST_S3_ACCESS_KEY`, `
 
 import base64
 import os
+import shutil
 import uuid
 from collections.abc import AsyncIterator, Iterator
+from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -85,3 +87,37 @@ def minio_settings(**kw: object) -> Settings:
     }
     base.update(kw)
     return make_backup_settings(**base)
+
+
+BIN = Path(__file__).resolve().parent / "bin"
+
+
+def pg_tool(name: str) -> str:
+    """`pg_dump` / `pg_restore` / `psql` 16: trong PATH, không có thì wrapper chạy container
+    (`bin/docker-*`)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    if shutil.which("docker"):
+        return str(BIN / f"docker-{name}")
+    pytest.skip(f"cần {name} hoặc docker — chưa test")
+
+
+def fake_pg_dump(tmp: Path, payload: str = "PGDMP-fake-dump", code: int = 0) -> str:
+    """pg_dump giả (không cần docker): in `payload` ra stdout, thoát `code`."""
+    script = tmp / f"fake-pg-dump-{code}"
+    script.write_text(f"#!/bin/sh\nprintf '%s' '{payload}'\necho 'lỗi giả' >&2\nexit {code}\n")
+    script.chmod(0o755)
+    return str(script)
+
+
+async def enable_backup(db: AsyncSession, settings: Settings) -> None:
+    """Đưa `backup.state` về `ON`: đã xác nhận đúng dấu vân tay khóa hiện tại, bật."""
+    from aicam.modules.backup import service
+    from aicam.modules.settings import service as settings_service
+
+    cfg = await settings_service.get(db)
+    cfg.backup_confirmed_fingerprint = service.current_fingerprint(settings)
+    cfg.backup_enabled = True
+    cfg.backup_restore_pending = False
+    await db.flush()

@@ -13,6 +13,7 @@ import aicam.db_models  # noqa: F401 — nạp mọi model để khóa ngoại g
 from aicam.core.db import dispose_engine, init_engine, sessionmaker
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import get_settings
+from aicam.modules.backup import jobs as backup_jobs
 from aicam.modules.claims import pack as claim_packs
 from aicam.modules.claims import service as claims
 from aicam.modules.imports import service as imports
@@ -260,3 +261,27 @@ def sync_shop_returns(shop_id: str) -> dict[str, Any]:
 def run_recon_rules() -> dict[str, Any]:
     """J-14 (30 phút; sau J-04 / J-06 / J-13 có thay đổi; API-123): đối soát 7 quy tắc (FR-06.02, 06.06)."""
     return _run(lambda db: reconciliation.run_rules(db, get_settings()))
+
+
+# ---------------------------------------------------------------- Sao lưu cloud (02a §7 J-20..J-23, queue
+# `backup`)
+
+BACKUP_DB_RETRIES = 2  # 02a J-20: "Celery 2 lần thử (10 phút)"
+
+
+@app.task(  # type: ignore[untyped-decorator]
+    name="backup.run_db",
+    bind=True,
+    max_retries=BACKUP_DB_RETRIES,
+    soft_time_limit=get_settings().backup_db_budget_s + 120,
+    time_limit=get_settings().backup_db_budget_s + 180,
+)
+def backup_run_db(self: Any, run_id: str | None = None, trigger: str = "SCHEDULE") -> dict[str, Any]:
+    """J-20 (01 / 07 / 13 / 19 giờ VN; API-184 gửi `run_id`): pg_dump + file nhập → mã hóa → tải → kiểm đọc
+    lại. Lượt `FAILED` (không phải do trạng thái) → thử lại sau 10 phút như một lượt mới."""
+    settings = get_settings()
+    rid = uuid.UUID(run_id) if run_id else None
+    result = _run(lambda db: backup_jobs.run_db(db, settings, run_id=rid, trigger=trigger))
+    if result.get("status") == "FAILED" and "state" not in result and self.request.retries < self.max_retries:
+        raise self.retry(countdown=600, kwargs={"run_id": None, "trigger": trigger})
+    return result

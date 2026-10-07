@@ -180,6 +180,16 @@ services:
     volumes: [video:/data/video]
     depends_on: [api]
 
+  # Sao lưu cloud J-20..J-23 (queue `backup`, -c 1 — 02a §9): video / imports chỉ đọc; file dump tạm trong
+  # /tmp của container (BACKUP_TMP_DIR). Image có pg_dump 16 (Dockerfile, RB-32).
+  worker-backup:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "backup", "-c", "1", "-n", "backup@%h", "--loglevel", "info"]
+    env_file: [../.env.example]
+    environment: *app_env
+    volumes: ["video:/data/video:ro", "imports:/data/imports:ro"]
+    depends_on: [api]
+
   beat:
     image: aicam-dev
     command: ["celery", "-A", "aicam.entrypoints.beat", "beat", "--loglevel", "info", "--schedule", "/tmp/celerybeat-schedule"]

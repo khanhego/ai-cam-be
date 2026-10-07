@@ -27,6 +27,7 @@ app.conf.update(
         "media.capture_pack_snapshot": {"queue": "video"},  # J-17
         "claims.build_evidence_pack": {"queue": "export"},  # J-16 — cùng worker encode J-03
         "platforms.*": {"queue": "sync"},  # J-04, J-05, J-06, J-12, J-13 (gọi Shopee) tách khỏi cắt clip
+        "backup.*": {"queue": "backup"},  # J-20..J-23 (worker-backup -c 1 — 02a §7, DEC-434)
     },
     beat_schedule={
         "j07-session-timeouts": {"task": "sessions.check_timeouts", "schedule": 30.0},
@@ -43,6 +44,8 @@ app.conf.update(
         "j15-claim-deadlines": {"task": "claims.check_deadlines", "schedule": 3600.0},
         # 02:00 giờ VN (UTC+7, không đổi giờ mùa hè) = 19:00 UTC.
         "j02-enforce-retention": {"task": "media.enforce_retention", "schedule": crontab(hour=19, minute=0)},
+        # Sao lưu cloud (02a §7): J-20 01, 07, 13, 19 giờ VN = 18, 0, 6, 12 UTC (RPO DB ≤ 6 giờ — NFR-40).
+        "j20-backup-db": {"task": "backup.run_db", "schedule": crontab(hour="0,6,12,18", minute=0)},
     },
 )
 

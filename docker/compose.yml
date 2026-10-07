@@ -194,6 +194,14 @@ services:
     depends_on:
       api: { condition: service_healthy }
 
+  # Sao lưu cloud J-20..J-23 (queue `backup`, -c 1 — 02a §9, ADR-010). Video / imports chỉ đọc.
+  worker-backup:
+    <<: *app
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "backup", "-c", "1", "-n", "backup@%h", "--loglevel", "info"]
+    volumes: ["video:/data/video:ro", "imports:/data/imports:ro"]
+    depends_on:
+      api: { condition: service_healthy }
+
   beat:
     <<: *app
     command: ["celery", "-A", "aicam.entrypoints.beat", "beat", "--loglevel", "info", "--schedule", "/tmp/celerybeat-schedule"]

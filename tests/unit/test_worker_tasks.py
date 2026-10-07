@@ -66,3 +66,41 @@ def test_tc_n2_07_j13_sync_returns_beat_within_15_minutes() -> None:
     assert task.time_limit < schedule
     queues = [r["queue"] for pattern, r in app.conf.task_routes.items() if fnmatch(task.name, pattern)]
     assert queues == ["sync"]
+
+
+def test_j20_backup_db_schedule_route_and_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """02a §7 J-20: 01 / 07 / 13 / 19 giờ VN (= 18, 0, 6, 12 UTC), queue `backup`; lượt FAILED → thử lại 10
+    phút
+    (tối đa 2), lượt bỏ qua do trạng thái không thử lại."""
+    from aicam.workers.celery_app import app
+
+    (entry,) = [e for e in app.conf.beat_schedule.values() if e["task"] == "backup.run_db"]
+    assert entry["schedule"].hour == {0, 6, 12, 18}
+    assert entry["schedule"].minute == {0}
+    assert app.conf.task_routes["backup.*"] == {"queue": "backup"}
+
+    task = tasks.backup_run_db
+    calls: list[dict[str, Any]] = []
+
+    class _Retried(Exception):
+        pass
+
+    def _retry(**kw: Any) -> Exception:
+        calls.append(kw)
+        return _Retried()
+
+    monkeypatch.setattr(task, "retry", _retry)
+    monkeypatch.setattr(tasks, "_run", lambda _job: {"status": "FAILED", "error": "CLOUD_UNREACHABLE"})
+    task.push_request(retries=0)
+    try:
+        with pytest.raises(_Retried):
+            task.run()
+    finally:
+        task.pop_request()
+    assert calls[0]["countdown"] == 600
+    monkeypatch.setattr(tasks, "_run", lambda _job: {"status": "FAILED", "state": "DISABLED"})
+    task.push_request(retries=0)
+    try:
+        assert task.run()["state"] == "DISABLED"
+    finally:
+        task.pop_request()

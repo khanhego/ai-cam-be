@@ -18,7 +18,7 @@ import os
 import struct
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import BinaryIO
+from typing import Protocol
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -35,6 +35,14 @@ _HEADER = struct.Struct(">8sBBH8s8s4s")
 _LEN = struct.Struct(">I")
 _COUNTER = struct.Struct(">I")
 MAX_CHUNKS = 2**32 - 1
+
+
+class Reader(Protocol):
+    def read(self, n: int = -1, /) -> bytes: ...
+
+
+class Writer(Protocol):
+    def write(self, data: bytes, /) -> int: ...
 
 
 class CryptoError(Exception):
@@ -111,11 +119,11 @@ def parse_header(raw: bytes) -> Header:
     return Header(fingerprint=format_fingerprint(fp), nonce_prefix=prefix, raw=raw)
 
 
-def read_header(src: BinaryIO) -> Header:
+def read_header(src: Reader) -> Header:
     return parse_header(_read_exact(src, HEADER_SIZE, allow_short=True))
 
 
-def _read_exact(src: BinaryIO, n: int, *, allow_short: bool = False) -> bytes:
+def _read_exact(src: Reader, n: int, *, allow_short: bool = False) -> bytes:
     buf = bytearray()
     while len(buf) < n:
         chunk = src.read(n - len(buf))
@@ -145,7 +153,7 @@ class EncryptingReader:
     Sau khi đọc hết: `result` có SHA-256 + kích thước bản rõ, kích thước bản mã, dấu vân tay khóa.
     """
 
-    def __init__(self, src: BinaryIO, key: bytes, *, chunk_size: int = CHUNK_SIZE) -> None:
+    def __init__(self, src: Reader, key: bytes, *, chunk_size: int = CHUNK_SIZE) -> None:
         if len(key) != KEY_SIZE:
             raise ValueError("Khóa sao lưu phải đúng 32 byte")
         if not 0 < chunk_size <= CHUNK_SIZE:
@@ -208,7 +216,7 @@ class EncryptingReader:
         return Result(self._fp, self._hash.hexdigest(), self._plain, self._encrypted)
 
 
-def encrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes) -> Result:
+def encrypt_stream(src: Reader, dst: Writer, key: bytes) -> Result:
     reader = EncryptingReader(src, key)
     while True:
         block = reader.read(CHUNK_SIZE + TAG_SIZE + 4)
@@ -218,7 +226,7 @@ def encrypt_stream(src: BinaryIO, dst: BinaryIO, key: bytes) -> Result:
     return reader.result
 
 
-def decrypt_stream(src: BinaryIO, dst: BinaryIO, keys: Mapping[str, bytes]) -> Result:
+def decrypt_stream(src: Reader, dst: Writer, keys: Mapping[str, bytes]) -> Result:
     """Giải mã luồng; chọn khóa theo dấu vân tay header (DEC-495). Sai khóa → `WrongKeyError` trước khi
     ghi; hỏng / cắt cụt → `CryptoError` (có thể đã ghi một phần — khôi phục ghi vào tệp tạm rồi mới đổi tên,
     DEC-518)."""
@@ -269,6 +277,6 @@ class _HashSink:
         return len(data)
 
 
-def verify_stream(src: BinaryIO, keys: Mapping[str, bytes]) -> Result:
+def verify_stream(src: Reader, keys: Mapping[str, bytes]) -> Result:
     """Giải mã toàn bộ không ghi ra đâu — chỉ lấy SHA-256 bản rõ (J-20 kiểm đọc lại — DEC-466)."""
-    return decrypt_stream(src, _HashSink(), keys)  # type: ignore[arg-type]
+    return decrypt_stream(src, _HashSink(), keys)
