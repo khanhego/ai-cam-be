@@ -99,6 +99,8 @@ Trên dashboard bằng tài khoản Admin:
 
 ## 6. Sao lưu và khôi phục
 
+### 6.1 Sao lưu local (`pg-backup.sh`)
+
 Service `backup` chạy `pg_dump -Fc` + nén thư mục file nhập CSV mỗi ngày lúc `BACKUP_HOUR` (giờ VN), ghi vào `BACKUP_DIR` (mặc định `docker/backups/` — nên trỏ sang NAS / ổ khác). Bản mới phải đọc được (`pg_restore -l`) mới được giữ; bản cũ chỉ bị dọn khi lần sao lưu này thành công (`find -mtime +BACKUP_KEEP_DAYS` — với 14 là bản cũ hơn khoảng **15 ngày**). File tạo với quyền `600` (G3-N3).
 
 **Sao lưu `docker/.env` riêng, ra ngoài server (off-site, két / trình quản lý mật khẩu).** `FERNET_KEY` mã hóa token Shopee và mật khẩu camera trong DB: khôi phục DB với `.env` khác → token / mật khẩu camera không giải mã được (shop chuyển "Hết hạn" — `CREDENTIALS_UNREADABLE`, phải Kết nối lại; camera phải nhập lại mật khẩu). `JWT_SECRET` / `MEDIA_SIGNING_KEY` khác chỉ làm mọi người đăng nhập lại.
@@ -125,6 +127,64 @@ dc up -d
 Khôi phục file nhập: `docker run --rm -v aicam_imports:/data/imports -v $PWD/docker/backups:/b alpine tar xzf /b/imports-<thời điểm>.tgz -C /data/imports`.
 
 Thử khôi phục định kỳ (mỗi quý) vào một máy khác — sao lưu chưa từng khôi phục coi như chưa có.
+
+### 6.2 Sao lưu cloud (Phase 3 — FR-02.08, 02.13..18, ADR-010)
+
+Ngoài bản sao local ở trên, Phase 3 sao lưu **DB + file nhập mỗi 6 giờ** (01, 07, 13, 19 giờ VN) và **bằng chứng
+cần giữ** (clip / ảnh của hồ sơ — BR-33) trong ≤ 1 giờ lên kho S3-compatible, **mã hóa tại kho** (AES-256-GCM,
+định dạng `AICAMENC1`). Nhà cung cấp chỉ thấy bản mã. Service: `worker-backup` (queue `backup`), lịch ở `beat`.
+Nhà cung cấp thật chưa chốt (Q20) — mọi bước dưới đã chạy trên MinIO; với nhà cung cấp thật: **chưa test**.
+
+**Cài lần đầu (IT)**
+
+1. Tạo 2 bucket riêng tư: sao lưu (bật **versioning** + lifecycle "xóa phiên bản cũ sau 7 ngày" + object lock
+   governance 7 ngày nếu có) và link chia sẻ (không versioning, lifecycle xóa `share/` > 8 ngày). Tạo khóa ứng
+   dụng theo `docs/s3-policy.example.json` (thay tên bucket) — khóa này **không** được xóa phiên bản / đổi
+   versioning, nên máy kho bị chiếm quyền cũng không xóa vĩnh viễn được bản sao (RK-28).
+2. `dc run --rm api aicam backup-keygen` → chép `BACKUP_ENCRYPTION_KEY=…` vào `docker/.env` cùng `S3_ENDPOINT`,
+   `S3_REGION`, `S3_BUCKET`, `S3_SHARE_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (`S3_PUBLIC_ENDPOINT` nếu
+   host ký URL khác). `dc up -d api worker-backup beat`.
+3. **Cất bản sao khóa ngoài máy** (két / trình quản lý mật khẩu, 2 nơi). Mất khóa = bản cloud vô dụng (EX-K5).
+4. Dashboard → Sao lưu cloud: **Kiểm tra kết nối** (ghi / đọc / xóa 1 KB) → đối chiếu dấu vân tay
+   `XXXX-XXXX-XXXX-XXXX` với dòng in ở bước 2 → **Đã cất bản sao khóa giải mã** → sao lưu bật.
+5. Bấm **Sao lưu DB ngay**, chờ lịch sử có dòng "Thành công".
+
+**Bí mật phải cất ngoài máy** (kiểm ở mỗi diễn tập — 02 API-186): `BACKUP_ENCRYPTION_KEY` + **mọi khóa cũ còn bản
+trên cloud**; `FERNET_KEY` (token sàn, mật khẩu camera, URL link, token Zalo trong DB — mất → kết nối lại mọi shop,
+nhập lại mật khẩu camera, link cũ không sao chép được); `S3_ENDPOINT`, `S3_BUCKET`, `S3_SHARE_BUCKET`,
+`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` + tài khoản quản trị nhà cung cấp (khôi phục phiên bản cũ); `JWT_SECRET`;
+`MEDIA_SIGNING_KEY`; `POSTGRES_PASSWORD`; `SHOPEE_PARTNER_ID` / `SHOPEE_PARTNER_KEY`; `TIKTOK_APP_KEY` /
+`TIKTOK_APP_SECRET` / `TIKTOK_SERVICE_ID`; `TELEGRAM_BOT_TOKEN`; `ZALO_APP_ID` / `ZALO_APP_SECRET`;
+`SITE_ADDRESS`, `LAN_IP`. Cách nhanh: cất nguyên `docker/.env` + danh sách khóa cũ.
+
+**Theo dõi** — D23 (trạng thái, lịch sử 14 ngày, tệp chờ / lỗi), D2 "Cần xử lý" + N08 khi: DB không thành công >
+26 giờ, 2 lượt DB liền lỗi, tệp chờ > 24 giờ, lệch mã băm, không thấy tệp tại kho. Log: `backup_db`,
+`backup_object`, `backup_hash_mismatch`, `backup_source_missing`, `backup_lease_expired`, `backup_prune`.
+
+**Khôi phục sang máy mới (RTO DB ≤ 60 phút — NFR-40)**
+
+```sh
+# 0. Máy mới đã cài hệ thống (cùng phiên bản image), docker/.env khôi phục từ bản cất (cùng FERNET_KEY, S3_*,
+#    BACKUP_ENCRYPTION_KEY; khóa cũ trong BACKUP_OLD_KEYS hoặc tệp riêng). DB trống: chưa chạy migrate.
+dc up -d postgres redis
+dc run --rm api aicam backup-restore --db latest            # tải + giải mã + pg_restore vào DB trống,
+#    rồi giải nén file nhập cùng lượt vào IMPORT_ROOT (không ghi đè tệp đã có)
+#    khóa không khớp → "Khóa giải mã không khớp (dấu vân tay …)", mã 2, KHÔNG ghi gì → tìm đúng khóa
+#    DB không trống → từ chối (mã 2); cố ý ghi đè: --force
+#    thêm khóa cũ: --key-file /đường/dẫn/khoa-cu.txt (lặp được)
+dc run --rm api alembic upgrade head                          # bản dump cũ hơn image → nâng schema
+dc up -d
+dc run --rm api aicam backup-verify                           # đạt (mã 0) → gỡ "Chờ kiểm khôi phục"
+```
+
+Sau `backup-restore` sao lưu tự động **tắt** (D23 "Chờ kiểm khôi phục", J-20..J-23 không chạy — máy mới không tự xóa
+bản cloud nào) tới khi `backup-verify` đạt; Admin bật lại ở D23.
+
+`backup-verify` in `khớp N / lệch đã chấp nhận N / lệch N / thiếu đã ghi nhận N / thiếu N`. Đạt = lệch 0 và thiếu
+0. Không đạt → mã 1, xem danh sách id.
+
+**Diễn tập** mỗi quý (AC-50): làm đủ các bước trên ở máy / VM khác, ghi thời gian từng bước, số khớp / thiếu.
+Biên bản diễn tập dev: `docs/ai/items/03-expansion-tiktok/evidence/m15-restore-drill.txt` (repo tài liệu).
 
 ## 7. Nâng cấp
 

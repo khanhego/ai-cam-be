@@ -6,6 +6,8 @@
   + hàng hoàn mẫu (`seed_returns`, T-116) + 4 shop mock Phase 3 (`seed_phase3`, T-211). Chặn trên production.
 - `aicam fix-cancel-requests [--apply]`: trả lại kiện hủy oan do Phase 2 coi yêu cầu hủy là hủy (T-285).
 - `aicam backup-keygen`: sinh khóa sao lưu 256 bit + dấu vân tay (02 API-186, FR-02.13, T-219).
+- `aicam backup-restore` / `aicam backup-verify`: khôi phục từ cloud, kiểm SHA-256 (API-186, docs/ops.md
+§6.2).
 """
 
 import argparse
@@ -221,6 +223,35 @@ def backup_keygen() -> list[str]:
     ]
 
 
+async def backup_restore(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from aicam.modules.backup import restore
+
+    report = await restore.restore(
+        get_settings(),
+        db_key=None if args.evidence_only else args.db,
+        key_files=[Path(p) for p in args.key_file],
+        force=args.force,
+    )
+    print("\n".join(report.lines))
+    return report.exit_code
+
+
+async def backup_verify(args: argparse.Namespace) -> int:
+    from aicam.modules.backup import restore
+
+    settings = get_settings()
+    init_engine(settings.database_url)
+    try:
+        async with sessionmaker()() as db:
+            report = await restore.verify(settings, db)
+    finally:
+        await dispose_engine()
+    print("\n".join(report.lines))
+    return report.exit_code
+
+
 def _read_password() -> str:
     password = os.environ.get("AICAM_ADMIN_PASSWORD") or getpass.getpass("Mật khẩu: ")
     if len(password) < MIN_PASSWORD:
@@ -247,8 +278,24 @@ def main(argv: list[str] | None = None) -> int:
     fix.add_argument("--apply", action="store_true", help="ghi thay đổi (không có = chỉ in danh sách)")
 
     sub.add_parser("backup-keygen", help="Sinh khóa sao lưu cloud 256 bit + dấu vân tay (không lưu ở đâu)")
+    rst = sub.add_parser(
+        "backup-restore", help="Khôi phục DB (+ bằng chứng) từ kho lưu cloud (docs/ops.md §6.2)"
+    )
+    rst.add_argument("--db", default="latest", help="latest (mặc định) hoặc khóa đối tượng backup/db/…")
+    rst.add_argument("--evidence-only", action="store_true", help="không đụng DB — chỉ phần bằng chứng")
+    rst.add_argument(
+        "--key-file", action="append", default=[], help="tệp chứa một khóa cũ (base64), lặp được"
+    )
+    rst.add_argument("--force", action="store_true", help="cho phép ghi đè DB đích không trống")
+    sub.add_parser(
+        "backup-verify", help="Kiểm SHA-256 clip / ảnh sau khôi phục; đạt → gỡ 'Chờ kiểm khôi phục'"
+    )
 
     args = parser.parse_args(argv)
+    if args.command == "backup-restore":
+        return asyncio.run(backup_restore(args))
+    if args.command == "backup-verify":
+        return asyncio.run(backup_verify(args))
     if args.command == "backup-keygen":
         print("\n".join(backup_keygen()))
         return 0

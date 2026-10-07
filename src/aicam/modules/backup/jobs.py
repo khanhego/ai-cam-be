@@ -92,7 +92,7 @@ async def start_run(db: AsyncSession, trigger: str, user_id: uuid.UUID | None) -
     return run
 
 
-def _pg_env(database_url: str) -> dict[str, str]:
+def pg_env(database_url: str) -> dict[str, str]:
     url = make_url(database_url)
     env = {k: v for k, v in os.environ.items() if not k.startswith("PG")}
     env.update(
@@ -117,7 +117,7 @@ async def pg_dump(settings: Settings, target: Path) -> None:
                 "--no-owner",
                 stdout=out,
                 stderr=asyncio.subprocess.PIPE,
-                env=_pg_env(settings.database_url),
+                env=pg_env(settings.database_url),
             )
         except OSError as exc:
             raise BackupFailed("PG_DUMP_FAILED", f"Không chạy được pg_dump ({type(exc).__name__}).") from exc
