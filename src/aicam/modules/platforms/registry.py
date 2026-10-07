@@ -77,11 +77,20 @@ def _tiktok(
     )  # fmt: skip
 
 
+@lru_cache
+def _tiktok_mock() -> PlatformAdapter:
+    from aicam.modules.platforms.mock.tiktok import MockTikTokAdapter
+
+    return MockTikTokAdapter()
+
+
 def adapter_for(platform: str, settings: Settings) -> PlatformAdapter:
     if _check(platform) == SHOPEE:
         return service.get_adapter(settings)
-    if not is_configured(TIKTOK, settings) or settings.tiktok_adapter == "mock":
-        return service.UnconfiguredAdapter(TIKTOK)  # mock 2 shop: T-211
+    if not is_configured(TIKTOK, settings):
+        return service.UnconfiguredAdapter(TIKTOK)
+    if settings.tiktok_adapter == "mock":
+        return _tiktok_mock()  # 2 shop giả, adapter thật trên transport giả (02a §7.2)
     return _tiktok(
         settings.tiktok_app_key, settings.tiktok_app_secret, settings.tiktok_api_base,
         settings.tiktok_auth_base, settings.tiktok_authorize_url, settings.tiktok_service_id,

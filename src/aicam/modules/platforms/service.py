@@ -88,8 +88,8 @@ class UnconfiguredAdapter:
 
 
 @lru_cache
-def _mock() -> MockAdapter:
-    return MockAdapter()
+def _mock(shop_ids: tuple[str, ...] = ()) -> MockAdapter:
+    return MockAdapter.multi_shop(shop_ids)
 
 
 @lru_cache
@@ -147,7 +147,7 @@ def require_configured(settings: Settings) -> None:
 
 def get_adapter(settings: Settings) -> PlatformAdapter:
     if settings.platform_adapter == "mock":
-        return _mock()
+        return _mock(tuple(x.strip() for x in settings.mock_shopee_shop_ids.split(",") if x.strip()))
     if not is_configured(settings):
         return UnconfiguredAdapter()
     return _shopee(

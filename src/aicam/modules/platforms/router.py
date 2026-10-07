@@ -56,6 +56,7 @@ async def shops_brief(_: Viewer, db: DbSession) -> ShopBriefList:
 async def auth_url(
     platform: str,
     p: AdminOnly,
+    db: DbSession,
     shopee: Adapter,
     tiktok: TikTokAdapter,
     settings: AppSettings,
@@ -64,7 +65,7 @@ async def auth_url(
     """API-71 (`shopee` | `tiktok`): URL ủy quyền; `state` chống CSRF lưu Redis 10 phút + cookie HttpOnly băm
     `state` gắn trình duyệt (G3-N7). Sàn lạ → 404; chưa cấu hình → 503."""
     code = connect.parse_platform(platform)
-    url, state = await connect.auth_url(_pick(code, shopee, tiktok), settings, code, p.user_id)
+    url, state = await connect.auth_url(db, _pick(code, shopee, tiktok), settings, code, p.user_id)
     response.set_cookie(
         connect.state_cookie(code),
         connect.state_fingerprint(state),

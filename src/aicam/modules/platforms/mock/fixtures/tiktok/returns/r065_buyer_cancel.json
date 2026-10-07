@@ -1,0 +1,25 @@
+{
+  "_shop": "TTMOCKA",
+  "return_id": "RTTT0000000065",
+  "order_id": "5761TT0000000065",
+  "return_type": "RETURN_AND_REFUND",
+  "return_status": "AWAITING_BUYER_SHIP",
+  "return_reason": "ecom_order_delivered_refund_and_return_reason_wrong_item",
+  "return_reason_text": "",
+  "return_tracking_number": "TTRTTST000065",
+  "return_line_items": [
+    {
+      "product_name": "Áo thun TikTok",
+      "sku_name": "Trắng / M",
+      "seller_sku": "TT-AO-TRANG-M",
+      "sku_id": "SKUTT-AO-TRANG-M"
+    }
+  ],
+  "_status_after": [
+    {
+      "after_hours": 24,
+      "return_status": "RETURN_OR_REFUND_REQUEST_CANCEL"
+    }
+  ],
+  "_note": "Người mua hủy → hồ sơ Đã hủy"
+}

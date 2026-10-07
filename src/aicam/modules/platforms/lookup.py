@@ -115,7 +115,7 @@ async def targets(
             creds = platforms.credentials(shop, cipher)
             if creds is None and _tokenless(adapter):
                 expires = shop.auth_expires_at or shop.created_at
-                creds = ShopCredentials(shop.platform_shop_id, "", "", expires)
+                creds = ShopCredentials(shop.platform_shop_id, "", "", expires, shop_cipher=shop.shop_cipher)
             if creds is not None:
                 out.append(Target(adapter, platform, creds, shop.id, shop.name))
         if not shops and _tokenless(adapter):

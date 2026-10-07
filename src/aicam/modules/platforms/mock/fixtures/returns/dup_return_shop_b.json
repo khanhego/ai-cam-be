@@ -1,0 +1,11 @@
+{
+  "_note": "Shop Shopee 990002: mã yêu cầu trả + mã chiều về trùng shop TikTok TTMOCKA (BR-29, EX-R20, 02a §5.1 #9, #15)",
+  "return_sn": "RSDUP0000001",
+  "order_sn": "2410TSTB0020",
+  "status": "PROCESSING",
+  "needs_logistics": true,
+  "tracking_number": "RTTST-DUP-1",
+  "reason": "WRONG_ITEM",
+  "text_reason": "",
+  "item": [{"item_id": 9001, "model_id": 90011, "name": "Áo thun basic", "model_name": "Đen / L", "item_sku": "AT-DEN-L", "amount": 1}]
+}

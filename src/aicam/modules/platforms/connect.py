@@ -173,11 +173,17 @@ def notify_shop_updated(session: AsyncSession, shop: Shop) -> None:
 
 
 async def auth_url(
-    adapter: PlatformAdapter, settings: Settings, platform: str, user_id: uuid.UUID
+    session: AsyncSession, adapter: PlatformAdapter, settings: Settings, platform: str, user_id: uuid.UUID
 ) -> tuple[str, str]:
     """Trả (URL ủy quyền, `state`) — router đặt cookie `state_fingerprint(state)`. Sàn chưa cấu hình → 503."""
     if not registry.is_configured(platform, settings):
         raise platforms.not_configured(platform)
+    prepare = getattr(adapter, "prepare_auth", None)
+    if callable(prepare):  # adapter mock (02a §7.2): lần lượt trả shop chưa kết nối
+        connected = await session.scalars(
+            select(Shop.platform_shop_id).where(Shop.platform == platform, Shop.auth_status == "CONNECTED")
+        )
+        prepare(set(connected.all()))
     state = secrets.token_urlsafe(24)
     await get_redis().set(state_key(platform, state), str(user_id), ex=STATE_TTL_S)
     return adapter.build_auth_url(redirect_url(settings, platform, state), state), state

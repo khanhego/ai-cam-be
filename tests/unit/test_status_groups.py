@@ -103,7 +103,10 @@ def test_registry_flags_and_configuration() -> None:
     assert not registry.returns_enabled("TIKTOK", _settings(tiktok_enabled=True))
     real = _settings(tiktok_enabled=True, tiktok_adapter="tiktok", tiktok_app_key="k")
     assert not registry.is_configured("TIKTOK", real)  # thiếu secret / service id
-    assert isinstance(registry.adapter_for("TIKTOK", both), UnconfiguredAdapter)
+    assert registry.adapter_for("TIKTOK", both).code == "TIKTOK"  # T-211: mock 2 shop
+    assert getattr(registry.adapter_for("TIKTOK", both), "is_mock", False)
+    assert isinstance(registry.adapter_for("TIKTOK", real), UnconfiguredAdapter)
+    assert isinstance(registry.adapter_for("TIKTOK", off), UnconfiguredAdapter)
     with pytest.raises(ValueError, match="không hỗ trợ"):
         registry.is_enabled("LAZADA", both)
 

@@ -82,6 +82,12 @@ services:
       # `SHOPEE_ENABLED=true docker compose -f docker/compose.dev.yml up -d api worker beat`.
       SHOPEE_ENABLED: ${SHOPEE_ENABLED:-false}
       PLATFORM_ADAPTER: ${PLATFORM_ADAPTER:-mock}
+      # Phase 3 (02a §7.2, §9 — T-211): mock Shopee nhiều shop + mock TikTok 2 shop (adapter TikTok thật trên
+      # transport giả). Tắt TikTok: `TIKTOK_ENABLED=false`. Áp dụng khi dựng lại stack (không tự đổi container).
+      MOCK_SHOPEE_SHOP_IDS: ${MOCK_SHOPEE_SHOP_IDS:-990001,990002}
+      TIKTOK_ENABLED: ${TIKTOK_ENABLED:-true}
+      TIKTOK_RETURNS_ENABLED: ${TIKTOK_RETURNS_ENABLED:-true}
+      TIKTOK_ADAPTER: ${TIKTOK_ADAPTER:-mock}
     ports: ["8180:8000"]
     volumes: [video:/data/video, imports:/data/imports]
     depends_on:

@@ -3,7 +3,7 @@
 - `aicam create-admin --username admin --display-name "Quản trị"`: tạo Admin đầu tiên (mật khẩu hỏi qua stdin
   hoặc biến `AICAM_ADMIN_PASSWORD`).
 - `aicam seed-demo`: dữ liệu demo / test theo 04-test-cases §1 (tiền tố TST, mật khẩu `matkhau123`)
-  + hàng hoàn mẫu (`seed_returns`, T-116). Chặn trên production.
+  + hàng hoàn mẫu (`seed_returns`, T-116) + 4 shop mock Phase 3 (`seed_phase3`, T-211). Chặn trên production.
 - `aicam fix-cancel-requests [--apply]`: trả lại kiện hủy oan do Phase 2 coi yêu cầu hủy là hủy (T-285).
 """
 
@@ -94,6 +94,7 @@ async def seed_demo() -> list[str]:
     from aicam.modules.stations.models import Station
     from aicam.modules.stations.schemas import CameraIn
 
+    from .seed_phase3 import seed_phase3
     from .seed_returns import seed_returns
 
     settings = get_settings()
@@ -182,6 +183,8 @@ async def seed_demo() -> list[str]:
 
             # Phase 2 (T-116): hàng hoàn mẫu — đang về, chỉ hoàn tiền, chưa xác định, cảnh báo, khiếu nại.
             lines += await seed_returns(session, settings, station_ids[2], users["tst_sup"])
+            # Phase 3 (T-211): 2 shop Shopee + 2 shop TikTok mock, đồng bộ qua adapter mock.
+            lines += await seed_phase3(session, settings)
     finally:
         await close_redis()
         await dispose_engine()

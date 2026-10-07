@@ -99,6 +99,7 @@ class TikTokClient:
         max_attempts: int = 5,
         backoff_s: float = 0.5,
         sleep: Sleep = asyncio.sleep,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.app_key = app_key
         self._secret = app_secret
@@ -108,6 +109,9 @@ class TikTokClient:
         self.max_attempts = max_attempts
         self.backoff_s = backoff_s
         self._sleep = sleep
+        self._transport = (
+            transport  # adapter mock (02a §7.2): phục vụ fixture trong tiến trình, cùng đường ký / thử lại
+        )
 
     # ------------------------------------------------------------ ký
     def signed_query(
@@ -157,7 +161,7 @@ class TikTokClient:
             started = time.monotonic()
             retry_after: str | None = None
             try:
-                async with httpx.AsyncClient(timeout=self.timeout_s) as http:
+                async with httpx.AsyncClient(timeout=self.timeout_s, transport=self._transport) as http:
                     res = await http.request(
                         method,
                         f"{self.api_base}{path}",
@@ -204,7 +208,7 @@ class TikTokClient:
         query = {"app_key": self.app_key, "app_secret": self._secret, **params}
         started = time.monotonic()
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_s) as http:
+            async with httpx.AsyncClient(timeout=self.timeout_s, transport=self._transport) as http:
                 res = await http.get(f"{self.auth_base}{path}", params=query)
         except httpx.HTTPError as exc:
             self._log(path, 1, started, outcome="network_error", error=type(exc).__name__)
