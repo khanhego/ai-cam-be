@@ -16,6 +16,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.qa import stack
+
 BASE = os.environ.get("QA_BASE_URL")
 pytestmark = [
     pytest.mark.qa,
@@ -25,7 +27,7 @@ pytestmark = [
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "csv"
 PASSWORD = "matkhau123"
-COMPOSE = ["docker", "compose", "-f", str(ROOT / "docker/compose.dev.yml")]
+COMPOSE = stack.COMPOSE
 
 
 def _psql(sql: str) -> str:

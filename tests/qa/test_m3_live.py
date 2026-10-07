@@ -22,6 +22,8 @@ import pytest
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
+from tests.qa import stack
+
 BASE = os.environ.get("QA_BASE_URL")
 pytestmark = [
     pytest.mark.qa,
@@ -30,7 +32,7 @@ pytestmark = [
 
 ROOT = Path(__file__).resolve().parents[2]
 PASSWORD = "matkhau123"
-COMPOSE = ["docker", "compose", "-f", str(ROOT / "docker/compose.dev.yml")]
+COMPOSE = stack.COMPOSE
 CYCLE_S = 60
 
 
