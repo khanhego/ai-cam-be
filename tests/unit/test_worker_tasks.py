@@ -115,3 +115,11 @@ def test_j21_j22_j23_schedule() -> None:
     assert by_task["backup.prune"].hour == {20}  # 03:00 VN, sau J-02 (19 UTC)
     for name in ("backup.enqueue_evidence", "backup.upload_evidence", "backup.prune"):
         assert name in app.tasks
+
+
+def test_j22_beat_message_expires_g3_bk8() -> None:
+    """G3-BK-8: tin lịch J-22 hết hạn sau 300 giây (worker-backup -c 1 bận lượt dài → không dồn hàng chờ)."""
+    from aicam.workers.celery_app import app
+
+    (entry,) = [e for e in app.conf.beat_schedule.values() if e["task"] == "backup.upload_evidence"]
+    assert entry["options"]["expires"] == 300

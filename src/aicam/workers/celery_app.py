@@ -62,7 +62,13 @@ app.conf.update(
         # Sao lưu cloud (02a §7): J-20 01, 07, 13, 19 giờ VN = 18, 0, 6, 12 UTC (RPO DB ≤ 6 giờ — NFR-40).
         "j20-backup-db": {"task": "backup.run_db", "schedule": crontab(hour="0,6,12,18", minute=0)},
         "j21-backup-enqueue": {"task": "backup.enqueue_evidence", "schedule": 600.0},
-        "j22-backup-upload": {"task": "backup.upload_evidence", "schedule": 300.0},  # RPO bằng chứng ≤ 1 giờ
+        # RPO bằng chứng ≤ 1 giờ. G3-BK-8: worker-backup -c 1, một lượt J-22 có thể > 5 phút (tệp lớn đang tải) →
+        # tin lịch cũ hết hạn sau 300 giây thay vì dồn hàng chờ rồi chạy nối đuôi.
+        "j22-backup-upload": {
+            "task": "backup.upload_evidence",
+            "schedule": 300.0,
+            "options": {"expires": 300},
+        },
         # 03:00 giờ VN = 20:00 UTC — sau J-02 (02:00) để xóa bản cloud ≤ 24 giờ sau retention (FR-02.14).
         "j23-backup-prune": {"task": "backup.prune", "schedule": crontab(hour=20, minute=0)},
         # Link chia sẻ: hết hạn (≤ 1 giờ sau hạn — BR-34), thu hồi khi kho mất mạng thử lại mỗi phút (EX-S7).
