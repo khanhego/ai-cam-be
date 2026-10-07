@@ -283,7 +283,9 @@ async def options(
     for c in src.candidates:
         s = c.session
         default = False
-        if c.selectable and (src.claim is None or not c.held_back) and picked < MAX_SESSIONS:
+        # BR-39 (DEC-668): phiên bị loại / "Cần soát" không chọn sẵn — cả nguồn PHIÊN (G3V-2, DEC-933: API-160
+        # nguồn phiên sẽ 409 `SESSION_EXCLUDED`).
+        if c.selectable and not c.held_back and picked < MAX_SESSIONS:
             duration = c.duration_s or 0
             if total + duration <= MAX_TOTAL_SECONDS:
                 default, picked, total = True, picked + 1, total + duration

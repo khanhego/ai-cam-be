@@ -434,3 +434,30 @@ async def test_session_source_excluded_or_review_needed_409_g3_fe1(
         assert res.status_code == 202, res.text
     res = await share_api.post("/api/v1/shares", headers=headers, json=_body(w, [w.wrong.id]))
     assert res.status_code == 202  # nguồn hồ sơ: phiên loại đã được thêm tay vào bằng chứng
+
+
+async def test_options_session_source_held_back_not_default_g3v2(
+    share_api: AsyncClient, db: AsyncSession, w: ShareWorld, share_store: object
+) -> None:
+    """G3V-2 (DEC-933): API-164 nguồn PHIÊN cho phiên bị loại (BR-39) / "Cần soát" →
+    `default_selected = false` (API-160 sẽ 409 `SESSION_EXCLUDED`); xác nhận "Là phiên hoàn thật" →
+    chọn sẵn lại."""
+    headers, _ = await login(share_api, db, "ADMIN")
+
+    async def row(sid: Any) -> dict[str, Any]:
+        res = await share_api.get("/api/v1/shares/options", headers=headers, params={"session_id": str(sid)})
+        assert res.status_code == 200, res.text
+        (only,) = res.json()["sessions"]
+        return dict(only)
+
+    wrong, review = await row(w.wrong.id), await row(w.review.id)
+    assert (wrong["excluded"], wrong["evidence_exclusion"], wrong["default_selected"]) == (
+        True, "STATION_CANCEL", False
+    )  # fmt: skip
+    assert (review["review_needed"], review["default_selected"]) == (True, False)
+    assert wrong["selectable"] is True  # Cam 1 READY — chỉ không chọn sẵn
+    for s in (w.wrong, w.review):
+        s.review_confirmed_at = NOW  # CONFIRM_RETURN
+    await db.flush()
+    assert (await row(w.wrong.id))["default_selected"] is True
+    assert (await row(w.review.id))["default_selected"] is True
