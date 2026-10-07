@@ -17,6 +17,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import io
 import os
 import shutil
 import sys
@@ -290,19 +291,51 @@ async def evidence_round(settings: object, label: str, store: object) -> dict[st
 
 
 async def phase_full(src: object, work: Path, store: object, seeded: dict[str, object]) -> int:
-    """T-274 (+ T-284 bổ sung): bằng chứng, 2 khóa, xóa 1 đối tượng, khôi phục bằng chứng, verify."""
-    from sqlalchemy import select
+    """T-274 + T-284: bằng chứng, 2 khóa, lệch đã chấp nhận, xóa 1 đối tượng, sửa 1 byte, quên khóa cũ,
+    `--evidence-only --key-file`, verify `--accept`."""
+    from sqlalchemy import func, select
 
+    from aicam.core.audit import AuditLog
     from aicam.core.db import dispose_engine, init_engine, sessionmaker
+    from aicam.core.deps import Principal
     from aicam.core.redis import close_redis, init_redis
     from aicam.modules.backup import jobs, restore, service
+    from aicam.modules.backup.models import BackupObject
+    from aicam.modules.backup.schemas import ResolveIn
     from aicam.modules.claims.models import Claim, ClaimEvidence
     from aicam.modules.cloud import crypto
     from aicam.modules.media.models import Clip
     from aicam.modules.settings import service as settings_service
 
     ok = True
+    # Một clip bằng chứng bị sửa trên đĩa trước khi sao lưu → lệch mã băm → Admin "Vẫn sao lưu" (EX-K6).
+    init_engine(src.database_url)
+    try:
+        async with sessionmaker()() as db:
+            sess = seeded["evidence_sessions"][1]
+            bad_id, bad_path = (
+                await db.execute(
+                    select(Clip.id, Clip.path).where(Clip.session_id == sess, Clip.camera_role == "CAM2")
+                )
+            ).one()
+            await db.commit()
+    finally:
+        await dispose_engine()
+    (src.video_root / bad_path).write_bytes(b"ban-bi-sua-truoc-sao-luu")
     await evidence_round(src, "Bằng chứng khóa 1", store)
+    init_engine(src.database_url)
+    try:
+        async with sessionmaker()() as db:
+            obj = await db.scalar(select(BackupObject).where(BackupObject.clip_id == bad_id))
+            say(f"Clip {bad_id} sau J-22: {obj.status}")
+            admin = Principal(user_id=uuid.uuid4(), role="ADMIN", station_id=None, ip=None)
+            out = await service.resolve_issue(
+                db, obj.id, ResolveIn(action="UPLOAD_ANYWAY", note="Diễn tập: có còn hơn không"), admin, src
+            )
+            say(f"API-188 UPLOAD_ANYWAY → {out.status}")
+            ok = ok and out.status == "PENDING"
+    finally:
+        await dispose_engine()
     fp1 = crypto.fingerprint(crypto.parse_key(KEY_1))
     # IT đổi khóa: khóa 2 hiện tại, khóa 1 vào BACKUP_OLD_KEYS; Admin xác nhận khóa mới.
     src2 = settings_for("drill_src", work / "src-video", work / "src-imports", work / "tmp", KEY_2, KEY_1)
@@ -351,15 +384,40 @@ async def phase_full(src: object, work: Path, store: object, seeded: dict[str, o
     store.delete(jobs.evidence_key("CLIP", victim[0]))
     say(f"Xóa 1 đối tượng clip trên kho trước khi khôi phục: {victim[0]} ({victim[1]})")
 
-    say("— Máy mới: DB trống + thư mục video trống, khóa 2 + khóa cũ 1 —")
-    dst = settings_for("drill_dst", work / "dst-video", work / "dst-imports", work / "tmp2", KEY_2, KEY_1)
+    # Sửa 1 byte một đối tượng ảnh trên kho (hỏng / bị sửa) — ghi đè thành phiên bản mới.
+    snap_key = next(k.key for k in store.list("backup/evidence/snapshots/"))
+    head = store.head(snap_key)
+    with store.get_stream(snap_key) as body:
+        raw = bytearray(body.read())
+    raw[100] ^= 0x01
+    store.put_stream(snap_key, io.BytesIO(bytes(raw)), metadata=dict(head.metadata if head else {}))
+    say(f"Sửa 1 byte đối tượng {snap_key}")
+
+    say("— Máy mới: DB trống + thư mục video trống, CHỈ có khóa 2 (quên khóa cũ) —")
+    dst = settings_for("drill_dst", work / "dst-video", work / "dst-imports", work / "tmp2", KEY_2)
     await recreate("drill_dst")
     t = time.monotonic()
     rep = await restore.restore(dst, store=store, evidence=True)
     for line in rep.lines:
         say(f"  {line}")
     say(f"backup-restore --evidence mã {rep.exit_code}, tổng {time.monotonic() - t:.1f} giây")
-    ok = ok and rep.exit_code == 0
+    ok = ok and rep.exit_code == restore.EXIT_PARTIAL
+    csvs = sorted((work / "dst-video" / "restore-reports").glob("restore-failures-*.csv"))
+    say(f"CSV lỗi: {csvs[-1].name if csvs else 'KHÔNG CÓ'}")
+    if csvs:
+        for line in csvs[-1].read_text().splitlines()[:4]:
+            say(f"  csv: {line}")
+    parts = list((work / "dst-video").rglob("*.part"))
+    say(f"Tệp dở (.part) trên đĩa: {len(parts)}")
+    ok = ok and bool(csvs) and not parts
+    key_file = work / "khoa-cu.txt"
+    key_file.write_text(KEY_1)
+    say("— Tìm lại khóa cũ: backup-restore --evidence-only --key-file khoa-cu.txt —")
+    rep = await restore.restore(dst, store=store, evidence_only=True, key_files=[key_file])
+    for line in rep.lines:
+        say(f"  {line}")
+    say(f"backup-restore --evidence-only mã {rep.exit_code} (còn đối tượng ảnh bị sửa → vẫn mã 3)")
+    ok = ok and rep.exit_code == restore.EXIT_PARTIAL
     init_engine(dst.database_url)
     try:
         async with sessionmaker()() as db:
@@ -373,10 +431,34 @@ async def phase_full(src: object, work: Path, store: object, seeded: dict[str, o
             pr = await jobs.prune(db, dst, store=store)
             say(f"J-23 trên máy mới khi chờ kiểm: {pr} (không xóa gì)")
             ok = ok and pr == {"skipped": "RESTORE_PENDING"}
+            # Sửa 1 tệp sau khôi phục → verify mã 1 → --accept thiếu lý do bị từ chối → có lý do → đạt.
+            ready = (
+                await db.execute(select(Clip.id, Clip.path).where(Clip.status == "READY").order_by(Clip.path))
+            ).all()
+            await db.commit()
+            changed_id, changed_path = next((i, p) for i, p in ready if i != bad_id)
+            (dst.video_root / changed_path).write_bytes(b"sua-sau-khoi-phuc")
             ver = await restore.verify(dst, db)
             for line in ver.lines:
                 say(f"  verify: {line}")
+            ok = ok and ver.exit_code == restore.EXIT_VERIFY_FAILED
+            ver = await restore.verify(dst, db, accept=[str(changed_id)])
+            say(f"  verify --accept (thiếu --reason) mã {ver.exit_code}: {ver.lines[0]}")
+            ok = ok and ver.exit_code == restore.EXIT_REFUSED
+            ver = await restore.verify(
+                dst, db, accept=[str(changed_id)], reason="Diễn tập: tệp sửa sau khôi phục"
+            )
+            for line in ver.lines:
+                say(f"  verify --accept: {line}")
             ok = ok and ver.exit_code == 0
+            accepted = (
+                await db.execute(
+                    select(func.count())
+                    .select_from(AuditLog)
+                    .where(AuditLog.action == "BACKUP_VERIFY_ACCEPT")
+                )
+            ).scalar()
+            say(f"Audit BACKUP_VERIFY_ACCEPT: {accepted}")
             cfg = await settings_service.get(db)
             say(f"Sau verify: restore_pending={cfg.backup_restore_pending}")
             await db.commit()

@@ -242,13 +242,22 @@ async def backup_restore(args: argparse.Namespace) -> int:
 
 
 async def backup_verify(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
     from aicam.modules.backup import restore
 
     settings = get_settings()
     init_engine(settings.database_url)
     try:
         async with sessionmaker()() as db:
-            report = await restore.verify(settings, db)
+            report = await restore.verify(
+                settings,
+                db,
+                accept=list(args.accept or []),
+                reason=args.reason,
+                from_cloud=args.from_cloud,
+                key_files=[Path(p) for p in args.key_file],
+            )
     finally:
         await dispose_engine()
     print("\n".join(report.lines))

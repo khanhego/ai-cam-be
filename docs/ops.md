@@ -192,7 +192,19 @@ Sau `backup-restore` sao lưu tự động **tắt** (D23 "Chờ kiểm khôi ph
 bản cloud nào) tới khi `backup-verify` đạt; Admin bật lại ở D23.
 
 `backup-verify` in `khớp N / lệch đã chấp nhận N / lệch N / thiếu đã ghi nhận N / thiếu N`. Đạt = lệch 0 và thiếu
-0. Không đạt → mã 1, xem danh sách id.
+0. Không đạt → mã 1, xem danh sách id (≤ 50 trên màn hình, đủ trong `VIDEO_ROOT/restore-reports/verify-….csv`).
+
+**Lối ra khi khôi phục / kiểm không trọn (DEC-518 — luôn có đường ra có dấu vết)**
+
+| Tình huống | Làm gì |
+|---|---|
+| `backup-restore` mã 3: có đối tượng **giải mã lỗi** (`DECRYPT_FAILED` — hỏng / bị sửa) hoặc **thiếu khóa** (`UNKNOWN_KEY`) | Lệnh đã làm hết phần còn lại; tệp lỗi không được ghi (không tệp dở), clip / ảnh đó thành "Thiếu tệp". Danh sách: `VIDEO_ROOT/restore-reports/restore-failures-….csv` (`kind, id, object_key, reason, key_fp`). Thiếu khóa → tìm khóa cũ theo `key_fp`, chạy `aicam backup-restore --evidence-only --key-file khoa-cu.txt` → tệp về lại bình thường. Đối tượng hỏng: thử khôi phục phiên bản cũ ở bucket (tài khoản quản trị nhà cung cấp, ≤ 7 ngày) rồi `--evidence-only` lại; không được thì giữ "Thiếu tệp". |
+| `backup-verify` báo **lệch** (tệp trên đĩa khác mã băm lúc tạo) | Xem từng id (D4 / D17). Nếu chấp nhận bản hiện có: `aicam backup-verify --accept <id> [<id>…] --reason "lý do 5–500 ký tự"` → ghi "lệch đã chấp nhận" + audit `BACKUP_VERIFY_ACCEPT`; bản gốc trên cloud **không** bị ghi đè. |
+| `backup-verify` báo **thiếu** (`READY` mà không có tệp) | Chép lại tệp nếu còn ở đâu đó rồi chạy lại verify; không còn → `--accept <id> --reason "…"` → "Thiếu tệp" (không phải "Đã xóa"). |
+| Tệp đã "Vẫn sao lưu bản hiện có" ở D23 trước sự cố | Tự tính "lệch đã chấp nhận" (metadata `integrity=MISMATCH_ACCEPTED`) — không làm trượt. |
+| Muốn kiểm sâu bản cloud (diễn tập) | `aicam backup-verify --from-cloud [--key-file …]` — giải mã từng bản cloud, so SHA-256 (chỉ chẩn đoán, không gỡ cờ). |
+
+Không có cờ bỏ kiểm toàn bộ: mọi mục lệch / thiếu phải được xem và chấp nhận từng id, có lý do.
 
 **Diễn tập** mỗi quý (AC-50): làm đủ các bước trên ở máy / VM khác, ghi thời gian từng bước, số khớp / thiếu.
 Biên bản diễn tập dev: `docs/ai/items/03-expansion-tiktok/evidence/m15-restore-drill.txt` (repo tài liệu).

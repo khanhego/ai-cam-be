@@ -554,6 +554,14 @@ async def _upload_one(
         await db.commit()
         log.warning("backup_hash_mismatch", object_id=str(obj.id), sha_db=expected, sha_file=actual)
         return "HASH_MISMATCH"
+    if accepted and expected and actual != expected and obj.cloud_present:
+        # Bản cloud hiện có là bản tải lên trước đây (đã qua kiểm mã băm = bản gốc): KHÔNG ghi đè bản gốc
+        # bằng bản
+        # lệch đã chấp nhận (DEC-663) — giữ bản cloud, trạng thái về `UPLOADED`.
+        obj.status, obj.updated_at, obj.last_error = "UPLOADED", now, None
+        await db.commit()
+        log.warning("backup_keep_cloud_original", object_id=str(obj.id), sha_db=expected, sha_file=actual)
+        return "KEPT_CLOUD_ORIGINAL"
     meta = {"sha256": actual, "kind": obj.kind, "id": str(source.id), "relpath": source.path}
     if accepted and expected and actual != expected:
         meta.update({"sha256-expected": expected, "integrity": "MISMATCH_ACCEPTED"})

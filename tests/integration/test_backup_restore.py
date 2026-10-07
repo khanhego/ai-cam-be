@@ -5,6 +5,7 @@ phải DB dev `aicam`). pg_dump / pg_restore 16 chạy qua container tạm nếu
 """
 
 import hashlib
+import io
 import os
 import uuid
 from collections.abc import AsyncIterator
@@ -23,7 +24,7 @@ from aicam.core.settings import Settings
 from aicam.modules.backup import jobs, restore
 from aicam.modules.backup.models import BackupObject
 from aicam.modules.cloud.store import MemoryStore
-from aicam.modules.media.models import Clip
+from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.orders.models import Package
 from aicam.modules.settings import service as settings_service
 
@@ -293,3 +294,99 @@ async def test_restore_skips_retention_deleted(
     assert stats.skipped_deleted == 1
     assert cam1.path is not None
     assert not (tmp_path / "may-moi" / cam1.path).exists()
+
+
+# ---------------------------------------------------------------- T-284: lối ra (DEC-518)
+
+
+async def test_decrypt_failed_csv_exit3_no_partial_file(
+    db: AsyncSession, redis_client: object, world: World, memory_store: MemoryStore, tmp_path: Path
+) -> None:
+    from aicam.modules.cloud import crypto as _crypto
+
+    await _backed_up(db, world, memory_store)
+    cam1 = world.clips["CAM1"]
+    key = jobs.evidence_key("CLIP", cam1.id)
+    data = bytearray(memory_store.raw(key))
+    data[200] ^= 0x01  # sửa 1 byte đối tượng cloud
+    memory_store.tamper(key, bytes(data))
+    settings = make_backup_settings(video_root=tmp_path / "may-moi")
+    report = restore.Report()
+    stats = await restore.restore_evidence(
+        settings, db, report, keys=_crypto.keyring(KEY_A), store=memory_store
+    )
+    restore._report_failures(settings, report, stats)
+    assert report.exit_code == restore.EXIT_PARTIAL
+    assert stats.downloaded == 2  # chạy hết phần còn lại
+    assert [f[3] for f in stats.failures] == ["DECRYPT_FAILED"]
+    (csv_path,) = (tmp_path / "may-moi" / "restore-reports").glob("restore-failures-*.csv")
+    lines = csv_path.read_text().splitlines()
+    assert lines[0] == "kind,id,object_key,reason,key_fp"
+    assert lines[1].startswith(f"CLIP,{cam1.id},{key},DECRYPT_FAILED,")
+    assert cam1.path is not None
+    assert not (tmp_path / "may-moi" / cam1.path).exists()
+    assert not list((tmp_path / "may-moi").rglob("*.part"))
+    status = await db.scalar(select(Clip.status).where(Clip.id == cam1.id))
+    assert status == "MISSING"
+
+
+async def test_verify_accept_requires_reason_and_clears_pending(
+    db: AsyncSession, redis_client: object, world: World, memory_store: MemoryStore
+) -> None:
+    from aicam.modules.cloud import crypto as _crypto
+
+    await _backed_up(db, world, memory_store)
+    cfg = await settings_service.get(db)
+    cfg.backup_restore_pending = True
+    loose = (await db.scalars(select(Clip).where(Clip.session_id == world.loose.id))).all()
+    for clip in loose:  # clip không thuộc BR-33: đã ghi nhận thiếu
+        clip.status = "MISSING"
+    await db.flush()
+    cam1, cam2 = world.clips["CAM1"], world.clips["CAM2"]
+    assert cam1.path is not None
+    assert cam2.path is not None
+    (world.settings.video_root / cam1.path).write_bytes(b"sua-sau-khoi-phuc")  # lệch
+    (world.settings.video_root / cam2.path).unlink()  # thiếu
+    loose_snap = await db.scalar(select(Snapshot).where(Snapshot.session_id == world.loose.id))
+    assert loose_snap is not None
+    loose_snap.status = "MISSING"
+    await db.flush()
+
+    rep = await restore.verify(world.settings, db)
+    assert rep.exit_code == restore.EXIT_VERIFY_FAILED
+    assert rep.lines[0] == "khớp 1 / lệch đã chấp nhận 0 / lệch 1 / thiếu đã ghi nhận 3 / thiếu 1"
+    assert list((world.settings.video_root / "restore-reports").glob("verify-*.csv"))
+
+    rep = await restore.verify(world.settings, db, accept=[str(cam1.id)], reason=None)
+    assert rep.exit_code == restore.EXIT_REFUSED
+    rep = await restore.verify(
+        world.settings, db, accept=[str(cam1.id), str(cam2.id), str(uuid.uuid4())],
+        reason="Tệp sửa khi chép lại sau sự cố ổ",
+    )  # fmt: skip
+    assert rep.exit_code == restore.EXIT_OK, rep.lines
+    assert "khớp 1 / lệch đã chấp nhận 1 / lệch 0 / thiếu đã ghi nhận 4 / thiếu 0" in rep.lines
+    assert any("bỏ qua" in line for line in rep.lines)
+    assert (await settings_service.get(db)).backup_restore_pending is False
+    audits = (await db.scalars(select(AuditLog).where(AuditLog.action == "BACKUP_VERIFY_ACCEPT"))).all()
+    assert len(audits) == 2
+    assert {a.data["category"] for a in audits if a.data} == {"MISMATCH", "MISSING"}
+    assert all(a.user_id is None and a.data and a.data["reason"] for a in audits)
+    row = await db.scalar(select(BackupObject).where(BackupObject.clip_id == cam1.id))
+    assert row is not None
+    assert row.resolution_action == "ACCEPT_RESTORED"
+    assert row.hash_override is True
+    assert (await db.scalar(select(Clip.status).where(Clip.id == cam2.id))) == "MISSING"
+
+    # Bản lệch đã chấp nhận KHÔNG ghi đè bản gốc trên cloud (DEC-663), kể cả khi xếp tải lại.
+    original = memory_store.raw(row.object_key)
+    row.status = "PENDING"
+    await db.flush()
+    out = await jobs.upload_evidence(db, world.settings, store=memory_store)
+    assert out.get("KEPT_CLOUD_ORIGINAL") == 1
+    assert memory_store.raw(row.object_key) == original
+    plain = io.BytesIO()
+    _crypto.decrypt_stream(io.BytesIO(original), plain, _crypto.keyring(KEY_A))
+    assert plain.getvalue() == world.files[cam1.path]
+
+    cloud = await restore.verify(world.settings, db, from_cloud=True, store=memory_store)
+    assert cloud.lines[0].startswith("[bản cloud] khớp 3 /")
