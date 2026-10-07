@@ -74,13 +74,16 @@ def adapters_for(
     scan: bool = False,
 ) -> dict[str, PlatformAdapter]:
     """Adapter của mọi sàn **bật + đã cấu hình** (registry); `override` (dependency API / test) thay sàn của
-    nó. `scan` (tra khi quét — API-11 / 104): giữ hành vi Phase 1–2 — adapter Shopee **mock** luôn tra kể cả
-    khi `SHOPEE_ENABLED=false` (dev / test; production cấm mock); TikTok chỉ khi bật (AC-44) — DEC-561."""
+    nó. `scan` (tra khi quét — API-11 / 104): giữ hành vi Phase 1–2 — adapter Shopee của dependency (mock
+    luôn tra kể cả `SHOPEE_ENABLED=false` — dev / test, production cấm mock); TikTok chỉ khi bật (AC-44) —
+    DEC-561."""
 
     def wanted(platform: str, adapter: PlatformAdapter) -> bool:
         if registry.is_configured(platform, settings):
             return True
-        return scan and platform == registry.SHOPEE and _tokenless(adapter)
+        # Phase 1–2: tra khi quét dùng adapter Shopee của dependency (`get_adapter`: mock luôn có, thật
+        # chỉ khi đã cấu hình — chưa thì `UnconfiguredAdapter`).
+        return scan and platform == registry.SHOPEE and not isinstance(adapter, platforms.UnconfiguredAdapter)
 
     candidates = {p: registry.adapter_for(p, settings) for p in registry.PLATFORM_CODES}
     if override is not None:
