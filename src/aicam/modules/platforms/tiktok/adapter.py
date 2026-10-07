@@ -178,10 +178,15 @@ class TikTokAdapter:
         *,
         max_pages: int | None = None,
     ) -> list[dict[str, Any]]:
-        """`POST …/search?page_size&page_token` → mọi phần tử `data[key]` (dừng khi hết `next_page_token`)."""
+        """`POST …/search?page_size&page_token` → mọi phần tử `data[key]` (dừng khi hết `next_page_token`).
+
+        `max_pages` = người gọi chủ ý chỉ lấy vài trang (tra khi quét). Không truyền mà chạm
+        `SEARCH_MAX_PAGES` vẫn còn trang → `PlatformError` (G3-MS-4): trả nửa danh sách thì J-04 / J-13 tiến
+        cursor qua đơn chưa đọc (mất đơn âm thầm); lỗi → lượt FAILED, cursor không tiến (D7)."""
         out: list[dict[str, Any]] = []
         token = ""
-        for page in range(1, (max_pages or SEARCH_MAX_PAGES) + 1):
+        limit = max_pages or SEARCH_MAX_PAGES
+        for _page in range(limit):
             params: dict[str, Any] = {"page_size": PAGE_SIZE}
             if token:
                 params["page_token"] = token
@@ -189,9 +194,13 @@ class TikTokAdapter:
             out.extend(x for x in data.get(key) or [] if isinstance(x, dict))
             token = str(data.get("next_page_token") or "")
             if not token:
-                break
-            if page == (max_pages or SEARCH_MAX_PAGES) and max_pages is None:
-                log.error("tiktok_search_max_pages", path=path, pages=page)
+                return out
+        if max_pages is None:
+            log.error("tiktok_search_max_pages", path=path, pages=limit)
+            raise PlatformError(
+                f"TikTok {path}: quá {limit} trang ({limit * PAGE_SIZE} dòng) trong một cửa sổ — dừng, không "
+                "tiến cursor (lượt sau thử lại)"
+            )
         return out
 
     async def _details(self, creds: ShopCredentials, ids: Sequence[str]) -> list[dict[str, Any]]:

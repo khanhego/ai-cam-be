@@ -239,3 +239,25 @@ async def test_find_by_tracking_lookback_one_page_then_cache(adapter: TikTokAdap
     assert await adapter.find_by_tracking(CREDS, "TTF1") is not None
     assert search.call_count == 1  # TTF1 đã nhớ từ lần dò trước
     assert await adapter.find_by_tracking(CREDS, "KHONGCO") is None
+
+
+@respx.mock
+async def test_search_max_pages_raises_instead_of_dropping_orders(
+    adapter: TikTokAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-MS-4: chạm `SEARCH_MAX_PAGES` mà sàn vẫn trả `next_page_token` → `PlatformError` (J-04 FAILED,
+    cursor không tiến) — không trả nửa danh sách để cursor tiến qua đơn chưa đọc."""
+    from aicam.modules.platforms import base
+    from aicam.modules.platforms.tiktok import adapter as tiktok_adapter
+
+    monkeypatch.setattr(tiktok_adapter, "SEARCH_MAX_PAGES", 3)
+    search = respx.post(f"{API}/order/202309/orders/search").mock(
+        return_value=ok({"orders": [{"id": "5761090"}], "next_page_token": "more"})
+    )
+    respx.post(f"{API}/return_refund/202309/cancellations/search").mock(
+        return_value=ok({"cancellations": []})
+    )
+    _details_route([detail("5761090")])
+    with pytest.raises(base.PlatformError, match="trang"):
+        _ = [o async for o in adapter.list_updated_orders(CREDS, NOW - timedelta(hours=1))]
+    assert search.call_count == 3
