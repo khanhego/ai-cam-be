@@ -1,4 +1,5 @@
-"""T-292 (DEC-531, `test_evidence_prior_br39` (16), AC-56): API-189 `MARK_WRONG_SCAN` trả `affected_shares[]` =
+"""T-292 (DEC-531, `test_evidence_prior_br39` (16), AC-56): API-189 `MARK_WRONG_SCAN` trả `affected_shares[]`
+=
 link `CREATING` / `ACTIVE` (còn hạn) chứa phiên — mọi nguồn — + audit `active_shares[]`; **không** tự thu hồi.
 API-164 `review_pending_count` = số phiên "Cần soát" của hồ sơ (nguồn `SESSION` → 0)."""
 
