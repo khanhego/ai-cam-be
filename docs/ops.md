@@ -247,6 +247,21 @@ phiên đóng gói / dòng lịch sử, 20.000 hồ sơ hàng hoàn, 5.000 hồ 
 Log thêm: `backfill_review_needed [...]` (phiên Supervisor hủy trước Phase 3 đã vào hồ sơ khiếu nại mở với nhãn
 "Cần soát" — gửi CSKH soát) và `0006: N kiện có thể bị hủy oan …` (chạy `aicam fix-cancel-requests`, T-285).
 
+**Bước 1b — trả lại kiện hủy oan (sau migrate, trước khi bật lại service):** Phase 2 coi "người mua đang yêu cầu
+hủy" (Shopee `IN_CANCEL`) là đơn đã hủy → kiện `NEW` thành `CANCELLED`, `PACKED` thành `CANCELLED_AFTER_PACK` dù sàn
+có thể từ chối yêu cầu. Phase 3 chỉ hủy kiện khi sàn hủy thật. Chạy thử trước (chỉ in danh sách, không ghi):
+
+```bash
+docker compose run --rm api aicam fix-cancel-requests
+```
+
+Mỗi dòng: `SẼ TRẢ LẠI <mã kiện> · đơn <mã> (<shop>, nhóm <nhóm>) · CANCELLED → NEW` hoặc `BỎ QUA … — <lý do>`
+("Hủy do người chỉnh tay — kiểm tay", "Cảnh báo BR-11 đã được xử lý tay — kiểm tay": xem từng kiện trên D4 /
+D15). Đúng thì ghi: `docker compose run --rm api aicam fix-cancel-requests --apply` (mỗi kiện một transaction,
+audit `PACKAGE_CANCEL_REVERT`, chạy lại không đổi gì; mã thoát 1 khi có kiện lỗi — xem dòng `LỖI`). Quên chạy:
+đồng bộ (J-04 / J-06) tự trả lại kiện của đơn khi sàn từ chối yêu cầu hủy; kiện của đơn vẫn đang yêu cầu hủy được
+trả lại nhưng quét vẫn bị chặn tới khi sàn quyết định (BR-01).
+
 **Lùi về Phase 2** (`alembic downgrade 0005` bằng image Phase 3, trước khi về image cũ) chép dữ liệu Phase 3 sang
 schema `phase3_archive` rồi mới gỡ; nâng cấp lại khôi phục y hệt. Từ chối (không đổi gì) khi: còn mã đơn / mã yêu
 cầu trả trùng giữa shop (0007 — sửa tiến); còn link chia sẻ đang tạo / đang hoạt động (thu hồi trước, hoặc

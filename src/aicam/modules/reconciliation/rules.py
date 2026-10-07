@@ -90,7 +90,8 @@ async def shipped_not_packed(session: AsyncSession, p: Params) -> list[Hit]:
 
 
 async def cancelled_after_pack(session: AsyncSession, p: Params) -> list[Hit]:
-    """BR-11 (MEDIUM): `CANCELLED_AFTER_PACK`, hoặc `PACKED` mà đơn đã hủy trên sàn. Key = trạng thái sàn."""
+    """BR-11 (MEDIUM): `CANCELLED_AFTER_PACK`, hoặc `PACKED` mà đơn **đã hủy** trên sàn (nhóm `CANCELLED` —
+    đang yêu cầu hủy không tính, sàn có thể từ chối: BR-21 v0.4, DEC-519). Key = trạng thái sàn."""
     rows = (
         await session.execute(
             select(Package.id, Package.warehouse_status, Order.platform_status, Package.status_changed_at)
@@ -100,7 +101,7 @@ async def cancelled_after_pack(session: AsyncSession, p: Params) -> list[Hit]:
                     Package.warehouse_status == "CANCELLED_AFTER_PACK",
                     and_(
                         Package.warehouse_status == "PACKED",
-                        Order.platform_status_group.in_(CANCEL_GROUPS),
+                        Order.platform_status_group == "CANCELLED",
                     ),
                 )
             )
@@ -205,7 +206,8 @@ async def packed_not_handed_over(session: AsyncSession, p: Params) -> list[Hit]:
                 Package.warehouse_status == "PACKED",
                 Package.status_changed_at < p.now - timedelta(hours=p.handover_warn_hours),
                 Package.created_at >= p.recon_start_at,
-                # G3 R8 / BB-11: sàn chưa lấy hàng (đã giao đi → J-06 chuyển; đã hủy → BR-11 lo).
+                # G3 R8 / BB-11: sàn chưa lấy hàng (đã giao đi → J-06 chuyển; đã hủy → BR-11 lo; đang yêu cầu
+                # hủy → để riêng chờ sàn quyết, không cảnh báo — như Phase 2 với `IN_CANCEL`, DEC-519).
                 or_(
                     Order.platform_status_group.is_(None),  # kiện chưa gắn đơn (outer join)
                     Order.platform_status_group.notin_((*SHIPPED_ORDER_GROUPS, *CANCEL_GROUPS)),

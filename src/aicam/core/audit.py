@@ -54,6 +54,7 @@ ACTIONS = frozenset(
         "SESSION_WRONG_SCAN_MARK",  # API-189 (v0.3)
         "SESSION_WRONG_SCAN_UNMARK",
         "SESSION_RETURN_CONFIRM",
+        "PACKAGE_CANCEL_REVERT",  # BR-21 v0.4 (T-285)
     }
 )
 

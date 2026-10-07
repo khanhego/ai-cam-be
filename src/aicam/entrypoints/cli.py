@@ -4,6 +4,7 @@
   hoặc biến `AICAM_ADMIN_PASSWORD`).
 - `aicam seed-demo`: dữ liệu demo / test theo 04-test-cases §1 (tiền tố TST, mật khẩu `matkhau123`)
   + hàng hoàn mẫu (`seed_returns`, T-116). Chặn trên production.
+- `aicam fix-cancel-requests [--apply]`: trả lại kiện hủy oan do Phase 2 coi yêu cầu hủy là hủy (T-285).
 """
 
 import argparse
@@ -188,6 +189,19 @@ async def seed_demo() -> list[str]:
     return lines
 
 
+async def fix_cancel_requests(apply: bool) -> int:
+    """BR-21 v0.4 (DEC-519, T-285): trả lại kiện bị hủy oan do Phase 2 coi "yêu cầu hủy" là hủy."""
+    from aicam.modules.orders.cancel_revert import fix_cancel_requests as run
+
+    init_engine(get_settings().database_url)
+    try:
+        report = await run(sessionmaker(), apply=apply)
+    finally:
+        await dispose_engine()
+    print("\n".join(report.lines))
+    return 1 if report.failed else 0
+
+
 def _read_password() -> str:
     password = os.environ.get("AICAM_ADMIN_PASSWORD") or getpass.getpass("Mật khẩu: ")
     if len(password) < MIN_PASSWORD:
@@ -207,7 +221,15 @@ def main(argv: list[str] | None = None) -> int:
     seed = sub.add_parser("seed-demo", help="Tạo dữ liệu demo / test (TST…) — chỉ dev / test")
     seed.add_argument("--confirm-staging", action="store_true", help="cho phép chạy khi APP_ENV=staging")
 
+    fix = sub.add_parser(
+        "fix-cancel-requests",
+        help="Trả lại kiện bị hủy oan do yêu cầu hủy (BR-21 v0.4) — mặc định chạy thử, --apply để ghi",
+    )
+    fix.add_argument("--apply", action="store_true", help="ghi thay đổi (không có = chỉ in danh sách)")
+
     args = parser.parse_args(argv)
+    if args.command == "fix-cancel-requests":
+        return asyncio.run(fix_cancel_requests(args.apply))
     if args.command == "create-admin":
         print(asyncio.run(create_admin(args.username, args.display_name, _read_password())))
         return 0

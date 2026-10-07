@@ -62,6 +62,12 @@ ALLOWED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+# BR-21 v0.4 (DEC-519): chuyển ngược của kiện hủy oan — **chỉ** qua `cancel_revert.revert_cancel` (cờ
+# `revert_cancel=True` của `transition`), không thuộc `ALLOWED_TRANSITIONS` chung.
+REVERT_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
+    {("CANCELLED", "NEW"), ("CANCELLED_AFTER_PACK", "PACKED")}
+)
+
 # Điều chỉnh tay API-122 (01 §7.1 "Điều chỉnh tay", FR-06.05): từ → các đích được phép.
 MANUAL_TRANSITIONS: dict[str, tuple[str, ...]] = {
     "NEW": ("HANDED_OVER",),
@@ -88,11 +94,15 @@ async def transition(
     source: str,
     actor_user_id: uuid.UUID | None = None,
     actor_label: str | None = None,
+    revert_cancel: bool = False,
 ) -> bool:
-    """Điểm duy nhất đổi `warehouse_status` (02a §5). Trả False nếu đã ở trạng thái đích."""
+    """Điểm duy nhất đổi `warehouse_status` (02a §5). Trả False nếu đã ở trạng thái đích.
+
+    `revert_cancel` chỉ `cancel_revert.revert_cancel` truyền (guard 2 chuyển ngược — DEC-519)."""
     if package.warehouse_status == to_status:
         return False
-    if (package.warehouse_status, to_status) not in ALLOWED_TRANSITIONS:
+    pair = (package.warehouse_status, to_status)
+    if pair not in ALLOWED_TRANSITIONS and not (revert_cancel and pair in REVERT_TRANSITIONS):
         raise InvalidTransition(package.warehouse_status, to_status)
     now = clock.now()
     session.add(
@@ -198,11 +208,16 @@ async def apply_status_effects(
     - `CANCEL_REQUESTED` (người mua xin hủy, Shopee `IN_CANCEL`) → **không** hủy kiện; kiện `PACKING` → cờ
       phiên `ORDER_CANCEL_REQUESTED` (task riêng, DEC-266); kiện NEW / PACKED giữ nguyên (quét mới bị BR-01
       chặn).
-    - Rời `CANCEL_REQUESTED` sang nhóm khác → trả lại kiện hủy oan (lưới an toàn — T-285).
+    - Rời `CANCEL_REQUESTED` sang nhóm ∉ {`CANCELLED`, `UNKNOWN`} → trả lại kiện hủy oan của đơn (lưới an toàn
+      khi ops chưa chạy `aicam fix-cancel-requests` — T-285, DEC-519).
 
     Kiện gộp (đơn chính khác — `package_order`) không đổi theo đơn phụ. `only_package_ids` (J-06): chỉ xét
     các kiện này. Trả True nếu có kiện đổi trạng thái."""
     group = order.platform_status_group
+    if old_group == "CANCEL_REQUESTED" and group not in ("CANCELLED", "UNKNOWN", "CANCEL_REQUESTED"):
+        from aicam.modules.orders import cancel_revert  # cancel_revert → service: import muộn
+
+        return await cancel_revert.revert_for_order(session, order)
     if group not in ("CANCELLED", "CANCEL_REQUESTED"):
         return False
     if only_package_ids is not None:
