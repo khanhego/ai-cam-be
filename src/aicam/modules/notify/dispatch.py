@@ -346,6 +346,9 @@ async def send_one(db: AsyncSession, settings: Settings, message_id: Any) -> str
         error = SendError("Quá thời gian gửi.", provider_code="TIMEOUT", timeout=True)
     except SendError as exc:
         error = exc
+    except Exception as exc:  # G3-NT-3: lỗi lạ của nhà cung cấp → lỗi gửi có mã (không 500 / không kẹt tin)
+        log.exception("notify_provider_crashed", channel_type=ch.type)
+        error = SendError("Lỗi không rõ khi gửi.", provider_code=type(exc).__name__)
     now = clock.now()
     msg.attempts += 1
     if error is None:

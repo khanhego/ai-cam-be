@@ -705,3 +705,27 @@ async def test_purge_30_days(db: AsyncSession, settings: Settings) -> None:
     assert await dispatch.purge(db) == {"notify_messages": 1, "notify_events": 1}
     left = await db.scalar(select(func.count()).select_from(NotifyEvent))
     assert left == 2
+
+
+async def test_send_one_unexpected_provider_error_retries(
+    db: AsyncSession, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-NT-3: lỗi lạ của nhà cung cấp trong J-27 → tin `RETRYING` (không văng khỏi lượt, không kẹt)."""
+    from aicam.modules.notify import providers
+
+    class Crashing:
+        type = "TELEGRAM"
+
+        async def send(self, target: str, text: str) -> None:
+            raise KeyError("x")
+
+    kho = await make_channel(db, "Kho", events=["N02"])
+    await recon_high(db, await package(db, "SPXTSTNT30001"))
+    await run_scan(db, settings)
+    monkeypatch.setattr(providers, "get_provider", lambda *_: Crashing())
+    await tick_until(db, settings, clock.now() + timedelta(minutes=3), scan=False)
+    [msg] = await messages(db, kho)
+    assert msg.status == "RETRYING"
+    await db.refresh(kho)
+    assert kho.last_error is not None
+    assert kho.last_error["provider_code"] == "KeyError"

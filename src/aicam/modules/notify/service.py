@@ -352,6 +352,9 @@ async def test_send(db: AsyncSession, channel_id: uuid.UUID, p: Principal, setti
         )
     except SendError as exc:
         error = exc
+    except Exception as exc:  # G3-NT-3: lỗi lạ của nhà cung cấp → lỗi gửi có mã (không 500 / không kẹt tin)
+        log.exception("notify_provider_crashed", channel_type=channel_type)
+        error = SendError("Lỗi không rõ khi gửi.", provider_code=type(exc).__name__)
     now = clock.now()
     ch = await _get_channel(db, channel_id, lock=True)  # kênh có thể vừa bị xóa → 404
     code = None if error is None else ("NOTIFY_TIMEOUT" if error.timeout else "NOTIFY_SEND_FAILED")

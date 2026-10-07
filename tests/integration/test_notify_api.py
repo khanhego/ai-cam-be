@@ -306,3 +306,28 @@ async def test_messages_log_and_delete(notify_api: AsyncClient, db: AsyncSession
     assert entry.data["dropped_messages"] == 2  # type: ignore[index]  # QUEUED + HELD
     res = await notify_api.delete(f"{URL}/{kho.id}", headers=h)
     assert res.status_code == 404
+
+
+class _Crashing:
+    type = "TELEGRAM"
+
+    async def send(self, target: str, text: str) -> None:
+        raise ValueError("lỗi lạ trong nhà cung cấp")
+
+
+async def test_test_send_unexpected_provider_error_is_502(
+    notify_api: AsyncClient, db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-NT-3: nhà cung cấp ném lỗi lạ (không phải `SendError`) → API-174 502 `NOTIFY_SEND_FAILED`
+    `provider_code` = tên lớp lỗi (không 500), kênh `ERROR`, có audit."""
+    from aicam.modules.notify import providers
+
+    monkeypatch.setattr(providers, "get_provider", lambda *_: _Crashing())
+    h, _ = await login(notify_api, db)
+    ch = await make_channel(db, "Kho", events=["N02"])
+    res = await notify_api.post(f"{URL}/{ch.id}/test", headers=h)
+    assert res.status_code == 502, res.text
+    assert res.json()["error"]["details"]["provider_code"] == "ValueError"
+    await db.refresh(ch)
+    assert ch.last_status == "ERROR"
+    assert [a.data["ok"] for a in await _audit(db, "NOTIFY_TEST")] == [False]  # type: ignore[index]
