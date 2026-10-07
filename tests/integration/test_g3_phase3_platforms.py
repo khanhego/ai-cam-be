@@ -189,3 +189,47 @@ async def test_ms2_j06_applies_cancelled_from_cancel_requested(
     await sync.sync_shipping_status(db, tiktok, test_settings, shop.id)
     await db.refresh(package)
     assert package.warehouse_status == "CANCELLED_AFTER_PACK"
+
+
+# ---------------------------------------------------------------- G3-MS-3
+
+
+async def test_ms3_j06_shop_crash_does_not_break_next_shop(
+    db: AsyncSession, tiktok: MockTikTokAdapter, test_settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nhóm shop thứ nhất lỗi bất ngờ (rollback hết hạn mọi ORM) → nhóm thứ hai vẫn chạy (không đọc ORM hết
+    hạn — MissingGreenlet)."""
+    shops = [await _tt_shop(db, test_settings, code) for code in ("TTMOCKA", "TTMOCKB")]
+    packages = []
+    for i, shop in enumerate(shops):
+        sn, code = f"5761TT000000091{i}", f"TTTST000000091{i}"
+        tiktok.data.put_order(shop.platform_shop_id, _tt_detail(sn, code))
+        await sync.sync_orders(db, tiktok, test_settings, shop.id)
+        package = await orders.find_package(db, code)
+        assert package is not None
+        await orders.transition(db, package, "PACKING", source="WAREHOUSE")
+        await orders.transition(db, package, "PACKED", source="WAREHOUSE")
+        tiktok.data.set_status(shop.platform_shop_id, sn, "IN_TRANSIT")
+        packages.append(package)
+    await db.flush()
+    original = sync._shipping_for_target
+    calls: list[object] = []
+
+    async def crash_first(*args: object, **kwargs: object) -> None:
+        calls.append(args[3])
+        if len(calls) == 1:
+            session = args[0]
+            assert isinstance(session, AsyncSession)
+            await session.execute(select(Shop.id).limit(1))  # đang trong transaction → rollback hết hạn ORM
+            raise RuntimeError("boom")
+        await original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(sync, "_shipping_for_target", crash_first)
+    out = await sync.sync_shipping_status(db, tiktok, test_settings)
+    assert len(calls) == 2
+    assert out["changed"] == 1
+    statuses = []
+    for package in packages:
+        await db.refresh(package)
+        statuses.append(package.warehouse_status)
+    assert sorted(statuses) == ["HANDED_OVER", "PACKED"]

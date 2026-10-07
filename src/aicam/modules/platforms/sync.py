@@ -565,9 +565,11 @@ async def sync_shipping_status(
     owner = [Order.shop_id.in_([k for k in by_shop if k is not None])]
     if default is not None:
         owner.append(Order.shop_id.is_(None))
+    # G3-MS-3: rút cột thành tuple trước vòng — nhóm shop lỗi → rollback hết hạn mọi ORM của session, nhóm
+    # sau không được đọc thuộc tính ORM (MissingGreenlet).
     rows = (
         await session.execute(
-            select(Package, Order)
+            select(Package.id, Order.id, Package.tracking_number, Order.platform_order_sn, Order.shop_id)
             .join(Order, Order.id == Package.order_id)
             .where(
                 or_(*owner),
@@ -584,9 +586,9 @@ async def sync_shipping_status(
         )
     ).all()
     await commit(session)
-    groups: dict[Any, list[Any]] = {}
-    for row in rows:
-        groups.setdefault(row[1].shop_id, []).append(row)
+    groups: dict[Any, list[_ShipRow]] = {}
+    for package_id, order_id, tracking, order_sn, owner_id in rows:
+        groups.setdefault(owner_id, []).append(_ShipRow(package_id, order_id, tracking, order_sn))
     for shop_key, shop_rows in groups.items():
         target = by_shop.get(shop_key) if shop_key is not None else default
         if target is None:
@@ -599,12 +601,20 @@ async def sync_shipping_status(
     return out
 
 
+@dataclass(frozen=True)
+class _ShipRow:
+    package_id: Any
+    order_id: Any
+    tracking_number: str
+    order_sn: str
+
+
 async def _shipping_for_target(
     session: AsyncSession,
     adapter: PlatformAdapter,
     settings: Settings,
     target: Any,
-    rows: list[Any],
+    rows: list[_ShipRow],
     out: dict[str, int],
 ) -> None:
     for i in range(0, len(rows), SHIPPING_BATCH):
@@ -614,8 +624,8 @@ async def _shipping_for_target(
         if target.shop_id is not None and await _auth_status(session, target.shop_id) != "CONNECTED":
             break  # shop vừa bị ngắt giữa lượt (02a §6)
         chunk = rows[i : i + SHIPPING_BATCH]
-        by_code = {p.tracking_number.upper(): (p, o) for p, o in chunk}
-        refs = [ShipmentRef(o.platform_order_sn, p.tracking_number) for p, o in chunk]
+        by_code = {r.tracking_number.upper(): r for r in chunk}
+        refs = [ShipmentRef(r.order_sn, r.tracking_number) for r in chunk]
         try:
             statuses = await adapter.get_shipping_statuses(target.creds, refs)
         except PlatformError as exc:
@@ -623,11 +633,11 @@ async def _shipping_for_target(
             break
         changed = 0
         for st in statuses:
-            pair = by_code.get(st.tracking_number.upper())
-            if pair is None:
+            row = by_code.get(st.tracking_number.upper())
+            if row is None:
                 continue
             out["checked"] += 1
-            if await _apply_shipping(session, pair[0].id, pair[1].id, st):
+            if await _apply_shipping(session, row.package_id, row.order_id, st):
                 changed += 1
                 _report_updated(session, settings)
                 reconciliation.request_run_soon(session)
