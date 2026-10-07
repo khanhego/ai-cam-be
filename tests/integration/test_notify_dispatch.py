@@ -729,3 +729,28 @@ async def test_send_one_unexpected_provider_error_retries(
     await db.refresh(kho)
     assert kho.last_error is not None
     assert kho.last_error["provider_code"] == "KeyError"
+
+
+async def test_send_one_holds_no_db_transaction_while_sending(
+    db: AsyncSession, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """G3-NT-2: J-27 không giữ transaction (khóa dòng tin / kênh) trong lúc gọi nhà cung cấp; kênh bị xóa
+    trong lúc gửi → bỏ qua, không lỗi."""
+    from aicam.modules.notify import providers
+
+    seen: list[bool] = []
+
+    class Probe:
+        type = "TELEGRAM"
+
+        async def send(self, target: str, text: str) -> None:
+            seen.append(db.in_transaction())
+
+    kho = await make_channel(db, "Kho", events=["N02"])
+    await recon_high(db, await package(db, "SPXTSTNT20001"))
+    await run_scan(db, settings)
+    monkeypatch.setattr(providers, "get_provider", lambda *_: Probe())
+    await tick_until(db, settings, clock.now() + timedelta(minutes=3), scan=False)
+    assert seen == [False]
+    [msg] = await messages(db, kho)
+    assert msg.status == "SENT"

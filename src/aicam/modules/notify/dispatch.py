@@ -337,11 +337,16 @@ async def send_one(db: AsyncSession, settings: Settings, message_id: Any) -> str
         log.info("notify_rate_held", channel_id=str(ch.id), message_id=str(msg.id))
         return "HELD"
     msg.text = _render(msg, settings, await _recovered_cameras(db, msg))
-    provider = providers.get_provider(ch.type, settings, db)
+    channel_type, target, text = ch.type, ch.target, msg.text
+    message_key, channel_key = msg.id, ch.id
+    # G3-NT-2: không giữ khóa dòng tin / kênh khi gọi mạng (≤ 10 giây — API sửa / xóa kênh bị chặn). J-27 chỉ
+    # một tiến trình (khóa Redis `notify:dispatch`) nên tin không bị gửi trùng; đọc lại sau khi gửi.
+    await commit(db)
+    provider = providers.get_provider(channel_type, settings, db)
     error: SendError | None = None
     try:
         async with asyncio.timeout(HTTP_TIMEOUT_S + 2):
-            await provider.send(ch.target, msg.text)
+            await provider.send(target, text)
     except TimeoutError:
         error = SendError("Quá thời gian gửi.", provider_code="TIMEOUT", timeout=True)
     except SendError as exc:
@@ -350,6 +355,20 @@ async def send_one(db: AsyncSession, settings: Settings, message_id: Any) -> str
         log.exception("notify_provider_crashed", channel_type=ch.type)
         error = SendError("Lỗi không rõ khi gửi.", provider_code=type(exc).__name__)
     now = clock.now()
+    relocked = (
+        await db.execute(
+            select(NotifyMessage)
+            .where(NotifyMessage.id == message_key)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    ch_after = await db.get(NotifyChannel, channel_key, with_for_update=True, populate_existing=True)
+    if relocked is None or ch_after is None:  # kênh / tin vừa bị xóa trong lúc gửi
+        await commit(db)
+        log.info("notify_send_target_gone", message_id=str(message_key), sent=error is None)
+        return "skip"
+    msg, ch = relocked, ch_after
     msg.attempts += 1
     if error is None:
         msg.status, msg.sent_at, msg.next_attempt_at, msg.last_error = "SENT", now, None, None
