@@ -1,0 +1,42 @@
+{
+  "_shop": "TTMOCKA",
+  "_note": "TTTST0000000051: lượt 1 chưa có yêu cầu, lượt 2 PENDING, lượt 3 REJECTED (người bán từ chối) → đóng gói, bàn giao bình thường",
+  "order": {
+    "id": "5761TT0000000051",
+    "status": "AWAITING_SHIPMENT",
+    "fulfillment_type": "FULFILLMENT_BY_SELLER",
+    "buyer_message": "",
+    "line_items": [
+      {
+        "id": "LI51",
+        "product_name": "Áo thun TikTok",
+        "sku_name": "Trắng / M",
+        "seller_sku": "TT-AO-TRANG-M",
+        "sku_id": "SKUTT-AO-TRANG-M",
+        "sku_image": "https://example.invalid/tt-ao.jpg",
+        "package_id": "PK51",
+        "tracking_number": "TTTST0000000051"
+      }
+    ],
+    "packages": [
+      {
+        "id": "PK51"
+      }
+    ]
+  },
+  "steps": [
+    [],
+    [
+      {
+        "cancel_id": "CC051-1",
+        "cancel_status": "PENDING"
+      }
+    ],
+    [
+      {
+        "cancel_id": "CC051-1",
+        "cancel_status": "REJECTED"
+      }
+    ]
+  ]
+}

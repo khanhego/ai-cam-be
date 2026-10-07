@@ -75,6 +75,18 @@ class MockTikTokData:
             r.setdefault("update_time", stamp)
             self.returns[shop][str(r["return_id"])] = r
         self.cancellations: dict[str, list[dict[str, Any]]] = {s: [] for s in MOCK_TT_SHOPS}
+        # 4 kịch bản yêu cầu hủy (DEC-502, T-277): `steps[k]` áp ở lượt `orders/search` thứ k+1 của shop.
+        self.cancel_scripts: dict[str, list[tuple[str, list[list[dict[str, Any]]]]]] = {
+            s: [] for s in MOCK_TT_SHOPS
+        }
+        self._search_count: dict[str, int] = {}
+        for c in _load("cancellations"):
+            shop = c["_shop"]
+            detail = dict(c["order"])
+            detail.setdefault("create_time", stamp)
+            detail.setdefault("update_time", stamp)
+            self.orders[shop][str(detail["id"])] = detail
+            self.cancel_scripts[shop].append((str(detail["id"]), c["steps"]))
         self.delay_s_by_shop: dict[str, float] = {}
         self.fail_shop: set[str] = set()
         self.fail_times: dict[str, int] = {}
@@ -101,6 +113,34 @@ class MockTikTokData:
                 out.update({k: v for k, v in step.items() if k != "after_hours"})
                 out["update_time"] = int(at.timestamp())
         return out
+
+    def _advance_cancellations(self, shop: str) -> None:
+        """Lượt J-04 thứ n: áp bước n của từng kịch bản (giữ bước cuối). Yêu cầu hủy đổi → `update_time` mới
+        của **yêu cầu** (đơn có thể không đổi — 02a §7.1: vẫn phải đọc chi tiết đơn); đổi trạng thái đơn khi
+        bước có `order_status`. Cờ `is_buyer_request_cancel` theo yêu cầu `PENDING` mới nhất."""
+        step = self._search_count.get(shop, 0)
+        self._search_count[shop] = step + 1
+        now = int(clock.now().timestamp()) - 1
+        for order_id, steps in self.cancel_scripts[shop]:
+            if not steps:
+                continue
+            for change in steps[min(step, len(steps) - 1)]:
+                rows = self.cancellations[shop]
+                current = next((c for c in rows if c["cancel_id"] == change["cancel_id"]), None)
+                status = change["cancel_status"]
+                if current is None:
+                    rows.append(
+                        {"cancel_id": change["cancel_id"], "order_id": order_id, "cancel_status": status,
+                         "create_time": now, "update_time": now}
+                    )  # fmt: skip
+                elif current["cancel_status"] != status:
+                    current["cancel_status"] = status
+                    current["update_time"] = now
+                order = self.orders[shop][order_id]
+                if change.get("order_status") and order["status"] != change["order_status"]:
+                    order["status"] = change["order_status"]
+                    order["update_time"] = now
+                order["is_buyer_request_cancel"] = status == "PENDING"
 
     # ----- HTTP giả
     def shop_of(self, request: httpx.Request) -> str | None:
@@ -135,6 +175,7 @@ class MockTikTokData:
         if shop is None:
             return httpx.Response(200, json={"code": 36004004, "message": "missing shop_cipher (mock)"})
         if path == "/order/202309/orders/search":
+            self._advance_cancellations(shop)
             rows = [{"id": i} for i, o in self.orders[shop].items() if _window(body, o)]
             return _ok({"orders": rows, "next_page_token": "", "total_count": len(rows)})
         if path == "/order/202309/orders":

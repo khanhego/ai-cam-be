@@ -1,0 +1,41 @@
+{
+  "_shop": "TTMOCKA",
+  "_note": "TTTST0000000052: lượt 1 PENDING, lượt 2 người mua rút (CANCELLED_BY_BUYER)",
+  "order": {
+    "id": "5761TT0000000052",
+    "status": "AWAITING_SHIPMENT",
+    "fulfillment_type": "FULFILLMENT_BY_SELLER",
+    "buyer_message": "",
+    "line_items": [
+      {
+        "id": "LI52",
+        "product_name": "Áo thun TikTok",
+        "sku_name": "Trắng / M",
+        "seller_sku": "TT-AO-TRANG-M",
+        "sku_id": "SKUTT-AO-TRANG-M",
+        "sku_image": "https://example.invalid/tt-ao.jpg",
+        "package_id": "PK52",
+        "tracking_number": "TTTST0000000052"
+      }
+    ],
+    "packages": [
+      {
+        "id": "PK52"
+      }
+    ]
+  },
+  "steps": [
+    [
+      {
+        "cancel_id": "CC052-1",
+        "cancel_status": "PENDING"
+      }
+    ],
+    [
+      {
+        "cancel_id": "CC052-1",
+        "cancel_status": "CANCELLED_BY_BUYER"
+      }
+    ]
+  ]
+}

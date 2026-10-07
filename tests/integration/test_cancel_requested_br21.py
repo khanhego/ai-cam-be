@@ -2,7 +2,8 @@
 mở phiên (BR-01) và gắn cờ phiên PACK đang mở; yêu cầu bị từ chối → đóng gói, bàn giao bình thường; được
 chấp nhận (nhóm `CANCELLED`) → luật hủy như Phase 2. 02a §5 BR-21 kịch bản (1)–(4); AC-41.
 
-TikTok (`REJECTED` / yêu cầu hủy mới nhất) chạy cùng đường `set_platform_status` — fixture TikTok ở T-277.
+TikTok (`REJECTED` / yêu cầu hủy mới nhất) chạy cùng đường `set_platform_status` — fixture TikTok:
+`test_tiktok_cancellations.py` (T-277).
 """
 
 import uuid
