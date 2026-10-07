@@ -204,3 +204,28 @@ async def test_br11_only_cancelled_group_and_packed_cancel_requested_quiet(
     orders.set_platform_status(result.order, "CANCELLED", order_group("CANCELLED"))
     await db.flush()
     assert package.id in {h.package_id for h in await rules.cancelled_after_pack(db, params)}
+
+
+async def test_pending_revert_shown_in_d2_attention_admin_only(api: Any, db: AsyncSession) -> None:
+    """G3-EV-3: còn kiện hủy oan trả lại được → D2 "Cần xử lý" `CANCEL_REVERT_PENDING` (chỉ ADMIN; kiện hủy
+    tay không tính) + log cảnh báo lúc khởi động; chạy lệnh xong → hết."""
+    from .factories import PASSWORD, make_user
+
+    await _cancelled(db, 11)
+    await _cancelled(db, 12, source="MANUAL")  # kiểm tay — không tính
+    await db.flush()
+
+    async def daily(role: str) -> list[dict[str, Any]]:
+        user = await make_user(db, f"tst_rev_{role.lower()}", role)
+        login = {"username": user.username, "password": PASSWORD, "client": "DASHBOARD"}
+        res = await api.post("/api/v1/auth/login", json=login)
+        headers = {"Authorization": f"Bearer {res.json()['access_token']}"}
+        body = await api.get("/api/v1/reports/daily", headers=headers)
+        assert body.status_code == 200, body.text
+        return [a for a in body.json()["attention"] if a["kind"] == "CANCEL_REVERT_PENDING"]
+
+    assert await daily("ADMIN") == [{"kind": "CANCEL_REVERT_PENDING", "count": 1}]
+    assert await daily("SUPERVISOR") == []
+    assert await cancel_revert.log_pending_on_startup(db) == 1
+    await cancel_revert.fix_cancel_requests(_maker(db), apply=True)
+    assert await cancel_revert.pending_count(db) == 0

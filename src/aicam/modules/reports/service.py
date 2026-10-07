@@ -292,6 +292,11 @@ async def _attention(db: AsyncSession, counts: Counts, settings: Settings) -> li
     if failed:  # 02a J-01 "lỗi cuối → attention" (kind mới, DEC-105)
         items.append({"kind": "CLIP_FAILED", "count": int(failed)})
     items.extend(await _return_attention(db, counts, settings))
+    from aicam.modules.orders import cancel_revert
+
+    revert = await cancel_revert.pending_count(db)
+    if revert:  # G3-EV-3: kiện hủy oan còn chờ `aicam fix-cancel-requests --apply` (chỉ ADMIN — việc của IT)
+        items.append({"kind": "CANCEL_REVERT_PENDING", "count": revert})
     from aicam.modules.backup import service as backup_service  # backup → settings → reports: import muộn
 
     items.extend(await backup_service.stale_attention(db, settings))  # chỉ ADMIN (ADMIN_ONLY_KINDS)
@@ -360,7 +365,7 @@ async def _return_attention(db: AsyncSession, counts: Counts, settings: Settings
 
 
 # 02 §6.2 API-32: mục chỉ ADMIN thấy (lọc theo vai **sau** cache).
-ADMIN_ONLY_KINDS = frozenset({"SYNC_ERROR", "BACKUP_STALE"})
+ADMIN_ONLY_KINDS = frozenset({"SYNC_ERROR", "BACKUP_STALE", "CANCEL_REVERT_PENDING"})
 
 
 def for_role(out: "DailyOut", role: str) -> "DailyOut":

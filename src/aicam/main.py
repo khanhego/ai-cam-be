@@ -40,6 +40,24 @@ from aicam.realtime.bus import Bus, start
 from aicam.realtime.hub import router as ws_router
 
 
+async def _warn_cancel_revert_pending() -> None:
+    """G3-EV-3: log cảnh báo nếu còn kiện hủy oan chưa trả lại. Không bao giờ chặn khởi động (DB chưa sẵn
+    sàng /
+    schema cũ → bỏ qua)."""
+    import asyncio
+
+    import structlog
+
+    from aicam.core.db import sessionmaker
+    from aicam.modules.orders import cancel_revert
+
+    try:
+        async with asyncio.timeout(5), sessionmaker()() as session:
+            await cancel_revert.log_pending_on_startup(session)
+    except Exception as exc:
+        structlog.get_logger().info("cancel_revert_check_skipped", error=type(exc).__name__)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     configure_logging(settings.log_level, settings.log_json, settings.secret_values())
@@ -51,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings, "api"
         )  # G3 M-F1: schema lệch image → thoát (staging / production)
         init_engine(settings.database_url)
+        await _warn_cancel_revert_pending()
         redis = init_redis(settings.redis_url)
         bus = Bus()
         bus.on(CAMERA_HEALTH_CHANNEL, on_camera_health)

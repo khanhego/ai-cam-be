@@ -117,6 +117,34 @@ async def revert_candidates(session: AsyncSession, order_id: uuid.UUID | None = 
     return out
 
 
+async def pending_count(session: AsyncSession) -> int:
+    """Số kiện hủy oan **trả lại được** còn chờ `aicam fix-cancel-requests --apply` (G3-EV-3: D2 "Cần xử lý"
+    `CANCEL_REVERT_PENDING`, log lúc khởi động). Đếm nhanh trước; có ứng viên mới xét lý do bỏ qua."""
+    quick = await session.scalar(
+        select(func.count())
+        .select_from(Package)
+        .join(Order, Order.id == Package.order_id)
+        .where(
+            Package.warehouse_status.in_(tuple(REVERT_TARGET)),
+            Order.platform_status_group.notin_(_NOT_REVERTIBLE_GROUPS),
+        )
+    )
+    if not quick:
+        return 0
+    return sum(1 for c in await revert_candidates(session) if c.skip_reason is None)
+
+
+async def log_pending_on_startup(session: AsyncSession) -> int:
+    """G3-EV-3: khởi động api — còn kiện hủy oan chưa trả lại → log cảnh báo kèm lệnh cần chạy."""
+    n = await pending_count(session)
+    if n:
+        log.warning(
+            "cancel_revert_pending", count=n,
+            hint="Chạy `aicam fix-cancel-requests` (xem danh sách) rồi `--apply` — docs/ops.md §7.2",
+        )  # fmt: skip
+    return n
+
+
 async def revert_cancel(session: AsyncSession, package: Package, order: Order, *, trigger: str) -> bool:
     """Trả lại một kiện hủy oan. Người gọi giữ khóa `order:{sn}` + kiện `FOR UPDATE` (02a §6, như
     `apply_platform_cancel`); kiểm lại điều kiện dưới khóa. True = đã trả lại."""
