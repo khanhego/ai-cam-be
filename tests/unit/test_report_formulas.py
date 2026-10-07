@@ -151,3 +151,43 @@ def test_csv_percent_and_render() -> None:
     assert "\r\n\r\nTheo người đứng bàn\r\n" in body
     assert "(Không ghi tên),3,90,0,0,0,0\r\n" in body
     assert "TB / kiện hoàn (giây),—\r\n" in body
+
+
+def test_csv_formula_injection_guarded() -> None:
+    """G3-RP-1: ô chuỗi bắt đầu `= + - @ \\t \\r` (tên shop / station / người dùng đặt) → thêm `'` để
+    Excel / Sheets không chạy công thức; số, "—", "4,0%" giữ nguyên."""
+    from aicam.core.csv_safe import safe_cell
+    from aicam.modules.reports import csv_export
+    from aicam.modules.reports import schemas as s
+
+    assert [safe_cell(v) for v in ("=1+1", "+cmd", "-2+3", "@SUM(A1)", "\tx", "\rx")] == [
+        "'=1+1", "'+cmd", "'-2+3", "'@SUM(A1)", "'\tx", "'\rx",
+    ]  # fmt: skip
+    assert [safe_cell(v) for v in (3, -4, 1.5, "—", "4,0%", "-1,5", "Shop A", "", None)] == [
+        3, -4, 1.5, "—", "4,0%", "-1,5", "Shop A", "", None,
+    ]  # fmt: skip
+    out = s.ProductivityReportOut(
+        period=s.PeriodOut(from_=date(2026, 9, 6), to=date(2026, 10, 5)),
+        filters=s.ProductivityFilters(platform=None, shop_id=None, station_id=None),
+        generated_at=datetime(2026, 10, 6, tzinfo=UTC),
+        cards=s.ProductivityCards(
+            packed=1, pack_avg_seconds=None, returns_inspected=0, return_avg_seconds=None
+        ),
+        by_station=[],
+        by_operator=[
+            s.OperatorRow(
+                operator_name='=HYPERLINK("http://x","bấm")',
+                packed=1,
+                avg_seconds=None,
+                mismatch=0,
+                abandoned=0,
+                cancelled=0,
+                repacked=0,
+            )
+        ],
+        return_by_operator=[],
+    )
+    body = csv_export.render("productivity", out, shop_name="+Shop", station_name="@St").decode("utf-8")
+    assert "Shop,'+Shop\r\n" in body
+    assert "Station,'@St\r\n" in body
+    assert '"\'=HYPERLINK(""http://x"",""bấm"")",1,—' in body

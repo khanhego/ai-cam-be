@@ -623,10 +623,10 @@ def report_dir(settings: Settings, override: Path | None) -> Path:
 
 
 def _write_csv(path: Path, header: list[str], rows: list[list[str]]) -> None:
-    import csv
+    from aicam.core.csv_safe import SafeWriter
 
     with path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.writer(fh)
+        writer = SafeWriter(fh)  # G3-RP-1: cùng luật chống formula injection
         writer.writerow(header)
         writer.writerows(rows)
 
