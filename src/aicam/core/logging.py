@@ -11,8 +11,12 @@ import structlog
 _SENSITIVE_KEYS = re.compile(r"pass(word)?|secret|token|authorization|cookie|key", re.IGNORECASE)
 _URL_CREDENTIALS = re.compile(r"(\w+://)[^/@\s:]+:[^/@\s]+@")
 # Tham số query mang bí mật (G3-F3, G3-N1): URL ký media (`sig`, `exp`, `uid`), token WS, OAuth (`code`,
-# `state`), Shopee (`access_token`, `refresh_token`, `sign`).
-SENSITIVE_QUERY = ("token", "sig", "exp", "uid", "code", "state", "access_token", "refresh_token", "sign")
+# `state`), Shopee (`access_token`, `refresh_token`, `sign`), TikTok Shop (`app_secret`, `auth_code` ở
+# `/api/v2/token/*` — 02a §2 core/logging.py).
+SENSITIVE_QUERY = (
+    "token", "sig", "exp", "uid", "code", "state", "access_token", "refresh_token", "sign", "app_secret",
+    "auth_code",
+)  # fmt: skip
 _QUERY_SECRET = re.compile(r"([?&])(" + "|".join(SENSITIVE_QUERY) + r")=[^&\s\"'#]*", re.IGNORECASE)
 # Logger stdlib in nguyên URL gọi ra / vào: che query, httpx / httpcore chỉ ghi từ WARNING.
 NOISY_HTTP_LOGGERS = ("httpx", "httpcore")
