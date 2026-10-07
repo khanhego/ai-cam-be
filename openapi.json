@@ -1381,6 +1381,19 @@
             "title": "Review Sessions",
             "type": "array"
           },
+          "shares": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ShareBrief"
+            },
+            "title": "Shares",
+            "type": "array"
+          },
+          "shares_active_count": {
+            "default": 0,
+            "title": "Shares Active Count",
+            "type": "integer"
+          },
           "source": {
             "enum": [
               "AUTO_RETURN",
@@ -5267,6 +5280,202 @@
         "title": "OperatorRow",
         "type": "object"
       },
+      "OptionLimits": {
+        "properties": {
+          "max_sessions": {
+            "title": "Max Sessions",
+            "type": "integer"
+          },
+          "max_snapshots": {
+            "title": "Max Snapshots",
+            "type": "integer"
+          },
+          "max_total_seconds": {
+            "title": "Max Total Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_sessions",
+          "max_total_seconds",
+          "max_snapshots"
+        ],
+        "title": "OptionLimits",
+        "type": "object"
+      },
+      "OptionSession": {
+        "properties": {
+          "cameras": {
+            "items": {
+              "enum": [
+                "CAM1",
+                "CAM2"
+              ],
+              "type": "string"
+            },
+            "title": "Cameras",
+            "type": "array"
+          },
+          "conclusion": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conclusion"
+          },
+          "default_selected": {
+            "title": "Default Selected",
+            "type": "boolean"
+          },
+          "duration_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration S"
+          },
+          "ended_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ended At"
+          },
+          "excluded": {
+            "default": false,
+            "title": "Excluded",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "operator_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Operator Name"
+          },
+          "primary": {
+            "title": "Primary",
+            "type": "boolean"
+          },
+          "prior_return": {
+            "title": "Prior Return",
+            "type": "boolean"
+          },
+          "review_needed": {
+            "default": false,
+            "title": "Review Needed",
+            "type": "boolean"
+          },
+          "selectable": {
+            "title": "Selectable",
+            "type": "boolean"
+          },
+          "snapshot_count": {
+            "default": 0,
+            "title": "Snapshot Count",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "station_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Station Name"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "PACK",
+              "RETURN"
+            ],
+            "title": "Type",
+            "type": "string"
+          },
+          "unavailable_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable At"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "CLIP_PENDING",
+                  "CLIP_FAILED",
+                  "CLIP_DELETED",
+                  "CLIP_MISSING"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "status",
+          "started_at",
+          "ended_at",
+          "station_name",
+          "operator_name",
+          "conclusion",
+          "duration_s",
+          "prior_return",
+          "primary",
+          "default_selected",
+          "selectable",
+          "unavailable_reason",
+          "unavailable_at",
+          "cameras"
+        ],
+        "title": "OptionSession",
+        "type": "object"
+      },
       "OrderBrief": {
         "properties": {
           "buyer_note": {
@@ -5749,6 +5958,19 @@
             },
             "title": "Sessions",
             "type": "array"
+          },
+          "shares": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ShareBrief"
+            },
+            "title": "Shares",
+            "type": "array"
+          },
+          "shares_active_count": {
+            "default": 0,
+            "title": "Shares Active Count",
+            "type": "integer"
           },
           "timeline": {
             "items": {
@@ -9503,6 +9725,621 @@
         "title": "SettingsIn",
         "type": "object"
       },
+      "ShareBrief": {
+        "description": "`shares[]` của API-31 / API-132.",
+        "properties": {
+          "can_revoke": {
+            "title": "Can Revoke",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "recipient": {
+            "title": "Recipient",
+            "type": "string"
+          },
+          "revoke_pending": {
+            "title": "Revoke Pending",
+            "type": "boolean"
+          },
+          "session_count": {
+            "title": "Session Count",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "CREATING",
+              "ACTIVE",
+              "FAILED",
+              "REVOKED",
+              "EXPIRED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "recipient",
+          "expires_at",
+          "session_count",
+          "url",
+          "can_revoke",
+          "revoke_pending",
+          "created_at"
+        ],
+        "title": "ShareBrief",
+        "type": "object"
+      },
+      "ShareCounts": {
+        "properties": {
+          "ACTIVE": {
+            "title": "Active",
+            "type": "integer"
+          },
+          "ALL": {
+            "title": "All",
+            "type": "integer"
+          },
+          "EXPIRED": {
+            "title": "Expired",
+            "type": "integer"
+          },
+          "REVOKED": {
+            "title": "Revoked",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ACTIVE",
+          "REVOKED",
+          "EXPIRED",
+          "ALL"
+        ],
+        "title": "ShareCounts",
+        "type": "object"
+      },
+      "ShareCreateIn": {
+        "description": "API-160. Giới hạn BR-35 (1–4 phiên, ≤ 1.800 giây), `recipient` 3–100, `expires_days` 1 / 3 / 7 kiểm ở\nservice (422 `fields` tiếng Việt).",
+        "properties": {
+          "claim_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Id"
+          },
+          "expires_days": {
+            "default": 7,
+            "title": "Expires Days",
+            "type": "integer"
+          },
+          "include_snapshots": {
+            "default": true,
+            "title": "Include Snapshots",
+            "type": "boolean"
+          },
+          "layout": {
+            "default": "SIDE_BY_SIDE",
+            "enum": [
+              "SIDE_BY_SIDE",
+              "CAM1"
+            ],
+            "title": "Layout",
+            "type": "string"
+          },
+          "recipient": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Recipient",
+            "type": "string"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "session_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Session Ids",
+            "type": "array"
+          },
+          "source_type": {
+            "enum": [
+              "CLAIM",
+              "SESSION"
+            ],
+            "title": "Source Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_type"
+        ],
+        "title": "ShareCreateIn",
+        "type": "object"
+      },
+      "ShareCreated": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "const": "CREATING",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "status"
+        ],
+        "title": "ShareCreated",
+        "type": "object"
+      },
+      "ShareError": {
+        "properties": {
+          "code": {
+            "enum": [
+              "RENDER_FAILED",
+              "UPLOAD_FAILED",
+              "TIMEOUT"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ShareError",
+        "type": "object"
+      },
+      "ShareItemOut": {
+        "properties": {
+          "order": {
+            "title": "Order",
+            "type": "integer"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "snapshot_count": {
+            "title": "Snapshot Count",
+            "type": "integer"
+          },
+          "source_sha256": {
+            "$ref": "#/components/schemas/SourceSha"
+          },
+          "video_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Video Sha256"
+          }
+        },
+        "required": [
+          "session_id",
+          "order",
+          "video_sha256",
+          "size_bytes",
+          "source_sha256",
+          "snapshot_count"
+        ],
+        "title": "ShareItemOut",
+        "type": "object"
+      },
+      "ShareOptions": {
+        "description": "API-164.",
+        "properties": {
+          "default_expires_days": {
+            "title": "Default Expires Days",
+            "type": "integer"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/OptionLimits"
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/OptionSession"
+            },
+            "title": "Sessions",
+            "type": "array"
+          },
+          "snapshot_count": {
+            "title": "Snapshot Count",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ShareSource"
+          },
+          "storage_configured": {
+            "title": "Storage Configured",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "storage_configured",
+          "source",
+          "sessions",
+          "snapshot_count",
+          "limits",
+          "default_expires_days"
+        ],
+        "title": "ShareOptions",
+        "type": "object"
+      },
+      "ShareOut": {
+        "description": "API-162 (= item API-161 không có `items`).",
+        "properties": {
+          "can_revoke": {
+            "title": "Can Revoke",
+            "type": "boolean"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShareError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "include_snapshots": {
+            "title": "Include Snapshots",
+            "type": "boolean"
+          },
+          "items": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ShareItemOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Items"
+          },
+          "layout": {
+            "enum": [
+              "SIDE_BY_SIDE",
+              "CAM1"
+            ],
+            "title": "Layout",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "integer"
+          },
+          "recipient": {
+            "title": "Recipient",
+            "type": "string"
+          },
+          "revoke_pending": {
+            "title": "Revoke Pending",
+            "type": "boolean"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          },
+          "revoked_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserBrief"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_count": {
+            "title": "Session Count",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/ShareSource"
+          },
+          "status": {
+            "enum": [
+              "CREATING",
+              "ACTIVE",
+              "FAILED",
+              "REVOKED",
+              "EXPIRED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "enum": [
+                  "RENDERING",
+                  "UPLOADING",
+                  "PUBLISHING"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step"
+          },
+          "step_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Index"
+          },
+          "step_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Total"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "progress",
+          "step",
+          "step_index",
+          "step_total",
+          "url",
+          "recipient",
+          "source",
+          "session_count",
+          "layout",
+          "include_snapshots",
+          "expires_at",
+          "created_at",
+          "created_by",
+          "revoked_at",
+          "revoked_by",
+          "revoke_pending",
+          "error",
+          "can_revoke"
+        ],
+        "title": "ShareOut",
+        "type": "object"
+      },
+      "SharePage": {
+        "properties": {
+          "counts": {
+            "$ref": "#/components/schemas/ShareCounts"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ShareOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total",
+          "counts"
+        ],
+        "title": "SharePage",
+        "type": "object"
+      },
+      "ShareSource": {
+        "properties": {
+          "claim_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Code"
+          },
+          "claim_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Id"
+          },
+          "package_id": {
+            "format": "uuid",
+            "title": "Package Id",
+            "type": "string"
+          },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
+          "shop_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Name"
+          },
+          "tracking_number": {
+            "title": "Tracking Number",
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "CLAIM",
+              "SESSION"
+            ],
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "claim_id",
+          "claim_code",
+          "package_id",
+          "tracking_number"
+        ],
+        "title": "ShareSource",
+        "type": "object"
+      },
       "ShopBrief": {
         "properties": {
           "auth_status": {
@@ -9830,6 +10667,34 @@
           "url"
         ],
         "title": "SnapshotRef",
+        "type": "object"
+      },
+      "SourceSha": {
+        "properties": {
+          "CAM1": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cam1"
+          },
+          "CAM2": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cam2"
+          }
+        },
+        "title": "SourceSha",
         "type": "object"
       },
       "StateOnlyOut": {
@@ -15372,6 +16237,353 @@
         "summary": "Retention Impact",
         "tags": [
           "settings"
+        ]
+      }
+    },
+    "/api/v1/shares": {
+      "get": {
+        "description": "API-161 (FR-07.09): danh sách link + số theo trạng thái (D21).",
+        "operationId": "list_shares_api_v1_shares_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "ACTIVE",
+              "enum": [
+                "ACTIVE",
+                "REVOKED",
+                "EXPIRED",
+                "ALL"
+              ],
+              "title": "Status",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "q",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "in": "query",
+            "name": "mine",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Mine",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "created_by",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Created By"
+            }
+          },
+          {
+            "in": "query",
+            "name": "claim_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Claim Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "package_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Package Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SharePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Shares",
+        "tags": [
+          "shares"
+        ]
+      },
+      "post": {
+        "description": "API-160 (FR-07.05): tạo link chia sẻ — dựng nền J-24, tiến độ qua WS `share.updated` + API-162.",
+        "operationId": "create_share_api_v1_shares_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Share",
+        "tags": [
+          "shares"
+        ]
+      }
+    },
+    "/api/v1/shares/options": {
+      "get": {
+        "description": "API-164 (FR-07.05, BR-35, EX-S3): phiên / ảnh chọn được cho ShareLinkDialog.",
+        "operationId": "share_options_api_v1_shares_options_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "claim_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Claim Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareOptions"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Share Options",
+        "tags": [
+          "shares"
+        ]
+      }
+    },
+    "/api/v1/shares/{share_id}": {
+      "get": {
+        "description": "API-162 (FR-07.05, 07.09): trạng thái / chi tiết một link.",
+        "operationId": "get_share_api_v1_shares__share_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "share_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Share Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Share",
+        "tags": [
+          "shares"
+        ]
+      }
+    },
+    "/api/v1/shares/{share_id}/revoke": {
+      "post": {
+        "description": "API-163 (FR-07.08): thu hồi — J-25 xóa thư mục link trên cloud ngay (≤ 60 giây).",
+        "operationId": "revoke_share_api_v1_shares__share_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "share_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Share Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Share",
+        "tags": [
+          "shares"
         ]
       }
     },

@@ -51,6 +51,7 @@ from aicam.modules.orders.refs import shop_conditions, shop_ref, shops_by_id
 from aicam.modules.returns.models import ReturnCase
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.settings import service as settings_service
+from aicam.modules.shares import queries as share_queries
 from aicam.modules.stations.models import Station
 from aicam.modules.users.models import User
 
@@ -238,7 +239,7 @@ def _missing(evidence: list[EvidenceOut]) -> list[str]:
 
 
 async def claim_detail(
-    db: AsyncSession, claim_id: uuid.UUID, viewer: uuid.UUID, settings: Settings
+    db: AsyncSession, claim_id: uuid.UUID, viewer: uuid.UUID, settings: Settings, *, role: str | None = None
 ) -> ClaimDetail:
     """API-132 (FR-08.02, 08.06): hồ sơ, bằng chứng (phiên, clip, ảnh ký URL), phiên khác, thiếu, ghi chú."""
     claim = await db.get(Claim, claim_id, populate_existing=True)
@@ -433,6 +434,9 @@ async def claim_detail(
         db,
         {n.author_user_id for n in notes if n.author_user_id} | ({claim.owner_user_id} - {None}),  # type: ignore[operator]
     )
+    shares, shares_active = await share_queries.claim_shares(
+        db, claim.id, viewer=viewer, role=role, settings=settings
+    )
     return ClaimDetail(
         id=claim.id,
         code=claim.code,
@@ -492,6 +496,8 @@ async def claim_detail(
             )
             for s in review_list
         ],
+        shares=shares,
+        shares_active_count=shares_active,
         missing=_missing(evidence),
         notes=[
             NoteOut(

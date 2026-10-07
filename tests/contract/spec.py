@@ -23,6 +23,24 @@ def _e(*values: str) -> frozenset[str]:
     return frozenset(values)
 
 
+# API-160..164 (02 §6.2 "link chia sẻ", M16).
+SHARE_SOURCE = ("type", "claim_id", "claim_code", "package_id", "tracking_number")
+SHARE_ITEM = (
+    "id", "status", "progress", "step", "step_index", "step_total", "url", "recipient",
+    *(f"source.{f}" for f in SHARE_SOURCE), "session_count", "layout", "include_snapshots", "expires_at",
+    "created_at", "created_by.id", "created_by.display_name", "revoked_at", "revoked_by.id", "revoke_pending",
+    "error.code", "error.message", "can_revoke",
+)  # fmt: skip
+SHARE_ITEM_ROW = (
+    "session_id", "order", "video_sha256", "size_bytes", "source_sha256.CAM1", "source_sha256.CAM2",
+    "snapshot_count",
+)  # fmt: skip
+SHARE_OPTION_SESSION = (
+    "id", "type", "status", "started_at", "ended_at", "station_name", "operator_name", "conclusion",
+    "duration_s", "prior_return", "primary", "default_selected", "selectable", "unavailable_reason",
+    "unavailable_at", "cameras", "review_needed",
+)  # fmt: skip
+
 # API-180..185 (02 §6.2 "sao lưu", M15).
 BACKUP_STATES = ("ON", "NOT_CONFIGURED", "KEY_UNCONFIRMED", "KEY_CHANGED", "DISABLED", "RESTORE_PENDING")
 BACKUP_STATUS_FIELDS = (
@@ -326,6 +344,10 @@ CLAIM_ENUMS = {
     "status": _e("NEW", "SUBMITTED", "WAITING", "WON", "LOST", "CLOSED"),
     "source": _e("AUTO_RETURN", "MANUAL", "RECON", "LEGACY_HOLD"),
 }
+# `shares[]` API-31 / API-132 (02 §6.2 API-31 — M16, T-224).
+SHARE_BRIEF = ("id", "status", "recipient", "expires_at", "session_count", "url", "can_revoke")
+SHARE_STATUSES = ("CREATING", "ACTIVE", "FAILED", "REVOKED", "EXPIRED")
+
 CLAIM_DETAIL = (
     "id",
     "code",
@@ -411,6 +433,8 @@ CLAIM_DETAIL = (
     "notes[].author.display_name",
     "notes[].at",
     "allowed_transitions",
+    *(f"shares[].{f}" for f in SHARE_BRIEF),
+    "shares_active_count",
 )
 CLAIM_DETAIL_ENUMS = {
     **CLAIM_ENUMS,
@@ -737,6 +761,8 @@ CONTRACT: tuple[Api, ...] = (
             "claims[].type",
             "claims[].status",
             "allowed_status_targets",
+            *(f"shares[].{f}" for f in SHARE_BRIEF),
+            "shares_active_count",
             "timeline[].at",
             "timeline[].source",
             "timeline[].from_status",
@@ -1239,6 +1265,76 @@ CONTRACT: tuple[Api, ...] = (
             "items[].resolution.action": _e("UPLOAD_ANYWAY", "IGNORE", "RETRY", "ACCEPT_RESTORED"),
         },
     ),
+    # Phase 3 M16 link chia sẻ (02 §6.2 API-160..164).
+    Api(
+        "API-164",
+        "GET",
+        "/shares/options",
+        200,
+        (
+            "storage_configured",
+            *(f"source.{f}" for f in SHARE_SOURCE),
+            *(f"sessions[].{f}" for f in SHARE_OPTION_SESSION),
+            "snapshot_count",
+            "limits.max_sessions",
+            "limits.max_total_seconds",
+            "limits.max_snapshots",
+            "default_expires_days",
+        ),
+        {
+            "source.type": _e("CLAIM", "SESSION"),
+            "sessions[].unavailable_reason": _e(
+                "CLIP_PENDING", "CLIP_FAILED", "CLIP_DELETED", "CLIP_MISSING"
+            ),
+            "sessions[].cameras[]": _e("CAM1", "CAM2"),
+        },
+    ),
+    Api(
+        "API-160",
+        "POST",
+        "/shares",
+        202,
+        ("id", "status"),
+        {"status": _e("CREATING")},
+        request_fields=(
+            "source_type",
+            "claim_id",
+            "session_id",
+            "session_ids",
+            "layout",
+            "include_snapshots",
+            "recipient",
+            "expires_days",
+        ),
+    ),
+    Api(
+        "API-161",
+        "GET",
+        "/shares",
+        200,
+        (
+            *PAGE,
+            *(f"items[].{f}" for f in SHARE_ITEM),
+            "counts.ACTIVE",
+            "counts.REVOKED",
+            "counts.EXPIRED",
+            "counts.ALL",
+        ),
+        {"items[].status": _e(*SHARE_STATUSES), "items[].layout": _e("SIDE_BY_SIDE", "CAM1")},
+    ),
+    Api(
+        "API-162",
+        "GET",
+        "/shares/{share_id}",
+        200,
+        (*SHARE_ITEM, *(f"items[].{f}" for f in SHARE_ITEM_ROW)),
+        {
+            "status": _e(*SHARE_STATUSES),
+            "step": _e("RENDERING", "UPLOADING", "PUBLISHING"),
+            "error.code": _e("RENDER_FAILED", "UPLOAD_FAILED", "TIMEOUT"),
+        },
+    ),
+    Api("API-163", "POST", "/shares/{share_id}/revoke", 200, SHARE_ITEM, {"status": _e(*SHARE_STATUSES)}),
     Api("API-40", "GET", "/clips/{clip_id}/play-url", 200, ("url", "expires_at")),
     Api("API-41", "GET", "/media/clips/{clip_id}", 200),
     Api(

@@ -31,6 +31,7 @@ from aicam.modules.sessions.listeners import on_tray_changed
 from aicam.modules.sessions.router import router as sessions_router
 from aicam.modules.sessions.tray import TRAY_CHANGED_CHANNEL
 from aicam.modules.settings.router import router as settings_router
+from aicam.modules.shares.router import router as shares_router
 from aicam.modules.stations.listeners import CAMERA_HEALTH_CHANNEL, on_camera_health
 from aicam.modules.stations.router import router as stations_router
 from aicam.modules.users.router import router as users_router
@@ -106,6 +107,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(recon_router, prefix="/api/v1")
     app.include_router(settings_router, prefix="/api/v1")
     app.include_router(backup_router, prefix="/api/v1")
+    app.include_router(shares_router, prefix="/api/v1")
     app.include_router(ws_router)
 
     @app.get("/healthz", tags=["system"])

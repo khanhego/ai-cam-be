@@ -32,6 +32,8 @@ from aicam.modules.sessions.models import SESSION_STATUSES, PackSession, Session
 from aicam.modules.sessions.queries import dropped_return_filter
 from aicam.modules.sessions.schemas import InspectionLineOut, InspectionOut
 from aicam.modules.settings import service as settings_service
+from aicam.modules.shares import queries as share_queries
+from aicam.modules.shares.schemas import ShareBrief
 from aicam.modules.stations.models import Station
 from aicam.modules.users.models import User
 
@@ -234,6 +236,9 @@ class PackageDetail(BaseModel):
     recon_alerts: list[ReconAlertBrief]
     claims: list[PackageClaimBrief]
     allowed_status_targets: list[str]  # đích "Điều chỉnh trạng thái" (API-122); rỗng → FE ẩn menu
+    # Phase 3 link chia sẻ (02 §6.2 API-31, FR-07.09): ≤ 3 link mới nhất có phiên của kiện (trừ `FAILED`).
+    shares: list[ShareBrief] = []
+    shares_active_count: int = 0
 
 
 # ---------------------------------------------------------------- API-30
@@ -712,6 +717,9 @@ async def detail(
             select(Claim).where(Claim.package_id == package.id).order_by(Claim.created_at.desc())
         )
     ).all()
+    shares, shares_active = await share_queries.package_shares(
+        db, package.id, viewer=viewer, role=role, settings=settings
+    )
     return PackageDetail(
         id=package.id,
         tracking_number=package.tracking_number,
@@ -737,4 +745,6 @@ async def detail(
         ],
         claims=[PackageClaimBrief(id=c.id, code=c.code, type=c.type, status=c.status) for c in claims],
         allowed_status_targets=list(MANUAL_TRANSITIONS.get(package.warehouse_status, ())),
+        shares=shares,
+        shares_active_count=shares_active,
     )

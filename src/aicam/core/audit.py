@@ -57,6 +57,10 @@ ACTIONS = frozenset(
         "SESSION_RETURN_CONFIRM",
         "PACKAGE_CANCEL_REVERT",  # BR-21 v0.4 (T-285)
         "REPORT_EXPORT",  # API-153 (T-217, FR-09.06)
+        # Link chia sẻ (02 §6.2 API-160..163, J-25 — M16).
+        "SHARE_CREATE",
+        "SHARE_REVOKE",
+        "SHARE_EXPIRE",  # J-25 (người dùng null)
         # Sao lưu cloud (02 §6.2 API-180..188, API-186 CLI — M15).
         "BACKUP_TEST",
         "BACKUP_SETTINGS_UPDATE",

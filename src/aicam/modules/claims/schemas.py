@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from aicam.core.pagination import Page
 from aicam.modules.orders.refs import ShopRef
+from aicam.modules.shares.schemas import ShareBrief
 
 ClaimType = Literal[
     "DAMAGED", "MISSING_ITEM", "WRONG_ITEM", "EMPTY_BOX", "OTHER", "BUYER_CLAIM", "LOST_IN_TRANSIT"
@@ -225,6 +226,9 @@ class ClaimDetail(BaseModel):
     removed_evidence: list[EvidenceOut] = []
     excluded_return_sessions: list[ExcludedReturnSession] = []
     review_sessions: list[ReviewSession] = []
+    # Phase 3 link chia sẻ (02 §6.2 API-132, FR-07.09): ≤ 3 link mới nhất của hồ sơ (trừ `FAILED`).
+    shares: list[ShareBrief] = []
+    shares_active_count: int = 0
     missing: list[Missing]
     notes: list[NoteOut]
     allowed_transitions: list[ClaimStatus]

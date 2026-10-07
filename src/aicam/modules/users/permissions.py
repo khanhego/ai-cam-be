@@ -3,6 +3,8 @@
 # Phase 2 (02 §6.1 API-04, 01 §5.10).
 _RETURNS_STAFF = ["returns.read", "recon.read", "claims.manage"]
 _RETURNS_LEAD = ["returns.link", "inspection.correct", "recon.resolve", "warehouse_status.adjust"]
+# Phase 3 link chia sẻ (02 §6.1 API-04, API-160..163): thu hồi link người khác chỉ ADMIN / SUPERVISOR.
+_SHARES = ["shares.create", "shares.read"]
 
 PERMISSIONS: dict[str, list[str]] = {
     "ADMIN": [
@@ -23,6 +25,8 @@ PERMISSIONS: dict[str, list[str]] = {
         "reports.read",
         *_RETURNS_STAFF,
         *_RETURNS_LEAD,
+        *_SHARES,
+        "shares.revoke_any",
     ],
     "SUPERVISOR": [
         "packages.read",
@@ -36,8 +40,10 @@ PERMISSIONS: dict[str, list[str]] = {
         "settings.read",
         *_RETURNS_STAFF,
         *_RETURNS_LEAD,
+        *_SHARES,
+        "shares.revoke_any",
     ],
     # API-42 giữ clip chỉ ADMIN (02 §6, G3 C-01) — Phase 2 giữ theo hồ sơ khiếu nại.
-    "CSKH": ["packages.read", "clips.read", "clips.export", "reports.read", *_RETURNS_STAFF],
+    "CSKH": ["packages.read", "clips.read", "clips.export", "reports.read", *_RETURNS_STAFF, *_SHARES],
     "STATION": ["station.scan", "clips.read.own_station_today"],
 }

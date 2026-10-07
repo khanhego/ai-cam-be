@@ -27,6 +27,25 @@ def is_configured(settings: Settings) -> bool:
     )
 
 
+def share_configured(settings: Settings) -> bool:
+    """Link chia sẻ (EX-S1): đủ endpoint, khóa truy cập **và** bucket link riêng `S3_SHARE_BUCKET`.
+
+    Không rơi về bucket sao lưu: bucket đó bật versioning và khóa ứng dụng không có quyền xóa phiên bản →
+    thu hồi link không xóa thật được (NFR-42, DEC-665)."""
+    return (
+        all(
+            v.strip()
+            for v in (
+                settings.s3_endpoint,
+                settings.s3_share_bucket,
+                settings.s3_access_key_id,
+                settings.s3_secret_access_key,
+            )
+        )
+        or SHARE in _overrides
+    )
+
+
 def endpoint_host(settings: Settings) -> str | None:
     if not settings.s3_endpoint.strip():
         return "memory" if BACKUP in _overrides else None
@@ -56,7 +75,9 @@ def share_store(settings: Settings) -> ObjectStore:
     """Bucket link `S3_SHARE_BUCKET` (không versioning — thu hồi xóa thật)."""
     if SHARE in _overrides:
         return _overrides[SHARE]
-    return _store(settings, settings.s3_share_bucket or settings.s3_bucket)
+    if not settings.s3_share_bucket.strip():
+        raise ValueError("Chưa cấu hình S3_SHARE_BUCKET (link chia sẻ) — DEC-665")
+    return _store(settings, settings.s3_share_bucket)
 
 
 def use_store(role: str, store: ObjectStore | None) -> None:

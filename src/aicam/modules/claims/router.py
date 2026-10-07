@@ -65,7 +65,7 @@ async def list_claims(
 async def create_claim(body: ClaimCreateIn, p: Staff, db: DbSession, settings: AppSettings) -> ClaimDetail:
     """API-131: tạo hồ sơ thủ công (FR-08.01)."""
     claim = await service.create_manual(db, body, p)
-    out = await views.claim_detail(db, claim.id, p.user_id, settings)
+    out = await views.claim_detail(db, claim.id, p.user_id, settings, role=p.role)
     await commit(db)
     return out
 
@@ -73,7 +73,7 @@ async def create_claim(body: ClaimCreateIn, p: Staff, db: DbSession, settings: A
 @router.get("/claims/{claim_id}", response_model=ClaimDetail)
 async def claim_detail(claim_id: uuid.UUID, p: Staff, db: DbSession, settings: AppSettings) -> ClaimDetail:
     """API-132: chi tiết hồ sơ (D17)."""
-    return await views.claim_detail(db, claim_id, p.user_id, settings)
+    return await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
 
 
 async def _locked(
@@ -84,7 +84,7 @@ async def _locked(
     if claim is None:
         raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ khiếu nại.", 404)
     if claim.version != version:
-        current = await views.claim_detail(db, claim_id, p.user_id, settings)
+        current = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
         raise AppError(
             "VERSION_CONFLICT",
             "Hồ sơ vừa được người khác cập nhật. Tải lại để xem bản mới.",
@@ -102,7 +102,7 @@ async def patch_claim(
     claim = await _locked(db, claim_id, body.version, p, settings)
     await service.patch(db, claim, body, p)
     await db.flush()
-    out = await views.claim_detail(db, claim_id, p.user_id, settings)
+    out = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
     await commit(db)
     return out
 
@@ -115,7 +115,7 @@ async def set_evidence(
     claim = await _locked(db, claim_id, body.version, p, settings)
     await service.set_evidence(db, claim, body, p)
     await db.flush()
-    out = await views.claim_detail(db, claim_id, p.user_id, settings)
+    out = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
     await commit(db)
     return out
 
@@ -127,7 +127,7 @@ async def review_return_session(
     """API-189: đánh dấu / bỏ đánh dấu quét nhầm, xác nhận "Là phiên hoàn thật" (BR-39, EX-R21, D17)."""
 
     async def _conflict(cid: uuid.UUID) -> AppError:
-        current = await views.claim_detail(db, cid, p.user_id, settings)
+        current = await views.claim_detail(db, cid, p.user_id, settings, role=p.role)
         return AppError(
             "VERSION_CONFLICT",
             "Hồ sơ vừa được người khác cập nhật. Tải lại để xem bản mới.",
@@ -136,7 +136,7 @@ async def review_return_session(
         )
 
     await review.review_return_session(db, claim_id, session_id, body, p, version_conflict=_conflict)
-    out = await views.claim_detail(db, claim_id, p.user_id, settings)
+    out = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
     await commit(db)
     return out
 
