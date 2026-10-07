@@ -304,6 +304,10 @@ async def open_snapshot(
             410,
             {"deleted_at": clock.iso_z(snapshot.deleted_at) if snapshot.deleted_at else None},
         )
+    if snapshot.status == "MISSING":  # G3-EV-5: như clip MISSING (409, không phải 404 / phục vụ tệp lạ)
+        raise AppError(
+            "SNAPSHOT_MISSING", "Thiếu tệp ảnh trên máy chủ — không xem được.", 409, {"status": "MISSING"}
+        )
     path = _absolute(settings, snapshot.path or "")
     if not path.is_file():
         log.error("snapshot_file_missing", snapshot_id=str(snapshot.id))
