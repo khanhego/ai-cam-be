@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from aicam.modules.backup.schemas import HealthBackupOut
+
 Days = Field(ge=1, le=365)
 Minutes = Field(ge=1, le=1440)
 # Phase 2 (02 §6.2 API-80): 6 ngưỡng mới — tùy chọn khi PUT (thiếu = giữ giá trị cũ).
@@ -87,6 +89,8 @@ class CameraHealth(BaseModel):
 
 class SyncHealth(BaseModel):
     shop_id: uuid.UUID
+    platform: str | None = None  # Phase 3 (02 API-81)
+    shop_name: str | None = None
     last_success_at: datetime | None
     last_error: dict[str, Any] | None
 
@@ -98,3 +102,4 @@ class HealthOut(BaseModel):
     disk: DiskOut | None
     cameras: list[CameraHealth]
     sync: list[SyncHealth]
+    backup: HealthBackupOut | None = None  # Phase 3 API-81 (02 §6.2)

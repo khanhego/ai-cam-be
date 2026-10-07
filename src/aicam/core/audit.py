@@ -59,6 +59,13 @@ ACTIONS = frozenset(
         "REPORT_EXPORT",  # API-153 (T-217, FR-09.06)
         # Sao lưu cloud (02 §6.2 API-180..188, API-186 CLI — M15).
         "BACKUP_TEST",
+        "BACKUP_SETTINGS_UPDATE",
+        "BACKUP_KEY_CONFIRM",
+        "BACKUP_RUN_NOW",
+        "BACKUP_REUPLOAD_OLD_KEY",
+        "BACKUP_ISSUE_RESOLVE",
+        "BACKUP_RESTORE_VERIFIED",  # CLI backup-verify đạt (người dùng null)
+        "BACKUP_VERIFY_ACCEPT",  # CLI backup-verify --accept (v0.3, DEC-518)
     }
 )
 

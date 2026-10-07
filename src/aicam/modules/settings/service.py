@@ -175,7 +175,13 @@ async def _ping_db(session: AsyncSession) -> None:
         await conn.execute(text("SELECT 1"))
 
 
-async def health(session: AsyncSession, *, mediamtx_check: Any, disk: dict[str, int] | None) -> HealthOut:
+async def health(
+    session: AsyncSession,
+    *,
+    mediamtx_check: Any,
+    disk: dict[str, int] | None,
+    settings: Settings | None = None,
+) -> HealthOut:
     """API-81: DB, Redis, MediaMTX, ổ đĩa video, camera, đồng bộ sàn. Luôn 200, từng phần OK / ERROR."""
     from aicam.modules.orders.models import Shop
     from aicam.modules.stations.models import Camera, Station
@@ -205,10 +211,22 @@ async def health(session: AsyncSession, *, mediamtx_check: Any, disk: dict[str, 
             for c, name in rows
         ]
         sync = [
-            SyncHealth(shop_id=s.id, last_success_at=s.last_synced_at, last_error=s.last_error)
+            SyncHealth(
+                shop_id=s.id,
+                platform=s.platform,
+                shop_name=s.name,
+                last_success_at=s.last_synced_at,
+                last_error=s.last_error,
+            )
             for s in (await session.scalars(select(Shop).order_by(Shop.created_at))).all()
         ]
+    backup = None
+    if db_status == "OK" and settings is not None:
+        from aicam.modules.backup import service as backup_service  # backup → settings: import muộn
+
+        backup = await backup_service.health_summary(session, settings)
     return HealthOut(
+        backup=backup,
         db=db_status,
         redis=redis_status,
         mediamtx=mediamtx_status,

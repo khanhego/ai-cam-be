@@ -57,4 +57,6 @@ async def system_health(
     mediamtx: Annotated[MediaMTX, Depends(get_mediamtx)],
 ) -> HealthOut:
     """API-81 (FR-01.02, 01.06, NFR-30)."""
-    return await service.health(db, mediamtx_check=mediamtx.list_paths(), disk=disk_usage(settings))
+    return await service.health(
+        db, mediamtx_check=mediamtx.list_paths(), disk=disk_usage(settings), settings=settings
+    )

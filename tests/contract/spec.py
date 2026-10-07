@@ -23,6 +23,29 @@ def _e(*values: str) -> frozenset[str]:
     return frozenset(values)
 
 
+# API-180..185 (02 §6.2 "sao lưu", M15).
+BACKUP_STATES = ("ON", "NOT_CONFIGURED", "KEY_UNCONFIRMED", "KEY_CHANGED", "DISABLED", "RESTORE_PENDING")
+BACKUP_STATUS_FIELDS = (
+    "configured", "storage.endpoint_host", "storage.bucket", "key.configured", "key.fingerprint",
+    "key.confirmed_fingerprint", "key.confirmed_at", "key.confirmed_by.id", "key.confirmed_by.display_name",
+    "key.old_keys[].fingerprint", "key.old_keys[].evidence_objects", "key.old_keys[].db_runs",
+    "key.old_keys[].reuploadable", "key.old_keys[].reuploadable_bytes", "state", "enabled",
+    "db.last_success_at", "db.last_size_bytes", "db.next_run_at", "db.hours_since_success", "db.late",
+    "db.running", "db.consecutive_failures", "evidence.uploaded", "evidence.pending", "evidence.failed",
+    "evidence.oldest_pending_at", "evidence.late_count", "evidence.hash_mismatch", "evidence.ignored",
+    "evidence.source_deleted", "evidence.source_missing", "cloud_bytes", "last_error.code",
+    "last_error.message", "last_error.at", "settings.upload_mbps", "settings.all_pack_clips",
+    "settings.all_pack_clips_estimate_gb_per_day", "history[].id", "history[].kind", "history[].started_at",
+    "history[].finished_at", "history[].status", "history[].size_bytes", "history[].error",
+    "history[].key_fingerprint",
+)  # fmt: skip
+BACKUP_ISSUE_FIELDS = (
+    "object_id", "kind", "status", "session_id", "package_id", "tracking_number", "detected_at", "detail",
+    "sha256_expected", "sha256_actual", "resolution.action", "resolution.note", "resolution.by.id",
+    "resolution.by.display_name", "resolution.at",
+)  # fmt: skip
+
+
 # API-70 item / API-154 response (02 §6.2).
 SHOP_FIELDS = (
     "id",
@@ -1173,7 +1196,40 @@ CONTRACT: tuple[Api, ...] = (
     ),
     Api("API-153", "GET", "/reports/{report}/export", 200),  # text/csv (T-217)
     # Phase 3 M15 sao lưu cloud (02 §6.2 API-180..188).
+    Api(
+        "API-180",
+        "GET",
+        "/backup",
+        200,
+        BACKUP_STATUS_FIELDS,
+        {
+            "state": _e(*BACKUP_STATES),
+            "history[].status": _e("RUNNING", "SUCCESS", "FAILED"),
+        },
+    ),
+    Api(
+        "API-181",
+        "PUT",
+        "/backup/settings",
+        200,
+        BACKUP_STATUS_FIELDS,
+        request_fields=("enabled", "upload_mbps", "all_pack_clips"),
+    ),
+    Api("API-182", "POST", "/backup/confirm-key", 200, BACKUP_STATUS_FIELDS, request_fields=("fingerprint",)),
     Api("API-183", "POST", "/backup/test", 200, ("ok", "elapsed_ms")),
+    Api("API-184", "POST", "/backup/run-db", 202, ("run_id",)),
+    Api(
+        "API-185",
+        "GET",
+        "/backup/issues",
+        200,
+        (*(f"items[].{f}" for f in BACKUP_ISSUE_FIELDS), "page", "page_size", "total"),
+        {
+            "items[].kind": _e("CLIP", "SNAPSHOT"),
+            "items[].status": _e("HASH_MISMATCH", "FAILED", "IGNORED", "PENDING"),
+            "items[].resolution.action": _e("UPLOAD_ANYWAY", "IGNORE", "RETRY", "ACCEPT_RESTORED"),
+        },
+    ),
     Api("API-40", "GET", "/clips/{clip_id}/play-url", 200, ("url", "expires_at")),
     Api("API-41", "GET", "/media/clips/{clip_id}", 200),
     Api(
@@ -1384,6 +1440,13 @@ CONTRACT: tuple[Api, ...] = (
             "sync[].shop_id",
             "sync[].last_success_at",
             "sync[].last_error",
+            "sync[].platform",
+            "sync[].shop_name",
+            "backup.state",
+            "backup.last_db_success_at",
+            "backup.pending",
+            "backup.late",
+            "backup.last_error.code",
         ),
         {"db": _e("OK", "ERROR"), "redis": _e("OK", "ERROR"), "mediamtx": _e("OK", "ERROR")},
     ),

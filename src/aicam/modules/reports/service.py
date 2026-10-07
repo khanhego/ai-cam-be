@@ -292,6 +292,9 @@ async def _attention(db: AsyncSession, counts: Counts, settings: Settings) -> li
     if failed:  # 02a J-01 "lỗi cuối → attention" (kind mới, DEC-105)
         items.append({"kind": "CLIP_FAILED", "count": int(failed)})
     items.extend(await _return_attention(db, counts, settings))
+    from aicam.modules.backup import service as backup_service  # backup → settings → reports: import muộn
+
+    items.extend(await backup_service.stale_attention(db, settings))  # chỉ ADMIN (ADMIN_ONLY_KINDS)
     disk = disk_usage(settings)
     if disk and disk["percent"] >= DISK_WARN_PERCENT:
         items.append({"kind": "DISK_USAGE", "percent": disk["percent"]})

@@ -589,6 +589,131 @@
         "title": "AuthUrlOut",
         "type": "object"
       },
+      "BackupSettingsIn": {
+        "description": "API-181 — trường thiếu = giữ.",
+        "properties": {
+          "all_pack_clips": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "All Pack Clips"
+          },
+          "enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enabled"
+          },
+          "upload_mbps": {
+            "anyOf": [
+              {
+                "maximum": 1000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Upload Mbps"
+          }
+        },
+        "title": "BackupSettingsIn",
+        "type": "object"
+      },
+      "BackupStatusOut": {
+        "description": "API-180 `GET /backup`.",
+        "properties": {
+          "cloud_bytes": {
+            "title": "Cloud Bytes",
+            "type": "integer"
+          },
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "db": {
+            "$ref": "#/components/schemas/DbOut"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "evidence": {
+            "$ref": "#/components/schemas/aicam__modules__backup__schemas__EvidenceOut"
+          },
+          "history": {
+            "items": {
+              "$ref": "#/components/schemas/HistoryOut"
+            },
+            "title": "History",
+            "type": "array"
+          },
+          "key": {
+            "$ref": "#/components/schemas/KeyOut"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settings": {
+            "$ref": "#/components/schemas/aicam__modules__backup__schemas__SettingsOut"
+          },
+          "state": {
+            "enum": [
+              "ON",
+              "NOT_CONFIGURED",
+              "KEY_UNCONFIRMED",
+              "KEY_CHANGED",
+              "DISABLED",
+              "RESTORE_PENDING"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "storage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StorageOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "configured",
+          "storage",
+          "key",
+          "state",
+          "enabled",
+          "db",
+          "evidence",
+          "cloud_bytes",
+          "last_error",
+          "settings",
+          "history"
+        ],
+        "title": "BackupStatusOut",
+        "type": "object"
+      },
       "Body_upload_api_v1_imports_post": {
         "properties": {
           "file": {
@@ -1133,7 +1258,7 @@
           },
           "evidence": {
             "items": {
-              "$ref": "#/components/schemas/EvidenceOut"
+              "$ref": "#/components/schemas/aicam__modules__claims__schemas__EvidenceOut"
             },
             "title": "Evidence",
             "type": "array"
@@ -1233,7 +1358,7 @@
           "removed_evidence": {
             "default": [],
             "items": {
-              "$ref": "#/components/schemas/EvidenceOut"
+              "$ref": "#/components/schemas/aicam__modules__claims__schemas__EvidenceOut"
             },
             "title": "Removed Evidence",
             "type": "array"
@@ -2118,6 +2243,21 @@
         "title": "ClosedSessionOut",
         "type": "object"
       },
+      "ConfirmKeyIn": {
+        "properties": {
+          "fingerprint": {
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Fingerprint",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fingerprint"
+        ],
+        "title": "ConfirmKeyIn",
+        "type": "object"
+      },
       "CorrectIn": {
         "properties": {
           "conclusion": {
@@ -2257,6 +2397,79 @@
         "title": "DailyOut",
         "type": "object"
       },
+      "DbOut": {
+        "properties": {
+          "consecutive_failures": {
+            "title": "Consecutive Failures",
+            "type": "integer"
+          },
+          "hours_since_success": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hours Since Success"
+          },
+          "last_size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Size Bytes"
+          },
+          "last_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Success At"
+          },
+          "late": {
+            "title": "Late",
+            "type": "boolean"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At"
+          },
+          "running": {
+            "title": "Running",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "last_success_at",
+          "last_size_bytes",
+          "next_run_at",
+          "hours_since_success",
+          "late",
+          "running",
+          "consecutive_failures"
+        ],
+        "title": "DbOut",
+        "type": "object"
+      },
       "DecisionIn": {
         "properties": {
           "action": {
@@ -2378,6 +2591,30 @@
         "title": "DiskOut",
         "type": "object"
       },
+      "ErrorOut": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "at"
+        ],
+        "title": "ErrorOut",
+        "type": "object"
+      },
       "EvidenceClip": {
         "properties": {
           "camera_role": {
@@ -2480,86 +2717,6 @@
           "version"
         ],
         "title": "EvidenceIn",
-        "type": "object"
-      },
-      "EvidenceOut": {
-        "properties": {
-          "auto": {
-            "title": "Auto",
-            "type": "boolean"
-          },
-          "id": {
-            "format": "uuid",
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "enum": [
-              "SESSION",
-              "SNAPSHOT"
-            ],
-            "title": "Kind",
-            "type": "string"
-          },
-          "primary": {
-            "default": false,
-            "title": "Primary",
-            "type": "boolean"
-          },
-          "prior_return": {
-            "default": false,
-            "title": "Prior Return",
-            "type": "boolean"
-          },
-          "removal_keep_until": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Removal Keep Until"
-          },
-          "removed": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RemovedInfo"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "session": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/EvidenceSession"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "snapshot": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/EvidenceSnapshot"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "id",
-          "kind",
-          "auto"
-        ],
-        "title": "EvidenceOut",
         "type": "object"
       },
       "EvidencePackCreated": {
@@ -3183,8 +3340,74 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HealthBackupOut": {
+        "description": "API-81 `backup` (02 §6.2).",
+        "properties": {
+          "last_db_success_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Db Success At"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ErrorOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "late": {
+            "title": "Late",
+            "type": "boolean"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "ON",
+              "NOT_CONFIGURED",
+              "KEY_UNCONFIRMED",
+              "KEY_CHANGED",
+              "DISABLED",
+              "RESTORE_PENDING"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "last_db_success_at",
+          "pending",
+          "late",
+          "last_error"
+        ],
+        "title": "HealthBackupOut",
+        "type": "object"
+      },
       "HealthOut": {
         "properties": {
+          "backup": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HealthBackupOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "cameras": {
             "items": {
               "$ref": "#/components/schemas/CameraHealth"
@@ -3243,6 +3466,91 @@
           "sync"
         ],
         "title": "HealthOut",
+        "type": "object"
+      },
+      "HistoryOut": {
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "key_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Fingerprint"
+          },
+          "kind": {
+            "const": "DB",
+            "title": "Kind",
+            "type": "string"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "RUNNING",
+              "SUCCESS",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "started_at",
+          "finished_at",
+          "status",
+          "size_bytes",
+          "error",
+          "key_fingerprint"
+        ],
+        "title": "HistoryOut",
         "type": "object"
       },
       "HoldIn": {
@@ -3748,6 +4056,172 @@
         "title": "InspectionSavedOut",
         "type": "object"
       },
+      "IssueOut": {
+        "description": "API-185 item (cũng là response API-188).",
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "detected_at": {
+            "format": "date-time",
+            "title": "Detected At",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "CLIP",
+              "SNAPSHOT"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "object_id": {
+            "format": "uuid",
+            "title": "Object Id",
+            "type": "string"
+          },
+          "package_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Package Id"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResolutionOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "sha256_actual": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256 Actual"
+          },
+          "sha256_expected": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256 Expected"
+          },
+          "status": {
+            "enum": [
+              "PENDING",
+              "UPLOADING",
+              "UPLOADED",
+              "FAILED",
+              "HASH_MISMATCH",
+              "SOURCE_DELETED",
+              "IGNORED",
+              "CLOUD_DELETED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Number"
+          }
+        },
+        "required": [
+          "object_id",
+          "kind",
+          "status",
+          "session_id",
+          "package_id",
+          "tracking_number",
+          "detected_at",
+          "detail",
+          "attempts",
+          "sha256_expected",
+          "sha256_actual",
+          "resolution"
+        ],
+        "title": "IssueOut",
+        "type": "object"
+      },
+      "IssuesPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/IssueOut"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "IssuesPage",
+        "type": "object"
+      },
       "ItemDetail": {
         "properties": {
           "image_url": {
@@ -3853,6 +4327,75 @@
           "image_url"
         ],
         "title": "ItemOut",
+        "type": "object"
+      },
+      "KeyOut": {
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "confirmed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed At"
+          },
+          "confirmed_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "confirmed_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Confirmed Fingerprint"
+          },
+          "fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint"
+          },
+          "old_keys": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/OldKeyOut"
+            },
+            "title": "Old Keys",
+            "type": "array"
+          }
+        },
+        "required": [
+          "configured",
+          "fingerprint",
+          "confirmed_fingerprint",
+          "confirmed_at",
+          "confirmed_by"
+        ],
+        "title": "KeyOut",
         "type": "object"
       },
       "KindRow": {
@@ -4596,6 +5139,40 @@
           "at"
         ],
         "title": "NoteOut",
+        "type": "object"
+      },
+      "OldKeyOut": {
+        "description": "EX-K7 (DEC-495, 522): dấu vân tay cũ còn bản trên cloud (`cloud_present`).",
+        "properties": {
+          "db_runs": {
+            "title": "Db Runs",
+            "type": "integer"
+          },
+          "evidence_objects": {
+            "title": "Evidence Objects",
+            "type": "integer"
+          },
+          "fingerprint": {
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "reuploadable": {
+            "title": "Reuploadable",
+            "type": "integer"
+          },
+          "reuploadable_bytes": {
+            "title": "Reuploadable Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "fingerprint",
+          "evidence_objects",
+          "db_runs",
+          "reuploadable",
+          "reuploadable_bytes"
+        ],
+        "title": "OldKeyOut",
         "type": "object"
       },
       "OpenSummary": {
@@ -6530,6 +7107,54 @@
         "title": "Resolution",
         "type": "object"
       },
+      "ResolutionOut": {
+        "properties": {
+          "action": {
+            "enum": [
+              "UPLOAD_ANYWAY",
+              "IGNORE",
+              "RETRY",
+              "ACCEPT_RESTORED"
+            ],
+            "title": "Action",
+            "type": "string"
+          },
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UserRefOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          }
+        },
+        "required": [
+          "action",
+          "note",
+          "by",
+          "at"
+        ],
+        "title": "ResolutionOut",
+        "type": "object"
+      },
       "ResolveIn": {
         "properties": {
           "note": {
@@ -8048,6 +8673,20 @@
         "title": "RowErrorOut",
         "type": "object"
       },
+      "RunNowOut": {
+        "properties": {
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id"
+        ],
+        "title": "RunNowOut",
+        "type": "object"
+      },
       "RunOut": {
         "properties": {
           "queued": {
@@ -8857,85 +9496,6 @@
           "session_abandon_minutes"
         ],
         "title": "SettingsIn",
-        "type": "object"
-      },
-      "SettingsOut": {
-        "properties": {
-          "claim_deadline_days": {
-            "title": "Claim Deadline Days",
-            "type": "integer"
-          },
-          "claim_due_soon_hours": {
-            "title": "Claim Due Soon Hours",
-            "type": "integer"
-          },
-          "handover_warn_hours": {
-            "title": "Handover Warn Hours",
-            "type": "integer"
-          },
-          "packer_name_required": {
-            "default": false,
-            "title": "Packer Name Required",
-            "type": "boolean"
-          },
-          "refund_only_default_hours": {
-            "default": 48,
-            "title": "Refund Only Default Hours",
-            "type": "integer"
-          },
-          "retention_clip_days": {
-            "title": "Retention Clip Days",
-            "type": "integer"
-          },
-          "retention_clip_min_days": {
-            "title": "Retention Clip Min Days",
-            "type": "integer"
-          },
-          "retention_raw_days": {
-            "title": "Retention Raw Days",
-            "type": "integer"
-          },
-          "return_abandon_minutes": {
-            "title": "Return Abandon Minutes",
-            "type": "integer"
-          },
-          "return_missing_days": {
-            "title": "Return Missing Days",
-            "type": "integer"
-          },
-          "return_warn_minutes": {
-            "title": "Return Warn Minutes",
-            "type": "integer"
-          },
-          "session_abandon_minutes": {
-            "title": "Session Abandon Minutes",
-            "type": "integer"
-          },
-          "session_warn_minutes": {
-            "title": "Session Warn Minutes",
-            "type": "integer"
-          },
-          "updated_at": {
-            "format": "date-time",
-            "title": "Updated At",
-            "type": "string"
-          }
-        },
-        "required": [
-          "retention_raw_days",
-          "retention_clip_days",
-          "session_warn_minutes",
-          "session_abandon_minutes",
-          "return_warn_minutes",
-          "return_abandon_minutes",
-          "return_missing_days",
-          "handover_warn_hours",
-          "claim_deadline_days",
-          "claim_due_soon_hours",
-          "retention_clip_min_days",
-          "updated_at"
-        ],
-        "title": "SettingsOut",
         "type": "object"
       },
       "ShopBrief": {
@@ -9765,6 +10325,31 @@
         "title": "StatusCounts",
         "type": "object"
       },
+      "StorageOut": {
+        "properties": {
+          "bucket": {
+            "title": "Bucket",
+            "type": "string"
+          },
+          "endpoint_host": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Host"
+          }
+        },
+        "required": [
+          "endpoint_host",
+          "bucket"
+        ],
+        "title": "StorageOut",
+        "type": "object"
+      },
       "SummaryOut": {
         "properties": {
           "open": {
@@ -9803,10 +10388,32 @@
             ],
             "title": "Last Success At"
           },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
           "shop_id": {
             "format": "uuid",
             "title": "Shop Id",
             "type": "string"
+          },
+          "shop_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Name"
           }
         },
         "required": [
@@ -10284,6 +10891,25 @@
         "title": "UserPatchIn",
         "type": "object"
       },
+      "UserRefOut": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "UserRefOut",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -10340,6 +10966,170 @@
           "work_mode"
         ],
         "title": "WorkModeIn",
+        "type": "object"
+      },
+      "aicam__modules__backup__schemas__EvidenceOut": {
+        "properties": {
+          "failed": {
+            "title": "Failed",
+            "type": "integer"
+          },
+          "hash_mismatch": {
+            "title": "Hash Mismatch",
+            "type": "integer"
+          },
+          "ignored": {
+            "title": "Ignored",
+            "type": "integer"
+          },
+          "late_count": {
+            "title": "Late Count",
+            "type": "integer"
+          },
+          "oldest_pending_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oldest Pending At"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "source_deleted": {
+            "title": "Source Deleted",
+            "type": "integer"
+          },
+          "source_missing": {
+            "title": "Source Missing",
+            "type": "integer"
+          },
+          "uploaded": {
+            "title": "Uploaded",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "uploaded",
+          "pending",
+          "failed",
+          "oldest_pending_at",
+          "late_count",
+          "hash_mismatch",
+          "ignored",
+          "source_deleted",
+          "source_missing"
+        ],
+        "title": "EvidenceOut",
+        "type": "object"
+      },
+      "aicam__modules__backup__schemas__SettingsOut": {
+        "properties": {
+          "all_pack_clips": {
+            "title": "All Pack Clips",
+            "type": "boolean"
+          },
+          "all_pack_clips_estimate_gb_per_day": {
+            "title": "All Pack Clips Estimate Gb Per Day",
+            "type": "number"
+          },
+          "upload_mbps": {
+            "title": "Upload Mbps",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "upload_mbps",
+          "all_pack_clips",
+          "all_pack_clips_estimate_gb_per_day"
+        ],
+        "title": "SettingsOut",
+        "type": "object"
+      },
+      "aicam__modules__claims__schemas__EvidenceOut": {
+        "properties": {
+          "auto": {
+            "title": "Auto",
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "SESSION",
+              "SNAPSHOT"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "primary": {
+            "default": false,
+            "title": "Primary",
+            "type": "boolean"
+          },
+          "prior_return": {
+            "default": false,
+            "title": "Prior Return",
+            "type": "boolean"
+          },
+          "removal_keep_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removal Keep Until"
+          },
+          "removed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RemovedInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceSession"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvidenceSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "auto"
+        ],
+        "title": "EvidenceOut",
         "type": "object"
       },
       "aicam__modules__imports__schemas__Counts": {
@@ -10487,6 +11277,85 @@
           "name"
         ],
         "title": "StationRef",
+        "type": "object"
+      },
+      "aicam__modules__settings__schemas__SettingsOut": {
+        "properties": {
+          "claim_deadline_days": {
+            "title": "Claim Deadline Days",
+            "type": "integer"
+          },
+          "claim_due_soon_hours": {
+            "title": "Claim Due Soon Hours",
+            "type": "integer"
+          },
+          "handover_warn_hours": {
+            "title": "Handover Warn Hours",
+            "type": "integer"
+          },
+          "packer_name_required": {
+            "default": false,
+            "title": "Packer Name Required",
+            "type": "boolean"
+          },
+          "refund_only_default_hours": {
+            "default": 48,
+            "title": "Refund Only Default Hours",
+            "type": "integer"
+          },
+          "retention_clip_days": {
+            "title": "Retention Clip Days",
+            "type": "integer"
+          },
+          "retention_clip_min_days": {
+            "title": "Retention Clip Min Days",
+            "type": "integer"
+          },
+          "retention_raw_days": {
+            "title": "Retention Raw Days",
+            "type": "integer"
+          },
+          "return_abandon_minutes": {
+            "title": "Return Abandon Minutes",
+            "type": "integer"
+          },
+          "return_missing_days": {
+            "title": "Return Missing Days",
+            "type": "integer"
+          },
+          "return_warn_minutes": {
+            "title": "Return Warn Minutes",
+            "type": "integer"
+          },
+          "session_abandon_minutes": {
+            "title": "Session Abandon Minutes",
+            "type": "integer"
+          },
+          "session_warn_minutes": {
+            "title": "Session Warn Minutes",
+            "type": "integer"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "retention_raw_days",
+          "retention_clip_days",
+          "session_warn_minutes",
+          "session_abandon_minutes",
+          "return_warn_minutes",
+          "return_abandon_minutes",
+          "return_missing_days",
+          "handover_warn_hours",
+          "claim_deadline_days",
+          "claim_due_soon_hours",
+          "retention_clip_min_days",
+          "updated_at"
+        ],
+        "title": "SettingsOut",
         "type": "object"
       },
       "aicam__modules__users__schemas__StationRef": {
@@ -10962,6 +11831,222 @@
         "summary": "Refresh",
         "tags": [
           "auth"
+        ]
+      }
+    },
+    "/api/v1/backup": {
+      "get": {
+        "description": "API-180 (FR-02.15, 02.17, 02.18): trạng thái sao lưu + lịch sử 14 ngày.",
+        "operationId": "get_status_api_v1_backup_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Status",
+        "tags": [
+          "backup"
+        ]
+      }
+    },
+    "/api/v1/backup/confirm-key": {
+      "post": {
+        "description": "API-182 (FR-02.17): xác nhận đã cất bản sao khóa giải mã theo dấu vân tay.",
+        "operationId": "confirm_key_api_v1_backup_confirm_key_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmKeyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Key",
+        "tags": [
+          "backup"
+        ]
+      }
+    },
+    "/api/v1/backup/issues": {
+      "get": {
+        "description": "API-185 (EX-K6, EX-K9): lệch mã băm / không thấy tệp tại kho / lỗi tải.",
+        "operationId": "list_issues_api_v1_backup_issues_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "kind",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "HASH_MISMATCH",
+                    "UPLOAD_FAILED",
+                    "SOURCE_MISSING"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Kind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include_resolved",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Include Resolved",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssuesPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Issues",
+        "tags": [
+          "backup"
+        ]
+      }
+    },
+    "/api/v1/backup/run-db": {
+      "post": {
+        "description": "API-184: sao lưu DB ngay (J-20).",
+        "operationId": "run_db_api_v1_backup_run_db_post",
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunNowOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Run Db",
+        "tags": [
+          "backup"
+        ]
+      }
+    },
+    "/api/v1/backup/settings": {
+      "put": {
+        "description": "API-181: bật / tắt, tốc độ tải (1–1000 Mbit/s), sao lưu mọi clip đóng gói.",
+        "operationId": "put_settings_api_v1_backup_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BackupSettingsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BackupStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Settings",
+        "tags": [
+          "backup"
         ]
       }
     },
@@ -14063,7 +15148,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SettingsOut"
+                  "$ref": "#/components/schemas/aicam__modules__settings__schemas__SettingsOut"
                 }
               }
             },
@@ -14093,7 +15178,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SettingsOut"
+                  "$ref": "#/components/schemas/aicam__modules__settings__schemas__SettingsOut"
                 }
               }
             },
