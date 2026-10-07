@@ -23,6 +23,24 @@ def _e(*values: str) -> frozenset[str]:
     return frozenset(values)
 
 
+# API-70 item / API-154 response (02 §6.2).
+SHOP_FIELDS = (
+    "id",
+    "platform",
+    "name",
+    "auth_status",
+    "auth_expires_at",
+    "last_synced_at",
+    "today_synced_orders",
+    "last_error",
+    "region",
+    "sync_warnings[].code",
+    "sync_warnings[].message",
+    "disconnected_at",
+    "sync_in_progress",
+)
+
+
 # API-10 dùng lại trong API-11..14 (`state`) và WS-01 `station.state`.
 STATE_FIELDS = (
     "station.id",
@@ -1200,23 +1218,28 @@ CONTRACT: tuple[Api, ...] = (
         "GET",
         "/shops",
         200,
-        _prefixed(
-            "items[]",
-            (
-                "id",
-                "platform",
-                "name",
-                "auth_status",
-                "auth_expires_at",
-                "last_synced_at",
-                "today_synced_orders",
-                "last_error",
-            ),
+        (
+            # Phase 3 (02 §6.2 API-70 mở rộng): cấu hình từng sàn + trường shop mới.
+            "platforms[].platform",
+            "platforms[].enabled",
+            "platforms[].returns_enabled",
+            "platforms[].configured",
+            *_prefixed("items[]", SHOP_FIELDS),
         ),
     ),
-    Api("API-71", "POST", "/shops/shopee/auth-url", 200, ("url",)),
+    # Phase 3: path tổng quát `{platform}` (`shopee` | `tiktok`) — đường cũ `/shops/shopee/auth-url` khớp mẫu.
+    Api("API-71", "POST", "/shops/{platform}/auth-url", 200, ("url",)),
     Api("API-72", "GET", "/shops/shopee/callback", 302),
     Api("API-73", "POST", "/shops/{shop_id}/sync", 202, ("queued",)),
+    Api("API-154", "POST", "/shops/{shop_id}/disconnect", 200, SHOP_FIELDS),
+    Api("API-155", "GET", "/shops/tiktok/callback", 302),
+    Api(
+        "API-156",
+        "GET",
+        "/shops/brief",
+        200,
+        _prefixed("items[]", ("id", "platform", "name", "auth_status")),
+    ),
     Api("API-80 get", "GET", "/settings", 200, SETTINGS_FIELDS),
     Api(
         "API-80 put",

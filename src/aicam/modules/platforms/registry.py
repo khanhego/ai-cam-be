@@ -54,4 +54,4 @@ def returns_enabled(platform: str, settings: Settings) -> bool:
 def adapter_for(platform: str, settings: Settings) -> PlatformAdapter:
     if _check(platform) == SHOPEE:
         return service.get_adapter(settings)
-    return service.UnconfiguredAdapter()  # TikTok: adapter thật / mock ở T-208, T-209, T-211
+    return service.UnconfiguredAdapter(TIKTOK)  # TikTok: adapter thật / mock ở T-208, T-209, T-211

@@ -1,6 +1,7 @@
 """Đẩy sự kiện realtime qua Redis (02a §4 WS).
 
-Kênh: `ws:station:{id}`, `ws:dashboard`, `ws:approvals`, `ws:user:{id}`.
+Kênh: `ws:station:{id}`, `ws:dashboard`, `ws:approvals`, `ws:user:{id}`, `ws:admin` (Phase 3 — chỉ ADMIN:
+`shop.updated`, `backup.updated`).
 
 Hub WebSocket trong api (T-11) nghe các kênh này và gửi xuống client. Gọi sau commit (`after_commit`).
 """
@@ -41,3 +42,8 @@ async def to_approvers(event_type: str, data: Any) -> None:
 
 async def to_user(user_id: uuid.UUID, event_type: str, data: Any) -> None:
     await get_redis().publish(f"ws:user:{user_id}", _message(event_type, data))
+
+
+async def to_admin(event_type: str, data: Any) -> None:
+    """Kênh `ws:admin` (02 §6.2 WS-02, 02a §2): chỉ ADMIN nhận (`shop.updated`, `backup.updated`)."""
+    await get_redis().publish("ws:admin", _message(event_type, data))

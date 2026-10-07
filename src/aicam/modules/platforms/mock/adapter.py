@@ -163,7 +163,7 @@ class MockAdapter:
         )
 
     # ----- PlatformAdapter: ủy quyền (luồng giả — chuyển thẳng về callback với code giả)
-    def build_auth_url(self, redirect_url: str) -> str:
+    def build_auth_url(self, redirect_url: str, state: str) -> str:
         sep = "&" if "?" in redirect_url else "?"
         return f"{redirect_url}{sep}{urlencode({'code': 'MOCK-CODE', 'shop_id': MOCK_SHOP_ID})}"
 
@@ -175,11 +175,11 @@ class MockAdapter:
             expires_at=clock.now() + timedelta(hours=4),
         )
 
-    async def exchange_code(self, code: str, shop_id: str) -> ShopCredentials:
+    async def exchange_code(self, code: str, shop_id: str | None) -> list[ShopCredentials]:
         self.calls.append("exchange_code")
-        if code != "MOCK-CODE":
+        if code != "MOCK-CODE" or not shop_id:
             raise PlatformAuthError("error_auth: code không hợp lệ")
-        return self._creds(shop_id)
+        return [replace(self._creds(shop_id), grant_ref=shop_id)]
 
     async def refresh(self, creds: ShopCredentials) -> ShopCredentials:
         self.calls.append("refresh")

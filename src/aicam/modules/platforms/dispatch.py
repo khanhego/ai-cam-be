@@ -19,8 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core.db import commit, rollback
 from aicam.core.settings import Settings
 from aicam.modules.orders.models import Shop
-from aicam.modules.platforms import budget, registry, sync
+from aicam.modules.platforms import budget, connect, registry, sync
 from aicam.modules.platforms import service as platforms
+from aicam.realtime import publish
 
 log = structlog.get_logger()
 
@@ -110,7 +111,9 @@ async def run_shop(
     try:
         with budget.time_budget(budget_s(kind, settings)):
             if kind == ORDERS:
-                return await sync.sync_orders(session, adapter, settings, shop_id, lock_held=lock_held)
+                out = await sync.sync_orders(session, adapter, settings, shop_id, lock_held=lock_held)
+                await _publish_shop(session, shop_id)
+                return out
             if kind == SHIPPING:
                 return await sync.sync_shipping_status(session, adapter, settings, shop_id)
             return await sync.sync_returns(session, adapter, settings, shop_id)
@@ -118,6 +121,14 @@ async def run_shop(
         await rollback(session)
         log.exception("platform_shop_task_crashed", kind=kind, shop_id=str(shop_id))
         raise
+
+
+async def _publish_shop(session: AsyncSession, shop_id: uuid.UUID) -> None:
+    """WS-02 `shop.updated` (D7) sau mỗi lượt J-04 của shop — trạng thái / giờ đồng bộ / lỗi có thể đã đổi."""
+    shop = await session.get(Shop, shop_id, populate_existing=True)
+    if shop is not None:
+        await publish.to_admin("shop.updated", connect.shop_event(shop))
+    await commit(session)
 
 
 async def refresh_all(session: AsyncSession, settings: Settings) -> dict[str, Any]:

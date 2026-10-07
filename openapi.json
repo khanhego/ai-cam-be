@@ -5084,6 +5084,34 @@
         "title": "Page[UserListItem]",
         "type": "object"
       },
+      "PlatformInfo": {
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          },
+          "returns_enabled": {
+            "title": "Returns Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "platform",
+          "enabled",
+          "returns_enabled",
+          "configured"
+        ],
+        "title": "PlatformInfo",
+        "type": "object"
+      },
       "PlayUrlOut": {
         "properties": {
           "expires_at": {
@@ -7906,6 +7934,58 @@
         "title": "SettingsOut",
         "type": "object"
       },
+      "ShopBrief": {
+        "properties": {
+          "auth_status": {
+            "title": "Auth Status",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "platform": {
+            "title": "Platform",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "platform",
+          "name",
+          "auth_status"
+        ],
+        "title": "ShopBrief",
+        "type": "object"
+      },
+      "ShopBriefList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ShopBrief"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ShopBriefList",
+        "type": "object"
+      },
       "ShopList": {
         "properties": {
           "items": {
@@ -7914,9 +7994,17 @@
             },
             "title": "Items",
             "type": "array"
+          },
+          "platforms": {
+            "items": {
+              "$ref": "#/components/schemas/PlatformInfo"
+            },
+            "title": "Platforms",
+            "type": "array"
           }
         },
         "required": [
+          "platforms",
           "items"
         ],
         "title": "ShopList",
@@ -7939,6 +8027,18 @@
           "auth_status": {
             "title": "Auth Status",
             "type": "string"
+          },
+          "disconnected_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disconnected At"
           },
           "id": {
             "format": "uuid",
@@ -7983,6 +8083,30 @@
           "platform": {
             "title": "Platform",
             "type": "string"
+          },
+          "region": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Region"
+          },
+          "sync_in_progress": {
+            "default": false,
+            "title": "Sync In Progress",
+            "type": "boolean"
+          },
+          "sync_warnings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SyncWarning"
+            },
+            "title": "Sync Warnings",
+            "type": "array"
           },
           "today_synced_orders": {
             "title": "Today Synced Orders",
@@ -8631,6 +8755,58 @@
           "last_error"
         ],
         "title": "SyncHealth",
+        "type": "object"
+      },
+      "SyncWarning": {
+        "properties": {
+          "at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "order_sn": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Order Sn"
+          },
+          "tracking_number": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tracking Number"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "SyncWarning",
         "type": "object"
       },
       "TabCounts": {
@@ -12418,7 +12594,7 @@
     },
     "/api/v1/shops": {
       "get": {
-        "description": "API-70: trạng thái kết nối sàn.",
+        "description": "API-70: cấu hình từng sàn + mọi shop (kể cả đã ngắt).",
         "operationId": "list_shops_api_v1_shops_get",
         "responses": {
           "200": {
@@ -12438,23 +12614,23 @@
         ]
       }
     },
-    "/api/v1/shops/shopee/auth-url": {
-      "post": {
-        "description": "API-71: URL ủy quyền Shopee; `state` chống CSRF lưu Redis 10 phút + cookie HttpOnly băm `state` gắn\ntrình duyệt (G3-N7). Chưa cấu hình → 503.",
-        "operationId": "auth_url_api_v1_shops_shopee_auth_url_post",
+    "/api/v1/shops/brief": {
+      "get": {
+        "description": "API-156: danh sách shop rút gọn cho bộ lọc sàn / shop (D3, D14, D15, D16, D20).",
+        "operationId": "shops_brief_api_v1_shops_brief_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AuthUrlOut"
+                  "$ref": "#/components/schemas/ShopBriefList"
                 }
               }
             },
             "description": "Successful Response"
           }
         },
-        "summary": "Auth Url",
+        "summary": "Shops Brief",
         "tags": [
           "shops"
         ]
@@ -12462,7 +12638,7 @@
     },
     "/api/v1/shops/shopee/callback": {
       "get": {
-        "description": "API-72 (công khai + `state`): đổi code → token, lưu shop, J-04 ngay; 302 về D7 `?result=`.",
+        "description": "API-72 (công khai + `state`): đổi code → token, lưu shop, J-04 ngay; 302 về D7\n`?platform&result&count`.",
         "operationId": "callback_api_v1_shops_shopee_callback_get",
         "parameters": [
           {
@@ -12535,9 +12711,155 @@
         ]
       }
     },
+    "/api/v1/shops/tiktok/callback": {
+      "get": {
+        "description": "API-155 (công khai + `state`): TikTok gửi `code`, `state` (tham số khác bỏ qua) → mọi shop của lần ủy\nquyền được thêm / cập nhật; 302 về D7.",
+        "operationId": "tiktok_callback_api_v1_shops_tiktok_callback_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Tiktok Callback",
+        "tags": [
+          "shops"
+        ]
+      }
+    },
+    "/api/v1/shops/{platform}/auth-url": {
+      "post": {
+        "description": "API-71 (`shopee` | `tiktok`): URL ủy quyền; `state` chống CSRF lưu Redis 10 phút + cookie HttpOnly băm\n`state` gắn trình duyệt (G3-N7). Sàn lạ → 404; chưa cấu hình → 503.",
+        "operationId": "auth_url_api_v1_shops__platform__auth_url_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "platform",
+            "required": true,
+            "schema": {
+              "title": "Platform",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthUrlOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Auth Url",
+        "tags": [
+          "shops"
+        ]
+      }
+    },
+    "/api/v1/shops/{shop_id}/disconnect": {
+      "post": {
+        "description": "API-154: ngắt một shop (idempotent); shop khác không đổi; dữ liệu giữ nguyên (EX-T7).",
+        "operationId": "disconnect_api_v1_shops__shop_id__disconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "shop_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Shop Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShopOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect",
+        "tags": [
+          "shops"
+        ]
+      }
+    },
     "/api/v1/shops/{shop_id}/sync": {
       "post": {
-        "description": "API-73: đồng bộ ngay (J-04 queue `sync`); đang chạy → 409 SYNC_IN_PROGRESS.",
+        "description": "API-73: đồng bộ ngay (J-04 một shop); đang chạy → 409 SYNC_IN_PROGRESS; sàn tắt → 503.",
         "operationId": "sync_api_v1_shops__shop_id__sync_post",
         "parameters": [
           {

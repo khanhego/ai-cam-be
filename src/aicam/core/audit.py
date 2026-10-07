@@ -30,6 +30,7 @@ ACTIONS = frozenset(
         "USER_UPDATE",
         "SESSIONS_REVOKED",
         "SHOP_CONNECT",
+        "SHOP_DISCONNECT",  # Phase 3 API-154
         "ORDER_OVERWRITTEN_BY_API",
         # Phase 2 (02 §6.2 API-92, §6.3 #19, §6.5 #1).
         "STATION_WORK_MODE",

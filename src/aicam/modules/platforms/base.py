@@ -118,10 +118,20 @@ class ShipmentRef:
 
 @dataclass(frozen=True)
 class ShopCredentials:
+    """Token của một shop. `shop_id` = mã shop trên sàn (`shop.platform_shop_id`).
+
+    Phase 3 (02a §2 base.py, DEC-433): `grant_ref` — lần ủy quyền chung (TikTok `open_id`; Shopee = mã shop);
+    `shop_cipher` (TikTok, tham số API cấp shop — không trả API), `shop_name`, `region` (adapter điền khi
+    `exchange_code` biết)."""
+
     shop_id: str
     access_token: str
     refresh_token: str
     expires_at: datetime
+    shop_cipher: str | None = None
+    grant_ref: str | None = None
+    shop_name: str | None = None
+    region: str | None = None
 
 
 class PlatformError(Exception):
@@ -135,9 +145,13 @@ class PlatformAuthError(PlatformError):
 class PlatformAdapter(Protocol):
     code: str
 
-    def build_auth_url(self, redirect_url: str) -> str: ...
+    def build_auth_url(self, redirect_url: str, state: str) -> str:
+        """URL trang ủy quyền. Shopee: `state` đã nằm trong `redirect_url`; TikTok: tham số `state`."""
+        ...
 
-    async def exchange_code(self, code: str, shop_id: str) -> ShopCredentials: ...
+    async def exchange_code(self, code: str, shop_id: str | None) -> list[ShopCredentials]:
+        """Đổi `code` → token cho **mọi** shop của lần ủy quyền (Shopee 1 shop; TikTok nhiều — FR-05.13)."""
+        ...
 
     async def refresh(self, creds: ShopCredentials) -> ShopCredentials: ...
 

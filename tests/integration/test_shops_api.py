@@ -82,7 +82,7 @@ async def test_not_configured(api: AsyncClient, admin: dict[str, str], test_sett
     assert res.json()["error"]["message"] == "Chưa cấu hình Shopee Open Platform. Dùng Nhập đơn từ file."
     res = await api.post(f"/api/v1/shops/{uuid.uuid4()}/sync", headers=admin)
     assert res.status_code == 503
-    assert (await api.get("/api/v1/shops", headers=admin)).json() == {"items": []}
+    assert (await api.get("/api/v1/shops", headers=admin)).json()["items"] == []
     # Adapter shopee chưa có partner key: quét vẫn chạy (chưa xác minh), không 503.
     test_settings.platform_adapter = "shopee"
     test_settings.shopee_enabled = True
@@ -97,13 +97,14 @@ async def test_connect_flow(
     """TC-05.01 (luồng API, adapter mock): auth-url có state → callback lưu shop CONNECTED, token mã hóa,
     audit SHOP_CONNECT, J-04 ngay; API-70 hiện trạng thái."""
     res = await api.post("/api/v1/shops/shopee/auth-url", headers=admin)
+    cookie = api.cookies.get("aicam_shopee_state")
     url = urlparse(res.json()["url"])
     q = parse_qs(url.query)
     assert url.path == "/api/v1/shops/shopee/callback"
     assert len(q["state"][0]) >= 24
     res = await api.get(f"{url.path}?{url.query}")
     assert res.status_code == 302
-    assert res.headers["location"] == "/admin/settings/shopee?result=connected"
+    assert res.headers["location"] == "/admin/settings/platforms?platform=shopee&result=connected&count=1"
 
     shop = await db.scalar(select(Shop).where(Shop.platform_shop_id == MOCK_SHOP_ID))
     assert shop is not None
@@ -122,9 +123,9 @@ async def test_connect_flow(
         ("platforms.sync_shop_returns", [str(shop.id)], "sync", 0.0),  # J-13 ngay sau kết nối (T-105)
     ]
 
-    # state dùng một lần: gọi lại cùng URL → error
-    res = await api.get(f"{url.path}?{url.query}")
-    assert res.headers["location"] == "/admin/settings/shopee?result=error"
+    # state dùng một lần: gọi lại cùng URL → expired (Phase 3 — 02 §6.2 API-72)
+    res = await api.get(f"{url.path}?{url.query}", headers={"cookie": f"aicam_shopee_state={cookie}"})
+    assert res.headers["location"] == "/admin/settings/platforms?platform=shopee&result=expired"
 
     body = (await api.get("/api/v1/shops", headers=admin)).json()
     item = body["items"][0]
@@ -148,7 +149,7 @@ async def test_callback_denied_and_bad_state(
     res = await api.get(
         "/api/v1/shops/shopee/callback", params={"state": "khong-co", "code": "MOCK-CODE", "shop_id": "1"}
     )
-    assert res.headers["location"].endswith("result=error")
+    assert res.headers["location"].endswith("result=error")  # cookie không khớp `state` (G3-N7)
     res = await api.post("/api/v1/shops/shopee/auth-url", headers=admin)
     state = parse_qs(urlparse(res.json()["url"]).query)["state"][0]
     res = await api.get(
@@ -332,4 +333,4 @@ async def test_callback_requires_state_cookie_of_same_browser(
     assert await db.scalar(select(Shop).where(Shop.platform_shop_id == MOCK_SHOP_ID)) is None
 
     ok = await api.get(f"{url.path}?{url.query}", headers={"cookie": f"aicam_shopee_state={good}"})
-    assert ok.headers["location"].endswith("result=connected")
+    assert ok.headers["location"].endswith("result=connected&count=1")

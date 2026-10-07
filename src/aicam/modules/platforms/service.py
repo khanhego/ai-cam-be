@@ -1,28 +1,26 @@
-"""Chọn adapter, kết nối shop Shopee (API-70..73), token mã hóa Fernet, tra sàn khi quét (02a §4, §7, §9)."""
+"""Chọn adapter Shopee, token mã hóa Fernet, khóa `sync:{shop}`, đẩy job sàn (02a §4, §7, §9).
 
-import hashlib
-import hmac
+Kết nối / ngắt / danh sách shop (API-70..73, 154..156): `platforms/connect.py`."""
+
 import secrets
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import structlog
 from cryptography.fernet import InvalidToken
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aicam.core import audit, clock
-from aicam.core.db import after_commit, commit
+from aicam.core import clock
 from aicam.core.errors import AppError
 from aicam.core.redis import get_redis
 from aicam.core.security import Cipher
 from aicam.core.settings import Settings
-from aicam.modules.orders.models import Order, Shop
+from aicam.modules.orders.models import Shop
 from aicam.modules.platforms.base import (
     PlatformAdapter,
     PlatformError,
@@ -32,7 +30,6 @@ from aicam.modules.platforms.base import (
     ShopCredentials,
 )
 from aicam.modules.platforms.mock.adapter import MockAdapter
-from aicam.modules.platforms.schemas import ShopOut
 from aicam.modules.platforms.shopee.adapter import ShopeeAdapter
 from aicam.modules.platforms.shopee.client import ShopeeClient
 
@@ -43,20 +40,19 @@ STATE_TTL_S = 600  # API-71: state chống CSRF hạn 10 phút
 SYNC_LOCK_TTL_S = 600  # 02a §6: lock Redis `sync:{shop}` TTL 10 phút
 SYNC_TASK = "platforms.sync_shop_orders"  # J-04 một shop (fan-out — T-205; `dispatch.SHOP_TASKS`)
 SYNC_RETURNS_TASK = "platforms.sync_shop_returns"  # J-13 một shop
-CALLBACK_PATH = "/api/v1/shops/shopee/callback"
-RESULT_PATH = "/admin/settings/shopee"
 
 
 class UnconfiguredAdapter:
-    """`PLATFORM_ADAPTER=shopee` nhưng chưa bật / chưa có partner key: quét → kiện chưa xác minh (BR-04)."""
+    """Sàn chưa bật / chưa có khóa ứng dụng: quét → kiện chưa xác minh (BR-04), job bỏ qua sàn."""
 
-    code = PLATFORM
+    def __init__(self, code: str = PLATFORM) -> None:
+        self.code = code
 
-    def build_auth_url(self, redirect_url: str) -> str:
-        raise not_configured()
+    def build_auth_url(self, redirect_url: str, state: str) -> str:
+        raise not_configured(self.code)
 
-    async def exchange_code(self, code: str, shop_id: str) -> ShopCredentials:
-        raise PlatformError("Chưa cấu hình Shopee")
+    async def exchange_code(self, code: str, shop_id: str | None) -> list[ShopCredentials]:
+        raise PlatformError("Chưa cấu hình sàn")
 
     async def refresh(self, creds: ShopCredentials) -> ShopCredentials:
         raise PlatformError("Chưa cấu hình Shopee")
@@ -132,10 +128,16 @@ def is_configured(settings: Settings) -> bool:
     )
 
 
-def not_configured() -> AppError:
-    return AppError(
-        "PLATFORM_NOT_CONFIGURED", "Chưa cấu hình Shopee Open Platform. Dùng Nhập đơn từ file.", 503
-    )
+NOT_CONFIGURED_MESSAGES = {
+    "SHOPEE": "Chưa cấu hình Shopee Open Platform. Dùng Nhập đơn từ file.",
+    "TIKTOK": "Chưa cấu hình TikTok Shop. Liên hệ IT để bật (cần tài khoản đối tác TikTok Shop).",
+}
+
+
+def not_configured(platform: str = PLATFORM) -> AppError:
+    """503 `PLATFORM_NOT_CONFIGURED`, `message` theo sàn (02 §6.2 API-71)."""
+    message = NOT_CONFIGURED_MESSAGES.get(platform, "Chưa cấu hình sàn.")
+    return AppError("PLATFORM_NOT_CONFIGURED", message, 503)
 
 
 def require_configured(settings: Settings) -> None:
@@ -181,6 +183,10 @@ def credentials(shop: Shop, cipher: Cipher) -> ShopCredentials | None:
         access_token=access,
         refresh_token=refresh,
         expires_at=shop.auth_expires_at,
+        shop_cipher=shop.shop_cipher,
+        grant_ref=shop.grant_ref,
+        shop_name=shop.name,
+        region=shop.region,
     )
 
 
@@ -189,6 +195,13 @@ def store_credentials(shop: Shop, creds: ShopCredentials, cipher: Cipher) -> Non
     shop.refresh_token_enc = cipher.encrypt(creds.refresh_token)
     shop.auth_expires_at = creds.expires_at
     shop.auth_status = "CONNECTED"
+    # Phase 3: thông tin ủy quyền adapter trả khi kết nối (làm mới token không trả → giữ giá trị cũ).
+    if creds.grant_ref:
+        shop.grant_ref = creds.grant_ref
+    if creds.shop_cipher:
+        shop.shop_cipher = creds.shop_cipher
+    if creds.region:
+        shop.region = creds.region
 
 
 async def connected_shop(session: AsyncSession) -> Shop | None:
@@ -243,139 +256,6 @@ async def lookup_targets(
     return out
 
 
-# ---------------------------------------------------------------- API-70
-
-
-def _day_start(day: date, tz: str) -> datetime:
-    return datetime.combine(day, time.min, tzinfo=ZoneInfo(tz))
-
-
-async def list_shops(session: AsyncSession, settings: Settings) -> list[ShopOut]:
-    """API-70. `today_synced_orders` = số đơn nguồn API của shop ghi / cập nhật từ 00:00 giờ VN hôm nay."""
-    start = _day_start(clock.now().astimezone(ZoneInfo(settings.tz_display)).date(), settings.tz_display)
-    shops = (
-        await session.scalars(select(Shop).where(Shop.platform == PLATFORM).order_by(Shop.created_at))
-    ).all()
-    out = []
-    for s in shops:
-        count = await session.scalar(
-            select(func.count())
-            .select_from(Order)
-            .where(Order.shop_id == s.id, Order.source == "API", Order.updated_at >= start)
-        )
-        out.append(
-            ShopOut(
-                id=s.id,
-                platform=s.platform,
-                name=s.name,
-                auth_status=s.auth_status,
-                auth_expires_at=s.auth_expires_at,
-                last_synced_at=s.last_synced_at,
-                today_synced_orders=int(count or 0),
-                last_error=s.last_error,
-            )
-        )
-    return out
-
-
-# ---------------------------------------------------------------- API-71, API-72 (FR-05.01, UC-10)
-
-
-def _state_key(state: str) -> str:
-    return f"shopee:oauth:{state}"
-
-
-def callback_url(settings: Settings, state: str) -> str:
-    """Shopee giữ nguyên query của `redirect` và nối thêm `code`, `shop_id` (DEC-123: cần xác nhận ở T-3)."""
-    base = settings.shopee_redirect_url or CALLBACK_PATH
-    sep = "&" if "?" in base else "?"
-    return f"{base}{sep}state={state}"
-
-
-STATE_COOKIE = "aicam_shopee_state"
-
-
-def state_fingerprint(state: str) -> str:
-    """Giá trị cookie gắn `state` với trình duyệt đã bấm Kết nối (G3-N7): chỉ lưu băm, không lưu `state`."""
-    return hashlib.sha256(state.encode()).hexdigest()
-
-
-async def auth_url(adapter: PlatformAdapter, settings: Settings, user_id: uuid.UUID) -> tuple[str, str]:
-    """Trả (URL ủy quyền, `state`) — router đặt cookie `state_fingerprint(state)`."""
-    require_configured(settings)
-    state = secrets.token_urlsafe(24)
-    await get_redis().set(_state_key(state), str(user_id), ex=STATE_TTL_S)
-    return adapter.build_auth_url(callback_url(settings, state)), state
-
-
-async def handle_callback(
-    session: AsyncSession,
-    adapter: PlatformAdapter,
-    settings: Settings,
-    *,
-    state: str | None,
-    code: str | None,
-    shop_id: str | None,
-    ip: str | None,
-    state_cookie: str | None = None,
-) -> str:
-    """API-72: trả `result` cho redirect: `connected` | `denied` | `error`. Không ném lỗi ra trình duyệt.
-
-    `state` phải khớp cookie của trình duyệt đã gọi API-71 (G3-N7): link callback bị lộ / bị dụ mở ở trình
-    duyệt khác không gắn được shop của kẻ tấn công.
-    """
-    if not state or not state_cookie or not hmac.compare_digest(state_fingerprint(state), state_cookie):
-        log.warning("shopee_callback_state_cookie_mismatch")
-        return "error"
-    user_raw = await get_redis().getdel(_state_key(state))
-    if not user_raw:
-        log.warning("shopee_callback_bad_state")
-        return "error"
-    if not code or not shop_id:
-        return "denied"  # người bán bấm từ chối: Shopee không trả code (cần xác nhận T-3)
-    if not is_configured(settings) or not shop_id.strip().isdigit():
-        return "error"
-    try:
-        creds = await adapter.exchange_code(code, shop_id.strip())
-        try:
-            name = await adapter.shop_name(creds)
-        except PlatformError as exc:
-            log.warning("shopee_shop_name_failed", error=str(exc))
-            name = None
-    except PlatformError as exc:
-        log.warning("shopee_connect_failed", error=str(exc))
-        return "error"
-
-    cipher = Cipher(settings.fernet_key)
-    shop = await session.scalar(
-        select(Shop)
-        .where(Shop.platform == PLATFORM, Shop.platform_shop_id == creds.shop_id)
-        .with_for_update()
-    )
-    if shop is None:
-        shop = Shop(platform=PLATFORM, platform_shop_id=creds.shop_id)
-        session.add(shop)
-    store_credentials(shop, creds, cipher)
-    shop.name = name or shop.name
-    shop.last_error = None
-    await session.flush()
-    # Phase 3 (FR-05.14, AC-40): nhiều shop cùng chạy — kết nối shop mới **không** ngắt shop khác.
-    user_id = uuid.UUID(user_raw)
-    audit.record(
-        session, "SHOP_CONNECT", user_id=user_id, object_type="SHOP", object_id=shop.id, ip=ip,
-        data={"platform": PLATFORM, "platform_shop_id": creds.shop_id, "name": shop.name},
-    )  # fmt: skip
-    shop_uuid = shop.id
-
-    async def _sync_now() -> None:
-        await enqueue_sync(shop_uuid, lock_held=False)
-        await enqueue_sync_returns(shop_uuid)  # J-13 ngay sau khi kết nối (02a §7)
-
-    after_commit(session, _sync_now)  # J-04 ngay sau khi kết nối (02a API-72)
-    await commit(session)
-    return "connected"
-
-
 # ---------------------------------------------------------------- API-73 (FR-05.02)
 
 
@@ -417,22 +297,3 @@ async def enqueue_sync_returns(shop_id: uuid.UUID) -> None:
     from aicam.modules.media import jobs
 
     await jobs.send(SYNC_RETURNS_TASK, [str(shop_id)], "sync")
-
-
-async def request_sync(session: AsyncSession, shop_id: uuid.UUID, settings: Settings) -> None:
-    require_configured(settings)
-    shop = await session.get(Shop, shop_id)
-    if shop is None:
-        raise AppError("NOT_FOUND", "Không tìm thấy shop.", 404)
-    if shop.auth_status != "CONNECTED":
-        raise AppError(
-            "SHOP_NOT_CONNECTED", "Shop chưa kết nối hoặc ủy quyền đã hết hạn. Bấm Kết nối lại.", 409
-        )
-    token = await acquire_sync_lock(shop.id, "api")
-    if token is None:
-        raise AppError("SYNC_IN_PROGRESS", "Đang đồng bộ, thử lại sau.", 409)
-    try:
-        await enqueue_sync(shop.id, lock_held=token)
-    except Exception:
-        await release_sync_lock(shop.id, token)
-        raise
