@@ -815,9 +815,10 @@ def _excluded_session_sql(alias: str) -> str:
 
 
 def _review_needed_sql(alias: str) -> str:
-    """Phiên Supervisor hủy trước Phase 3 (không mã lý do) — vào bằng chứng nhưng "Cần soát" (DEC-516)."""
+    """Phiên Supervisor hủy trước Phase 3 (không mã lý do) — vào bằng chứng nhưng "Cần soát" (DEC-516). Khớp
+    `sessions.queries.review_needed_sql` (có `status = 'CANCELLED'`; chỉ dùng cho log 4b)."""
     return (
-        f"({alias}.cancel_reason = 'SUPERVISOR' AND {alias}.cancel_cause IS NULL "
+        f"({alias}.status = 'CANCELLED' AND {alias}.cancel_reason = 'SUPERVISOR' AND {alias}.cancel_cause IS NULL "
         f"AND {alias}.review_confirmed_at IS NULL AND {alias}.wrong_scan_at IS NULL)"
     )
 
