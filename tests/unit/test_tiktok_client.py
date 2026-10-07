@@ -247,6 +247,9 @@ def test_expires_at_epoch_or_seconds() -> None:
 async def test_logs_hide_token_sign_and_app_secret(caplog: pytest.LogCaptureFixture) -> None:
     """Log client không có query / header; kể cả khi bật INFO cho httpx, `sign`, `app_secret`, `auth_code`,
     `refresh_token` trong URL bị che."""
+    # alembic `env.py` (`fileConfig`) tắt logger đã có khi test migration chạy trước trong cùng tiến trình
+    # (DEC-545) — bật lại để test không phụ thuộc thứ tự.
+    logging.getLogger("httpx").disabled = False
     install_stdlib_redaction()
     caplog.set_level(logging.DEBUG)
     logging.getLogger("httpx").setLevel(logging.INFO)

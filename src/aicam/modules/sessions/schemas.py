@@ -235,8 +235,9 @@ class AlertOut(BaseModel):
         "RETURN_IN_PROGRESS_ELSEWHERE",
         "INSPECTION_REQUIRED",
         "RETURN_CODE_DIFFERENT",
-        # Phase 3 (02 §6.2 API-11, DEC-455).
+        # Phase 3 (02 §6.2 API-11, DEC-455, DEC-492).
         "ORDER_CANCEL_REQUESTED",
+        "RETURN_MULTIPLE_ORDERS",
     ]
     message: str
     data: dict[str, Any] = {}
@@ -314,6 +315,10 @@ class ReturnLookupItem(BaseModel):
     return_case: ReturnLookupCase | None
     can_open: bool
     blocked_reason: str | None
+    # Phase 3 (02 §6.2 API-104, §5.1 #11): mã trùng giữa shop → chip sàn · shop phân biệt; null khi chưa gắn
+    # đơn.
+    platform: str | None = None
+    shop_name: str | None = None
 
 
 class ReturnLookupOut(BaseModel):

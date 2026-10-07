@@ -664,22 +664,12 @@ async def _sync_one_return(
     """Một yêu cầu trả: đơn chưa có → `get_order` + upsert (savepoint) như J-04; rồi
     `returns.upsert_from_platform` + gộp hồ sơ chưa xác định theo mã chiều về (02 §6.3 #6). Sàn không trả đơn
     → `ReturnSkipped` (G3 R10: không mất yêu cầu — thử lại ở lượt sau)."""
-    order = await session.scalar(select(Order).where(Order.platform_order_sn == ret.order_sn))
+    # §5.1 #7 (BR-29): đơn của **shop của task** → không có: đơn **chưa gắn shop** cùng mã (đơn file / đơn cũ
+    # — J-04 sẽ "nhận" khi đồng bộ; không gọi sàn thêm — DEC-568) → không có: đọc sàn + ghi vào shop này.
+    # Không bao giờ lấy đơn của shop khác cùng mã.
+    order = await orders.order_for_upsert(session, ret.order_sn, shop_id)
     if order is None:
-        data = await adapter.get_order(creds, ret.order_sn)
-        if data is None:
-            raise ReturnSkipped("ORDER_NOT_FOUND")
-        for attempt in (1, 2):
-            try:
-                async with session.begin_nested():
-                    order = (await orders.upsert_platform_order(session, data, shop_id=shop_id)).order
-                    await returns.merge_unidentified_by_code(session, order)
-                break
-            except IntegrityError:
-                if attempt == 2:
-                    raise
-        if order is None:
-            raise ReturnSkipped("ORDER_NOT_FOUND")
+        order = await _order_for_return(session, ret, adapter, creds, shop_id)
     result = await returns.upsert_from_platform(session, order, ret)
     if (
         result.case is not None
@@ -690,6 +680,27 @@ async def _sync_one_return(
     if result.case is not None and result.changed:
         returns.notify_updated(session, result.case)
     return result
+
+
+async def _order_for_return(
+    session: AsyncSession, ret: PlatformReturn, adapter: PlatformAdapter, creds: ShopCredentials | None,
+    shop_id: Any,
+) -> Order:  # fmt: skip
+    """Đơn chưa có (ở shop lẫn chưa gắn shop) → đọc sàn + upsert vào shop (savepoint); sàn không trả →
+    `ReturnSkipped` (thử lại lượt sau)."""
+    data = await adapter.get_order(creds, ret.order_sn)
+    if data is None:
+        raise ReturnSkipped("ORDER_NOT_FOUND")
+    for attempt in (1, 2):
+        try:
+            async with session.begin_nested():
+                order = (await orders.upsert_platform_order(session, data, shop_id=shop_id)).order
+                await returns.merge_unidentified_by_code(session, order)
+            return order
+        except IntegrityError:
+            if attempt == 2:
+                raise
+    raise ReturnSkipped("ORDER_NOT_FOUND")  # pragma: no cover — vòng trên luôn trả / ném
 
 
 async def _remember_retry(shop_id: Any, return_sn: str, order_sn: str, reason: str) -> None:

@@ -8,6 +8,7 @@ Hai bước như Phase 1 `_lookup_platform`:
 
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -352,9 +353,43 @@ async def open_return_session(
 # ---------------------------------------------------------------- API-11 trong khóa station
 
 
+MULTIPLE_ORDERS_MAX = 10  # 02a API-11: ≤ 10 đơn trong `data.orders`
+
+
+async def multiple_orders_alert(session: AsyncSession, code: str, found: Sequence[Order]) -> AlertOut:
+    """ALERT `RETURN_MULTIPLE_ORDERS` (02 §6.2 API-11, BR-29, EX-R20): mã khớp ≥ 2 đơn khác nhau → không mở
+    phiên, station mở R3 với `code`. `orders[]` sắp theo sàn, tên shop (đơn file: sàn / shop null, cuối)."""
+    rows = []
+    for order in found:
+        shop = await orders.shop_of(session, order)
+        rows.append(
+            {
+                "platform": shop.platform if shop else None,
+                "shop_name": shop.name if shop else None,
+                "platform_order_sn": order.platform_order_sn,
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            r["platform"] is None,
+            r["platform"] or "",
+            r["shop_name"] or "",
+            r["platform_order_sn"],
+        )
+    )
+    return _alert(
+        "RETURN_MULTIPLE_ORDERS",
+        f"Mã {code} có ở {len(rows)} đơn của các shop khác nhau. Chọn đúng đơn.",
+        code=code,
+        orders=rows[:MULTIPLE_ORDERS_MAX],
+    )
+
+
 async def open_from_resolution(
     session: AsyncSession, station: Station, code: str, resolution: returns.Resolution, settings: Settings
 ) -> tuple[str, AlertOut | None]:
+    if resolution.status == "MULTIPLE_ORDERS":
+        return "ALERT", await multiple_orders_alert(session, code, resolution.orders)
     if resolution.status == "NOT_FOUND" or (resolution.package is None and resolution.status != "MULTIPLE"):
         return "ALERT", _alert(
             "RETURN_NOT_FOUND",
@@ -636,6 +671,8 @@ async def open_force_new(
 
     if resolution.status == "MULTIPLE":
         reason = "RETURN_MULTIPLE_PACKAGES"
+    elif resolution.status == "MULTIPLE_ORDERS":
+        reason = "RETURN_MULTIPLE_ORDERS"
     elif resolution.package is None:
         reason = "RETURN_NOT_FOUND"
     else:

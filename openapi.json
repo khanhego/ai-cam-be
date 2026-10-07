@@ -128,7 +128,8 @@
               "RETURN_IN_PROGRESS_ELSEWHERE",
               "INSPECTION_REQUIRED",
               "RETURN_CODE_DIFFERENT",
-              "ORDER_CANCEL_REQUESTED"
+              "ORDER_CANCEL_REQUESTED",
+              "RETURN_MULTIPLE_ORDERS"
             ],
             "title": "Code",
             "type": "string"
@@ -6671,6 +6672,17 @@
             "title": "Package Id",
             "type": "string"
           },
+          "platform": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform"
+          },
           "platform_order_sn": {
             "anyOf": [
               {
@@ -6691,6 +6703,17 @@
                 "type": "null"
               }
             ]
+          },
+          "shop_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shop Name"
           },
           "tracking_number": {
             "title": "Tracking Number",

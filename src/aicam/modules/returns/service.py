@@ -457,8 +457,12 @@ async def attach_or_create(
     if signal.ret is not None:
         # Mã yêu cầu sàn là định danh (unique): đã có hồ sơ (kể cả đã hủy) → không gắn lại; cập nhật
         # trạng thái sàn của hồ sơ đó là việc của J-13 `upsert_from_platform` (T-105).
+        # §5.1 #8 (BR-29): mã yêu cầu trả unique **theo shop** (0007) — tra trong shop của đơn (đơn file →
+        # shop NULL); shop khác cùng mã là yêu cầu khác.
         known: ReturnCase | None = await session.scalar(
-            select(ReturnCase).where(ReturnCase.platform_return_sn == signal.ret.return_sn)
+            select(ReturnCase).where(
+                ReturnCase.platform_return_sn == signal.ret.return_sn, _same_shop(order.shop_id)
+            )
         )
         if known is not None:
             return AttachResult(known)
@@ -507,6 +511,7 @@ async def _create(session: AsyncSession, order: Order, signal: Signal, actor_lab
     now = clock.now()
     case = ReturnCase(
         order_id=order.id,
+        shop_id=order.shop_id,  # Phase 3 (§5.1, DEC-553 (3)): hồ sơ mới mang shop của đơn
         kind=kind,
         status="NO_PARCEL" if kind == "REFUND_ONLY" else "EXPECTED",
         source="WAREHOUSE" if signal.kind == SIGNAL_WAREHOUSE_SCAN else "PLATFORM",
@@ -546,6 +551,16 @@ def failed_signal_key(order_sn: str, at: datetime | None) -> str:
     return f"FAILED:{order_sn}:{int(at.timestamp()) if at else '-'}"
 
 
+def _same_shop(shop_id: uuid.UUID | None) -> Any:
+    """Vị từ "hồ sơ cùng shop" cho tra mã yêu cầu trả (§5.1 #8, #9): shop của hồ sơ, hồ sơ cũ chưa có
+    `shop_id` thì shop của đơn (`return_case.shop_id` backfill 0006 — phòng dòng sót)."""
+    owner = func.coalesce(
+        ReturnCase.shop_id,
+        select(Order.shop_id).where(Order.id == ReturnCase.order_id).scalar_subquery(),
+    )
+    return owner.is_(None) if shop_id is None else owner == shop_id
+
+
 async def upsert_from_platform(
     session: AsyncSession, order: Order, ret: PlatformReturn, *, actor_label: str = "Sàn"
 ) -> AttachResult:
@@ -557,12 +572,15 @@ async def upsert_from_platform(
     Khóa `order:{sn}` → hồ sơ → kiện (DEC-266). `changed` = có gì đổi cần báo dashboard.
     """
     await orders.lock_orders(session, [order.platform_order_sn])
+    # §5.1 #9: (shop của đơn, mã yêu cầu trả) `FOR UPDATE` — shop B cùng mã không đụng hồ sơ shop A.
     known: ReturnCase | None = await session.scalar(
         select(ReturnCase)
-        .where(ReturnCase.platform_return_sn == ret.return_sn)
+        .where(ReturnCase.platform_return_sn == ret.return_sn, _same_shop(order.shop_id))
         .with_for_update()
         .execution_options(populate_existing=True)
     )
+    if known is not None and known.shop_id is None and order.shop_id is not None:
+        known.shop_id = order.shop_id
     if known is None:
         if ret.status_group in ("CANCELLED", "CLOSED"):
             return AttachResult(None)
@@ -638,12 +656,15 @@ async def apply_redelivery(
 
 @dataclass
 class Resolution:
-    """`FOUND` (có `package`), `MULTIPLE` (đơn > 1 kiện, chưa có hồ sơ chỉ ra kiện), `NOT_FOUND`."""
+    """`FOUND` (có `package`), `MULTIPLE` (đơn > 1 kiện, chưa có hồ sơ chỉ ra kiện), `NOT_FOUND`,
+    `MULTIPLE_ORDERS` (Phase 3 — mã khớp ≥ 2 đơn khác nhau: mã đơn / mã yêu cầu trả trùng giữa shop, §5.1 #10;
+    mã chiều về của ≥ 2 hồ sơ mở, §5.1 #15) — `orders` = các đơn, không mở phiên (bàn hoàn cho chọn)."""
 
     status: str
     package: Package | None = None
     case: ReturnCase | None = None
     order: Order | None = None
+    orders: tuple[Order, ...] = ()
 
 
 async def _first_unreceived(session: AsyncSession, case: ReturnCase) -> Package | None:
@@ -704,8 +725,7 @@ async def resolve_code(session: AsyncSession, code: str) -> Resolution:
         if package is not None:
             return Resolution("FOUND", package, unidentified, await _order_of(session, package))
     # 1. Mã vận đơn chiều về (ưu tiên hồ sơ chưa kết thúc; hồ sơ đã hủy không dùng — G3 SM-F1, EX-R7: xử lý
-    # như
-    #    hàng hoàn không báo trước).
+    #    như hàng hoàn không báo trước).
     case = await session.scalar(
         select(ReturnCase)
         .where(func.upper(ReturnCase.return_tracking_number) == code)
@@ -743,12 +763,21 @@ async def resolve_code(session: AsyncSession, code: str) -> Resolution:
         found_case = await session.get(ReturnCase, case_ids[0]) if case_ids else None
         return Resolution("FOUND", package, found_case, await _order_of(session, package))
 
-    # 3. Mã đơn sàn / mã yêu cầu trả của sàn.
-    order = await session.scalar(select(Order).where(Order.platform_order_sn == code))
-    if order is None:
-        by_return_sn = await session.scalar(select(ReturnCase).where(ReturnCase.platform_return_sn == code))
-        if by_return_sn is not None and by_return_sn.order_id is not None:
-            order = await session.get(Order, by_return_sn.order_id)
+    # 3. Mã đơn sàn / mã yêu cầu trả của sàn — §5.1 #10 (BR-29): mã không còn unique toàn cục → mọi đơn khớp
+    #    (mọi shop + đơn file); không có → mã yêu cầu trả (mọi shop) → đơn của chúng; ≥ 2 đơn → cho chọn.
+    matched = await orders.find_orders_by_sn(session, code)
+    if not matched:
+        order_ids = (
+            await session.scalars(
+                select(ReturnCase.order_id)
+                .where(ReturnCase.platform_return_sn == code, ReturnCase.order_id.is_not(None))
+                .distinct()
+            )
+        ).all()
+        matched = [o for oid in order_ids if (o := await session.get(Order, oid)) is not None]
+    if len(matched) >= 2:
+        return Resolution("MULTIPLE_ORDERS", orders=tuple(matched))
+    order = matched[0] if matched else None
     if order is None:
         return Resolution("NOT_FOUND")
     open_case = await open_case_of_order(session, order.id)
@@ -1047,6 +1076,7 @@ async def merge_unidentified(
         case.merged_into_id = open_case.id
     else:
         case.order_id = order.id
+        case.shop_id = order.shop_id
         case.kind = "UNANNOUNCED"
         case.single_session = await order_package_count(session, order.id) <= 1
     case.pending_merge_order_id = None

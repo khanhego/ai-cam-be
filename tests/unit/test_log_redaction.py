@@ -59,6 +59,9 @@ def test_structlog_redacts_query_in_values() -> None:
 async def test_shopee_client_http_logs_hide_token_and_sign(caplog: pytest.LogCaptureFixture) -> None:
     """httpx log "HTTP Request: GET <url>" ở INFO chứa nguyên `access_token` / `sign` → WARNING + che."""
     clock.freeze(datetime(2026, 10, 5, 1, 0, tzinfo=UTC))
+    # alembic `env.py` (`fileConfig`) tắt logger đã có khi test migration chạy trước trong cùng tiến trình
+    # (DEC-545) — bật lại để test không phụ thuộc thứ tự.
+    logging.getLogger("httpx").disabled = False
     install_stdlib_redaction()
     caplog.set_level(logging.DEBUG)
     logging.getLogger("httpx").setLevel(logging.WARNING)

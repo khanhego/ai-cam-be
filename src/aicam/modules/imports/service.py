@@ -70,6 +70,9 @@ class Classified:
 async def classify(session: AsyncSession, parsed: parser.Parsed) -> Classified:
     """Đơn chưa có → NEW; đơn nguồn CSV → UPDATE; đơn nguồn API → SKIP (BR-17).
 
+    Phase 3 (§5.1 #3, BR-29): chỉ so với đơn **chưa gắn shop**; đơn của một shop cùng mã mà đã giữ mọi mã vận
+    đơn của nhóm → SKIP; mã vận đơn thuộc đơn khác → lỗi dòng nêu cả shop.
+
     Lỗi thêm ngoài lỗi ô: một mã vận đơn thuộc 2 đơn trong file, hoặc đã thuộc đơn khác trong hệ thống.
     """
     errors = list(parsed.errors)
@@ -77,12 +80,23 @@ async def classify(session: AsyncSession, parsed: parser.Parsed) -> Classified:
     for row in parsed.rows:
         groups.setdefault(row.platform_order_sn, _Group()).rows.append(row)
 
-    existing = await orders.orders_by_sn(session, list(groups))
+    existing = await orders.orders_by_sn(session, list(groups))  # chỉ đơn chưa gắn shop (§5.1 #3)
+    api_orders = await orders.api_orders_by_sn(session, list(groups))
     packages = await orders.packages_by_code(session, list({r.tracking_number for r in parsed.rows}))
     owner_in_file: dict[str, tuple[str, int]] = {}
     for sn, group in groups.items():
+        codes = {r.tracking_number.upper() for r in group.rows}
+        # BR-17 + BR-29: đơn của một shop cùng mã đã giữ mọi mã vận đơn của nhóm → bỏ qua (đơn API giữ
+        # nguyên).
+        owned_by_api = any(
+            all((o := packages.get(c)) is not None and o.order_id == api.id for c in codes)
+            for api in api_orders.get(sn, [])
+        )
         order = existing.get(sn)
-        group.action = "NEW" if order is None else ("SKIP" if order.source == "API" else "UPDATE")
+        if owned_by_api:
+            group.action = "SKIP"
+        else:
+            group.action = "NEW" if order is None else ("SKIP" if order.source == "API" else "UPDATE")
         if group.action == "SKIP":
             continue
         for row in group.rows:
@@ -94,10 +108,14 @@ async def classify(session: AsyncSession, parsed: parser.Parsed) -> Classified:
                     )
                 )
                 continue
-            known = packages.get(row.tracking_number)
-            if known is not None and known[1] is not None and known[1] != sn:
+            known = packages.get(row.tracking_number.upper())
+            mine = order.id if order is not None else None
+            if known is not None and known.order_id is not None and known.order_id != mine:
+                where = f" ({known.shop_name})" if known.shop_name else ""
                 errors.append(
-                    parser.RowError(row.row, "tracking_number", f"Mã vận đơn đã thuộc đơn {known[1]}")
+                    parser.RowError(
+                        row.row, "tracking_number", f"Mã vận đơn đã thuộc đơn {known.order_sn}{where}"
+                    )
                 )
     errors.sort(key=lambda e: (e.row, parser.COLUMNS.index(e.column) if e.column in parser.COLUMNS else 99))
     return Classified(groups, errors)

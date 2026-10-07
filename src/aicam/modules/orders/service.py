@@ -477,26 +477,86 @@ async def merged_orders(session: AsyncSession, package_id: uuid.UUID) -> Sequenc
 
 
 async def orders_by_sn(session: AsyncSession, sns: Sequence[str]) -> dict[str, Order]:
+    """Đơn **chưa gắn shop** (đơn file, đơn API cũ không shop) theo mã — §5.1 #3 (BR-29: mã chỉ unique trong
+    `shop_id IS NULL`). Đơn của shop xem `api_orders_by_sn`."""
     if not sns:
         return {}
-    rows = (await session.scalars(select(Order).where(Order.platform_order_sn.in_(list(sns))))).all()
+    rows = (
+        await session.scalars(
+            select(Order).where(Order.platform_order_sn.in_(list(sns)), Order.shop_id.is_(None))
+        )
+    ).all()
     return {o.platform_order_sn: o for o in rows}
 
 
-async def packages_by_code(
-    session: AsyncSession, codes: Sequence[str]
-) -> dict[str, tuple[Package, str | None]]:
-    """Mã vận đơn (upper) → (kiện, mã đơn sàn đang gắn hoặc None)."""
+async def api_orders_by_sn(session: AsyncSession, sns: Sequence[str]) -> dict[str, list[Order]]:
+    """Đơn **của shop** theo mã (có thể nhiều shop cùng mã — BR-29)."""
+    if not sns:
+        return {}
+    rows = (
+        await session.scalars(
+            select(Order)
+            .where(Order.platform_order_sn.in_(list(sns)), Order.shop_id.is_not(None))
+            .order_by(Order.platform_order_sn, Order.id)
+        )
+    ).all()
+    out: dict[str, list[Order]] = {}
+    for o in rows:
+        out.setdefault(o.platform_order_sn, []).append(o)
+    return out
+
+
+async def find_orders_by_sn(session: AsyncSession, code: str) -> list[Order]:
+    """Mọi đơn mang mã (mọi shop + đơn file) — nơi không biết shop (bàn hoàn §5.1 #10)."""
+    rows = (
+        await session.scalars(select(Order).where(Order.platform_order_sn == code).order_by(Order.id))
+    ).all()
+    return list(rows)
+
+
+@dataclass(frozen=True)
+class PackageOwner:
+    """Kiện theo mã vận đơn + đơn đang gắn (§5.1 #5: câu lỗi nêu đúng shop)."""
+
+    package: Package
+    order_sn: str | None
+    order_id: uuid.UUID | None
+    shop_name: str | None
+    platform: str | None
+
+
+async def packages_by_code(session: AsyncSession, codes: Sequence[str]) -> dict[str, PackageOwner]:
+    """Mã vận đơn (upper) → kiện + đơn đang gắn (mã, id, tên shop / sàn) hoặc None."""
     if not codes:
         return {}
     rows = (
         await session.execute(
-            select(Package, Order.platform_order_sn)
+            select(Package, Order.platform_order_sn, Order.id, Shop.name, Shop.platform)
             .outerjoin(Order, Order.id == Package.order_id)
+            .outerjoin(Shop, Shop.id == Order.shop_id)
             .where(func.upper(Package.tracking_number).in_([c.upper() for c in codes]))
         )
     ).all()
-    return {p.tracking_number.upper(): (p, sn) for p, sn in rows}
+    return {
+        p.tracking_number.upper(): PackageOwner(p, sn, oid, name, plat) for p, sn, oid, name, plat in rows
+    }
+
+
+async def api_order_owning_all(session: AsyncSession, sn: str, codes: Sequence[str]) -> Order | None:
+    """§5.1 #3 / #4 (BR-17): đơn của một shop mang mã `sn` mà **mọi** mã vận đơn của nhóm dòng file đã thuộc
+    đơn đó → nhập file bỏ qua (`SKIP`); None nếu không có."""
+    wanted = {c.upper() for c in codes}
+    for order in (await api_orders_by_sn(session, [sn])).get(sn, []):
+        owned = set(
+            (
+                await session.scalars(
+                    select(func.upper(Package.tracking_number)).where(Package.order_id == order.id)
+                )
+            ).all()
+        )
+        if wanted and wanted <= owned:
+            return order
+    return None
 
 
 @dataclass(frozen=True)
@@ -514,23 +574,31 @@ async def apply_csv_order(
     import_id: uuid.UUID,
     shop_id: uuid.UUID | None,
     actor_user_id: uuid.UUID,
-    expect_new: bool = False,
+    expect_new: bool | None = None,
 ) -> bool | None:
     """Ghi một đơn từ file nhập (API-51). Trả True = tạo mới, False = cập nhật đơn CSV, None = bỏ qua.
+
+    `expect_new`: True = bản xem trước phân loại NEW, False = UPDATE (đơn file biến mất → shop vừa nhận →
+    bỏ qua), None = không ràng buộc.
 
     BR-17: đơn nguồn API không bị file ghi đè. Kiện đã có giữ nguyên `warehouse_status`; kiện chưa xác minh
     (BR-04) được gắn vào đơn. Kiện đã thuộc đơn khác (đọc lại `FOR UPDATE` lúc ghi — G3-F5) hoặc đơn
     `expect_new` đã có → `CsvWriteConflict`: người gọi rollback cả lần nhập (409 `IMPORT_CONFLICT`).
     """
     await lock_orders(session, [data.platform_order_sn])
+    # §5.1 #4 (BR-29): file chỉ ghi đơn **chưa gắn shop**; kiểm lại điều kiện SKIP của #3 dưới khóa.
+    if await api_order_owning_all(session, data.platform_order_sn, data.tracking_numbers) is not None:
+        return None
     order = await session.scalar(
         select(Order)
-        .where(Order.platform_order_sn == data.platform_order_sn)
+        .where(Order.platform_order_sn == data.platform_order_sn, Order.shop_id.is_(None))
         .with_for_update()
         .execution_options(populate_existing=True)
     )
     if order is not None and expect_new:
         raise CsvWriteConflict(f"Đơn {data.platform_order_sn} vừa được tạo trong lúc nhập")
+    if order is None and expect_new is False:
+        return None  # đơn file vừa được shop "nhận" (J-04 — BR-29) giữa xem trước và nhập: không ghi đè
     if order is not None and order.source == "API":
         return None
     created = order is None

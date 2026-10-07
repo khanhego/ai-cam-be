@@ -500,6 +500,7 @@ CONTRACT: tuple[Api, ...] = (
             "alert.code": _e(
                 "ORDER_CANCELLED",
                 "ORDER_CANCEL_REQUESTED",
+                "RETURN_MULTIPLE_ORDERS",  # Phase 3 (DEC-492)
                 "ALREADY_PACKED",
                 "ALREADY_HANDED_OVER",
                 "INVALID_CODE",
@@ -804,6 +805,8 @@ CONTRACT: tuple[Api, ...] = (
             "items[].return_case.return_tracking_number",
             "items[].can_open",
             "items[].blocked_reason",
+            "items[].platform",  # Phase 3 (02 §6.2 API-104, §5.1 #11)
+            "items[].shop_name",
             "platform_checked",
         ),
     ),
