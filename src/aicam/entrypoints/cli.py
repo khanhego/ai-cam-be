@@ -233,6 +233,9 @@ async def backup_restore(args: argparse.Namespace) -> int:
         db_key=None if args.evidence_only else args.db,
         key_files=[Path(p) for p in args.key_file],
         force=args.force,
+        evidence=args.evidence,
+        evidence_only=args.evidence_only,
+        target_dir=Path(args.target_dir) if args.target_dir else None,
     )
     print("\n".join(report.lines))
     return report.exit_code
@@ -282,7 +285,12 @@ def main(argv: list[str] | None = None) -> int:
         "backup-restore", help="Khôi phục DB (+ bằng chứng) từ kho lưu cloud (docs/ops.md §6.2)"
     )
     rst.add_argument("--db", default="latest", help="latest (mặc định) hoặc khóa đối tượng backup/db/…")
+    rst.add_argument("--evidence", action="store_true", help="khôi phục cả bằng chứng (hồ sơ mở trước)")
     rst.add_argument("--evidence-only", action="store_true", help="không đụng DB — chỉ phần bằng chứng")
+    rst.add_argument(
+        "--claims-first", action="store_true", help="(mặc định) bằng chứng hồ sơ chưa đóng trước"
+    )
+    rst.add_argument("--target-dir", help="thư mục gốc ghi tệp (mặc định VIDEO_ROOT)")
     rst.add_argument(
         "--key-file", action="append", default=[], help="tệp chứa một khóa cũ (base64), lặp được"
     )

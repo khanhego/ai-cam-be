@@ -111,6 +111,7 @@ async def seed(session: object, settings: object, n_packages: int) -> dict[str, 
     db.add(station)
     await db.flush()
     evidence: list[uuid.UUID] = []
+    later: tuple[uuid.UUID, uuid.UUID] | None = None
     for i in range(n_packages):
         package = Package(tracking_number=f"SPXDRILL{i:07d}", warehouse_status="PACKED")
         db.add(package)
@@ -122,7 +123,11 @@ async def seed(session: object, settings: object, n_packages: int) -> dict[str, 
                            package_status_before="NEW", flags=[])  # fmt: skip
         db.add(pack)
         await db.flush()
-        if i < 6:  # 6 kiện có tệp thật (3 hồ sơ mở, 3 hồ sơ đóng) — phần còn lại chỉ dòng DB
+        # 8 kiện có tệp thật: 0–2 hồ sơ mở, 3–5 hồ sơ đóng (còn hạn giữ), 6 thành bằng chứng SAU khi đổi khóa,
+        # 7 không phải bằng chứng (không lên cloud). Phần còn lại chỉ có dòng DB.
+        if i == 6:
+            later = (package.id, pack.id)
+        if i < 8:
             for role in ("CAM1", "CAM2"):
                 rel = f"clips/{ended:%Y/%m/%d}/{pack.id}-{role}.mp4"
                 data = os.urandom(256 * 1024) + f"{rel}".encode()
@@ -139,6 +144,7 @@ async def seed(session: object, settings: object, n_packages: int) -> dict[str, 
             sha = hashlib.sha256(data).hexdigest()
             db.add(Snapshot(session_id=pack.id, kind="PACK_CLOSE", camera_role="CAM1", taken_at=ended,
                             path=rel, sha256=sha, size_bytes=len(data), status="READY"))  # fmt: skip
+        if i < 6:
             claim = Claim(package_id=package.id, type="OTHER", counterparty="PLATFORM", source="MANUAL",
                           status="NEW" if i < 3 else "CLOSED", closed_at=None if i < 3 else now)  # fmt: skip
             db.add(claim)
@@ -148,7 +154,7 @@ async def seed(session: object, settings: object, n_packages: int) -> dict[str, 
         if i % 500 == 0:
             await db.commit()
     await db.commit()
-    return {"evidence_sessions": evidence}
+    return {"evidence_sessions": evidence, "later": later}
 
 
 async def counts(url: str) -> dict[str, int]:
@@ -191,7 +197,7 @@ async def run(args: argparse.Namespace) -> int:
     init_redis(src.redis_url)
     try:
         async with sessionmaker()() as db:
-            await seed(db, src, args.packages)
+            seeded = await seed(db, src, args.packages)
             cfg = await settings_service.get(db)
             cfg.backup_confirmed_fingerprint = service.current_fingerprint(src)
             cfg.backup_confirmed_at = datetime.now(UTC)
@@ -208,7 +214,10 @@ async def run(args: argparse.Namespace) -> int:
         await close_redis()
         await dispose_engine()
 
-    rc = await phase_db(src, work, store)
+    if args.phase == "db":
+        rc = await phase_db(src, work, store)
+    else:
+        rc = await phase_full(src, work, store, seeded)
     LOG.append("")
     await asyncio.to_thread(Path(args.out).write_text, "\n".join(LOG) + "\n")
     shutil.rmtree(work, ignore_errors=True)
@@ -258,6 +267,124 @@ async def phase_db(src: object, work: Path, store: object) -> int:
     say("  → đúng kỳ vọng phase db: clip / ảnh chưa có tệp → 'thiếu', Chờ kiểm khôi phục giữ nguyên")
     ok = ok and ver.exit_code == restore.EXIT_VERIFY_FAILED
     say(f"KẾT QUẢ phase db: {'ĐẠT' if ok else 'KHÔNG ĐẠT'}")
+    return 0 if ok else 1
+
+
+async def evidence_round(settings: object, label: str, store: object) -> dict[str, object]:
+    from aicam.core.db import dispose_engine, init_engine, sessionmaker
+    from aicam.core.redis import close_redis, init_redis
+    from aicam.modules.backup import jobs
+
+    init_engine(settings.database_url)
+    init_redis(settings.redis_url)
+    try:
+        async with sessionmaker()() as db:
+            q = await jobs.enqueue_evidence(db, settings)
+            t = time.monotonic()
+            up = await jobs.upload_evidence(db, settings, store=store, budget_s=600)
+            say(f"{label}: J-21 {q}; J-22 {up} ({time.monotonic() - t:.1f} giây)")
+            return up
+    finally:
+        await close_redis()
+        await dispose_engine()
+
+
+async def phase_full(src: object, work: Path, store: object, seeded: dict[str, object]) -> int:
+    """T-274 (+ T-284 bổ sung): bằng chứng, 2 khóa, xóa 1 đối tượng, khôi phục bằng chứng, verify."""
+    from sqlalchemy import select
+
+    from aicam.core.db import dispose_engine, init_engine, sessionmaker
+    from aicam.core.redis import close_redis, init_redis
+    from aicam.modules.backup import jobs, restore, service
+    from aicam.modules.claims.models import Claim, ClaimEvidence
+    from aicam.modules.cloud import crypto
+    from aicam.modules.media.models import Clip
+    from aicam.modules.settings import service as settings_service
+
+    ok = True
+    await evidence_round(src, "Bằng chứng khóa 1", store)
+    fp1 = crypto.fingerprint(crypto.parse_key(KEY_1))
+    # IT đổi khóa: khóa 2 hiện tại, khóa 1 vào BACKUP_OLD_KEYS; Admin xác nhận khóa mới.
+    src2 = settings_for("drill_src", work / "src-video", work / "src-imports", work / "tmp", KEY_2, KEY_1)
+    fp2 = crypto.fingerprint(crypto.parse_key(KEY_2))
+    say(f"— Đổi khóa: {fp1} → {fp2} (khóa cũ giữ trong BACKUP_OLD_KEYS) —")
+    init_engine(src2.database_url)
+    init_redis(src2.redis_url)
+    try:
+        async with sessionmaker()() as db:
+            cfg = await settings_service.get(db)
+            cfg.backup_confirmed_fingerprint = fp2
+            cfg.backup_confirmed_at = datetime.now(UTC)
+            later = seeded["later"]
+            claim = Claim(package_id=later[0], type="OTHER", counterparty="PLATFORM", source="MANUAL")
+            db.add(claim)
+            await db.flush()
+            db.add(ClaimEvidence(claim_id=claim.id, kind="SESSION", session_id=later[1], auto=False))
+            await db.commit()
+            status = await service.status(db, src2)
+            old = [k.model_dump() for k in status.key.old_keys]
+            say(f"API-180 sau đổi khóa: state {status.state}, old_keys {old}")
+            await db.commit()
+    finally:
+        await close_redis()
+        await dispose_engine()
+    await evidence_round(src2, "Bằng chứng mới sau đổi khóa (khóa 2)", store)
+    init_engine(src2.database_url)
+    init_redis(src2.redis_url)
+    try:
+        async with sessionmaker()() as db:
+            out = await jobs.run_db(db, src2, store=store)
+            say(f"J-20 lượt 2 (khóa 2): {out}")
+            rows = (await db.execute(select(Clip.id, Clip.path, Clip.status).order_by(Clip.path))).all()
+            await db.commit()
+    finally:
+        await close_redis()
+        await dispose_engine()
+    keys_by_fp: dict[str, int] = {}
+    for info in list(store.list("backup/evidence/")):
+        head = store.head(info.key)
+        fp = head.metadata.get("key-fp", "?") if head else "?"
+        keys_by_fp[fp] = keys_by_fp.get(fp, 0) + 1
+    say(f"Đối tượng bằng chứng trên kho theo khóa: {keys_by_fp}")
+    ok = ok and keys_by_fp.get(fp1, 0) > 0 and keys_by_fp.get(fp2, 0) > 0
+    victim = rows[0]
+    store.delete(jobs.evidence_key("CLIP", victim[0]))
+    say(f"Xóa 1 đối tượng clip trên kho trước khi khôi phục: {victim[0]} ({victim[1]})")
+
+    say("— Máy mới: DB trống + thư mục video trống, khóa 2 + khóa cũ 1 —")
+    dst = settings_for("drill_dst", work / "dst-video", work / "dst-imports", work / "tmp2", KEY_2, KEY_1)
+    await recreate("drill_dst")
+    t = time.monotonic()
+    rep = await restore.restore(dst, store=store, evidence=True)
+    for line in rep.lines:
+        say(f"  {line}")
+    say(f"backup-restore --evidence mã {rep.exit_code}, tổng {time.monotonic() - t:.1f} giây")
+    ok = ok and rep.exit_code == 0
+    init_engine(dst.database_url)
+    try:
+        async with sessionmaker()() as db:
+            st = {str(cid): s for cid, s in (await db.execute(select(Clip.id, Clip.status))).all()}
+            say(f"Trạng thái clip đích: { {s: list(st.values()).count(s) for s in set(st.values())} }")
+            ok = ok and st[str(victim[0])] == "MISSING" and "DELETED" not in st.values()
+            cfg = await settings_service.get(db)
+            flags = f"backup_enabled={cfg.backup_enabled}, restore_pending={cfg.backup_restore_pending}"
+            say(f"Setting đích: {flags}")
+            await db.commit()
+            pr = await jobs.prune(db, dst, store=store)
+            say(f"J-23 trên máy mới khi chờ kiểm: {pr} (không xóa gì)")
+            ok = ok and pr == {"skipped": "RESTORE_PENDING"}
+            ver = await restore.verify(dst, db)
+            for line in ver.lines:
+                say(f"  verify: {line}")
+            ok = ok and ver.exit_code == 0
+            cfg = await settings_service.get(db)
+            say(f"Sau verify: restore_pending={cfg.backup_restore_pending}")
+            await db.commit()
+    finally:
+        await dispose_engine()
+    remaining = sum(1 for _ in store.list("backup/evidence/"))
+    say(f"Đối tượng bằng chứng còn trên kho sau diễn tập: {remaining} (không đối tượng nào bị xóa thêm)")
+    say(f"KẾT QUẢ phase full: {'ĐẠT' if ok else 'KHÔNG ĐẠT'}")
     return 0 if ok else 1
 
 

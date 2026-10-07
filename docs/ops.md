@@ -174,8 +174,12 @@ khóa cũ — tệp đã bị xóa tại kho không tải lại được, chỉ 
 # 0. Máy mới đã cài hệ thống (cùng phiên bản image), docker/.env khôi phục từ bản cất (cùng FERNET_KEY, S3_*,
 #    BACKUP_ENCRYPTION_KEY; khóa cũ trong BACKUP_OLD_KEYS hoặc tệp riêng). DB trống: chưa chạy migrate.
 dc up -d postgres redis
-dc run --rm api aicam backup-restore --db latest            # tải + giải mã + pg_restore vào DB trống,
-#    rồi giải nén file nhập cùng lượt vào IMPORT_ROOT (không ghi đè tệp đã có)
+dc run --rm api aicam backup-restore --db latest --evidence  # tải + giải mã + pg_restore vào DB trống,
+#    giải nén file nhập cùng lượt vào IMPORT_ROOT (không ghi đè), rồi tải bằng chứng từ backup/evidence/ về
+#    VIDEO_ROOT (hồ sơ khiếu nại chưa đóng trước). Clip / ảnh không có bản cloud và không có tệp → "Thiếu tệp"
+#    (MISSING — KHÔNG phải "Đã xóa", không kéo theo xóa bản cloud nào). Đối tượng không có trong DB (tải lên sau
+#    bản dump) vẫn được tải về, in "ngoài DB". In: tải N / thiếu N / ngoài DB N / giải mã lỗi N / thiếu khóa N.
+#    Chỉ DB trước, bằng chứng sau: bỏ --evidence rồi chạy lại với --evidence-only.
 #    khóa không khớp → "Khóa giải mã không khớp (dấu vân tay …)", mã 2, KHÔNG ghi gì → tìm đúng khóa
 #    DB không trống → từ chối (mã 2); cố ý ghi đè: --force
 #    thêm khóa cũ: --key-file /đường/dẫn/khoa-cu.txt (lặp được)

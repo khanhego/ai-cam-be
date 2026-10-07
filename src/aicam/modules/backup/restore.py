@@ -5,12 +5,16 @@ Không bao giờ đánh `DELETED`: clip / ảnh không có tệp sau khôi phụ
 Sau khi khôi phục DB: `backup_enabled = false`, `backup_restore_pending = true` tới khi `backup-verify` đạt.
 """
 
+from __future__ import annotations
+
 import asyncio
 import os
 import shutil
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import structlog
 from sqlalchemy import text, update
@@ -194,6 +198,11 @@ async def _restore_imports(
     report.say(f"Đã khôi phục {n} file nhập vào {settings.import_root}.")
 
 
+def _report_failures(settings: Settings, report: Report, stats: EvidenceStats) -> None:
+    for kind, oid, key, reason, fp in stats.failures[:50]:
+        report.say(f"  lỗi {reason}: {kind} {oid} ({key}{', khóa ' + fp if fp else ''})")
+
+
 def _tmp_root(settings: Settings) -> str:
     root = settings.backup_tmp_dir
     root.mkdir(parents=True, exist_ok=True)
@@ -206,6 +215,9 @@ async def restore(
     db_key: str | None = "latest",
     key_files: list[Path] | None = None,
     force: bool = False,
+    evidence: bool = False,
+    evidence_only: bool = False,
+    target_dir: Path | None = None,
     store: ObjectStore | None = None,
 ) -> Report:
     """API-186 `aicam backup-restore`."""
@@ -225,16 +237,31 @@ async def restore(
         return report
     started = clock.now()
     try:
-        if db_key is not None:
-            if not await restore_db(settings, report, db_key=db_key, keys=keys, force=force, store=store):
-                return report
-            init_engine(settings.database_url)
-            try:
-                async with sessionmaker()() as db:
+        restore_dump = db_key is not None and not evidence_only
+        if restore_dump and not await restore_db(
+            settings, report, db_key=db_key or "latest", keys=keys, force=force, store=store
+        ):
+            return report
+        init_engine(settings.database_url)
+        try:
+            async with sessionmaker()() as db:
+                if db_key is not None and not evidence_only:
                     await mark_restore_pending(db)
-            finally:
-                await dispose_engine()
-            report.say("Sao lưu tự động đã TẮT (Chờ kiểm khôi phục) tới khi `aicam backup-verify` đạt.")
+                    report.say(
+                        "Sao lưu tự động đã TẮT (Chờ kiểm khôi phục) tới khi `aicam backup-verify` đạt."
+                    )
+                if evidence or evidence_only:
+                    t = clock.now()
+                    stats = await restore_evidence(
+                        settings, db, report, keys=keys, store=store, target_dir=target_dir,
+                        evidence_only=evidence_only,
+                    )  # fmt: skip
+                    report.say(
+                        f"Bằng chứng: {stats.summary()} — {(clock.now() - t).total_seconds():.1f} giây."
+                    )
+                    _report_failures(settings, report, stats)
+        finally:
+            await dispose_engine()
     except CloudError as exc:
         report.say(f"Lỗi kho lưu: {exc.message}")
         report.exit_code = EXIT_REFUSED
@@ -242,6 +269,216 @@ async def restore(
     report.say(f"Xong sau {(clock.now() - started).total_seconds():.1f} giây.")
     log.info("backup_restore", exit_code=report.exit_code)
     return report
+
+
+# ---------------------------------------------------------------- bằng chứng (EX-K8, DEC-499)
+
+
+@dataclass
+class EvidenceStats:
+    downloaded: int = 0
+    skipped_present: int = 0
+    skipped_deleted: int = 0
+    outside_db: int = 0
+    marked_missing: int = 0
+    recovered: int = 0
+    failures: list[tuple[str, str, str, str, str]] = field(default_factory=list)  # kind, id, key, reason, fp
+
+    def summary(self) -> str:
+        decrypt = sum(1 for f in self.failures if f[3] == "DECRYPT_FAILED")
+        unknown = sum(1 for f in self.failures if f[3] == "UNKNOWN_KEY")
+        other = len(self.failures) - decrypt - unknown
+        return (
+            f"tải {self.downloaded} / thiếu (MISSING) {self.marked_missing} / ngoài DB {self.outside_db} / "
+            f"giải mã lỗi {decrypt} / thiếu khóa {unknown}"
+            + (f" / lỗi tải {other}" if other else "")
+            + f" (đã có trên đĩa {self.skipped_present}, nguồn đã xóa theo lưu trữ {self.skipped_deleted},"
+            f" về lại bình thường {self.recovered})"
+        )
+
+
+@dataclass
+class _Row:
+    kind: str
+    id: str
+    status: str
+    path: str | None
+    sha256: str | None
+    session_id: str
+
+
+async def _evidence_rows(db: AsyncSession) -> dict[str, _Row]:
+    from sqlalchemy import select
+
+    from aicam.modules.media.models import Clip, Snapshot
+
+    rows: dict[str, _Row] = {}
+    for kind, model in (("CLIP", Clip), ("SNAPSHOT", Snapshot)):
+        for oid, status, rel, sha, sid in (
+            await db.execute(select(model.id, model.status, model.path, model.sha256, model.session_id))
+        ).all():
+            rows[str(oid)] = _Row(kind, str(oid), status, rel, sha, str(sid))
+    return rows
+
+
+async def _open_claim_sessions(db: AsyncSession) -> set[str]:
+    """FR-02.16: bằng chứng của hồ sơ khiếu nại chưa đóng về trước."""
+    from sqlalchemy import select
+
+    from aicam.modules.claims.models import Claim, ClaimEvidence
+
+    rows = await db.execute(
+        select(ClaimEvidence.session_id, ClaimEvidence.snapshot_id)
+        .join(Claim, Claim.id == ClaimEvidence.claim_id)
+        .where(Claim.status != "CLOSED", ClaimEvidence.removed_at.is_(None))
+    )
+    return {str(a or b) for a, b in rows.all()}
+
+
+def _target(root: Path, rel: str) -> Path | None:
+    path = (root / rel).resolve()
+    return path if path.is_relative_to(root.resolve()) else None
+
+
+async def _set_status(db: AsyncSession, row: _Row, status: str, *, only_from: tuple[str, ...]) -> bool:
+    """Đổi trạng thái clip / ảnh (chỉ `READY` ↔ `MISSING` — **không bao giờ** `DELETED`)."""
+    from aicam.modules.media.models import Clip, Snapshot
+
+    model: Any = Clip if row.kind == "CLIP" else Snapshot
+    result = await db.execute(
+        update(model).where(model.id == uuid.UUID(row.id), model.status.in_(only_from)).values(status=status)
+    )
+    await db.commit()
+    changed = bool(result.rowcount)  # type: ignore[attr-defined]
+    if changed:
+        row.status = status
+    return changed
+
+
+async def restore_evidence(
+    settings: Settings,
+    db: AsyncSession,
+    report: Report,
+    *,
+    keys: dict[str, bytes],
+    store: ObjectStore,
+    target_dir: Path | None = None,
+    evidence_only: bool = False,
+) -> EvidenceStats:
+    """(2) Duyệt `backup/evidence/` trên cloud (`list` + `HEAD` metadata `kind`, `id`, `relpath`, `sha256`)
+    so với
+    DB vừa khôi phục: có dòng → tải về `relpath` (hồ sơ khiếu nại chưa đóng trước); không có dòng (tải sau bản
+    dump) → vẫn tải, in "ngoài DB"; clip / ảnh `READY` không có tệp, không có đối tượng → `MISSING`.
+    Mỗi đối tượng giải mã vào tệp tạm, chỉ đổi tên khi xác thực xong; lỗi → không ghi tệp, chạy tiếp.
+    (3) `evidence_only`: chỉ xét clip / ảnh `MISSING` có đối tượng cloud (tìm lại khóa cũ — `--key-file`)."""
+    from aicam.modules.backup.jobs import EVIDENCE_PREFIX
+
+    stats = EvidenceStats()
+    root = target_dir or settings.video_root
+    rows = await _evidence_rows(db)
+    first = await _open_claim_sessions(db)
+    await db.commit()
+    objects = await asyncio.to_thread(lambda: list(store.list(EVIDENCE_PREFIX)))
+    metas: list[tuple[int, str, dict[str, str]]] = []
+    for info in objects:
+        head = await asyncio.to_thread(store.head, info.key)
+        meta = head.metadata if head else {}
+        row = rows.get(meta.get("id", ""))
+        priority = 0 if row and (row.session_id in first or row.id in first) else 1
+        metas.append((priority, info.key, meta))
+    metas.sort(key=lambda m: (m[0], m[1]))
+    covered: set[str] = set()
+    for _, key, meta in metas:
+        oid, rel = meta.get("id", ""), meta.get("relpath", "")
+        row = rows.get(oid)
+        if row is not None:
+            covered.add(oid)
+        if evidence_only and (row is None or row.status != "MISSING"):
+            continue
+        if row is not None and row.status == "DELETED":
+            stats.skipped_deleted += 1  # đã bị retention xóa — không đưa lại (J-23 sẽ dọn bản cloud)
+            continue
+        rel = (row.path if row and row.path else rel) or ""
+        target = _target(root, rel) if rel else None
+        if target is None:
+            stats.failures.append((meta.get("kind", "?"), oid, key, "BAD_METADATA", meta.get("key-fp", "")))
+            continue
+        expected = row.sha256 if row else meta.get("sha256")
+        if await asyncio.to_thread(target.is_file):
+            actual, _ = await asyncio.to_thread(transfer.sha256_file, target)
+            if actual == expected:
+                stats.skipped_present += 1
+                if (
+                    row is not None
+                    and row.status == "MISSING"
+                    and await _set_status(db, row, "READY", only_from=("MISSING",))
+                ):
+                    stats.recovered += 1
+                continue
+        try:
+            result = await asyncio.to_thread(transfer.download_decrypt_to, store, key, target, keys)
+        except crypto.WrongKeyError as exc:
+            stats.failures.append((meta.get("kind", "?"), oid, key, "UNKNOWN_KEY", exc.fingerprint))
+            await _missing_if_absent(db, row, target, stats)
+            continue
+        except crypto.CryptoError:
+            stats.failures.append((meta.get("kind", "?"), oid, key, "DECRYPT_FAILED", meta.get("key-fp", "")))
+            await _missing_if_absent(db, row, target, stats)
+            continue
+        except CloudError as exc:
+            stats.failures.append((meta.get("kind", "?"), oid, key, exc.code, meta.get("key-fp", "")))
+            await _missing_if_absent(db, row, target, stats)
+            continue
+        stats.downloaded += 1
+        if row is None:
+            stats.outside_db += 1
+            report.say(f"  ngoài DB (tải sau bản dump): {key} → {rel}")
+            continue
+        accepted = meta.get("integrity") == "MISMATCH_ACCEPTED"
+        if result.sha256 == row.sha256 or accepted:
+            if accepted and result.sha256 != row.sha256:
+                await _record_accepted(db, row, result.sha256, key)
+            if row.status == "MISSING" and await _set_status(db, row, "READY", only_from=("MISSING",)):
+                stats.recovered += 1
+    if not evidence_only:
+        for row in rows.values():
+            if row.status != "READY" or row.id in covered:
+                continue
+            target = _target(root, row.path) if row.path else None
+            absent = target is None or not await asyncio.to_thread(target.is_file)
+            if absent and await _set_status(db, row, "MISSING", only_from=("READY",)):
+                stats.marked_missing += 1
+    return stats
+
+
+async def _missing_if_absent(db: AsyncSession, row: _Row | None, target: Path, stats: EvidenceStats) -> None:
+    """Đối tượng hỏng / thiếu khóa và đĩa không có tệp → `MISSING` (EX-K8) — không bao giờ `DELETED`."""
+    if row is None or row.status != "READY":
+        return
+    if not await asyncio.to_thread(target.is_file) and await _set_status(
+        db, row, "MISSING", only_from=("READY",)
+    ):
+        stats.marked_missing += 1
+
+
+async def _record_accepted(db: AsyncSession, row: _Row, actual: str, key: str) -> None:
+    """Metadata `integrity=MISMATCH_ACCEPTED` (API-188 sau bản dump) → `backup_object.hash_override` để
+    `backup-verify` tính "lệch đã chấp nhận" (DEC-518)."""
+    from sqlalchemy import select
+
+    from aicam.modules.backup.models import BackupObject
+
+    col = BackupObject.clip_id if row.kind == "CLIP" else BackupObject.snapshot_id
+    obj = await db.scalar(select(BackupObject).where(col == uuid.UUID(row.id)))
+    if obj is None:
+        obj = BackupObject(kind=row.kind, object_key=key, status="UPLOADED")
+        if row.kind == "CLIP":
+            obj.clip_id = uuid.UUID(row.id)
+        else:
+            obj.snapshot_id = uuid.UUID(row.id)
+        db.add(obj)
+    obj.hash_override, obj.sha256_actual = True, actual
+    await db.commit()
 
 
 # ---------------------------------------------------------------- backup-verify

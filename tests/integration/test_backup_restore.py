@@ -6,6 +6,7 @@ phải DB dev `aicam`). pg_dump / pg_restore 16 chạy qua container tạm nếu
 
 import hashlib
 import os
+import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -26,7 +27,7 @@ from aicam.modules.media.models import Clip
 from aicam.modules.orders.models import Package
 from aicam.modules.settings import service as settings_service
 
-from .backup_fixtures import KEY_A, KEY_B, enable_backup, make_backup_settings, pg_tool
+from .backup_fixtures import KEY_A, KEY_B, World, enable_backup, make_backup_settings, pg_tool
 from .conftest import TEST_DATABASE_URL
 from .factories import make_station_account
 from .returns_helpers import pack_session_with_clips
@@ -191,3 +192,104 @@ async def test_verify_categories_and_clears_pending(db: AsyncSession, tmp_path: 
 
 def test_keys_fixture_distinct() -> None:
     assert KEY_A != KEY_B
+
+
+# ---------------------------------------------------------------- bằng chứng (T-274: EX-K8, DEC-499)
+
+
+async def _backed_up(db: AsyncSession, world: World, store: MemoryStore) -> None:
+    await jobs.enqueue_evidence(db, world.settings)
+    out = await jobs.upload_evidence(db, world.settings, store=store)
+    assert out["UPLOADED"] == 3
+
+
+async def test_restore_evidence_browse_cloud_missing_never_deleted(
+    db: AsyncSession, redis_client: object, world: World, memory_store: MemoryStore, tmp_path: Path
+) -> None:
+    import io as _io
+
+    from aicam.modules.cloud import crypto as _crypto
+
+    await _backed_up(db, world, memory_store)
+    cam1, cam2 = world.clips["CAM1"], world.clips["CAM2"]
+    # Xóa 1 đối tượng clip trên cloud trước khi khôi phục (AC-50).
+    memory_store.delete(jobs.evidence_key("CLIP", cam2.id))
+    # Đối tượng "ngoài DB" (tải lên sau bản dump).
+    ghost = uuid.uuid4()
+    memory_store.put_stream(jobs.evidence_key("CLIP", ghost),
+                            _crypto.EncryptingReader(_io.BytesIO(b"ghost"), _crypto.parse_key(KEY_A)),  # type: ignore[arg-type]
+                            metadata={"id": str(ghost), "kind": "CLIP", "relpath": f"clips/ghost/{ghost}.mp4",
+                                      "sha256": hashlib.sha256(b"ghost").hexdigest()})  # fmt: skip
+    new_root = tmp_path / "may-moi"
+    settings = make_backup_settings(video_root=new_root)
+    report = restore.Report()
+    stats = await restore.restore_evidence(
+        settings, db, report, keys=_crypto.keyring(KEY_A), store=memory_store
+    )
+    assert stats.downloaded == 3  # CAM1 + ảnh + ghost
+    assert stats.outside_db == 1
+    assert cam1.path is not None
+    assert (new_root / cam1.path).read_bytes() == world.files[cam1.path]
+    assert world.snapshot.path is not None
+    assert (new_root / world.snapshot.path).read_bytes() == world.files[world.snapshot.path]
+    assert (new_root / f"clips/ghost/{ghost}.mp4").read_bytes() == b"ghost"
+    statuses = {c.id: c.status for c in (await db.scalars(
+        select(Clip).execution_options(populate_existing=True))).all()}  # fmt: skip
+    assert statuses[cam2.id] == "MISSING"  # không có bản cloud, không có tệp → thiếu, KHÔNG xóa
+    assert statuses[cam1.id] == "READY"
+    loose = (await db.scalars(select(Clip.id).where(Clip.session_id == world.loose.id))).all()
+    assert {statuses[c] for c in loose} == {"MISSING"}
+    assert "DELETED" not in statuses.values()
+    gets = [k for op, k in memory_store.calls if op == "get" and "/evidence/" in k]
+    assert gets[0] in {jobs.evidence_key("CLIP", cam1.id), jobs.evidence_key("SNAPSHOT", world.snapshot.id)}
+    assert gets[-1] == jobs.evidence_key("CLIP", ghost)  # hồ sơ khiếu nại mở trước
+
+
+async def test_restore_evidence_unknown_key_then_evidence_only(
+    db: AsyncSession, redis_client: object, world: World, memory_store: MemoryStore, tmp_path: Path
+) -> None:
+    from aicam.modules.cloud import crypto as _crypto
+
+    await _backed_up(db, world, memory_store)
+    new_root = tmp_path / "may-moi"
+    settings = make_backup_settings(video_root=new_root, backup_encryption_key=KEY_B)
+    report = restore.Report()
+    stats = await restore.restore_evidence(
+        settings, db, report, keys=_crypto.keyring(KEY_B), store=memory_store
+    )
+    assert stats.downloaded == 0
+    assert {f[3] for f in stats.failures} == {"UNKNOWN_KEY"}
+    assert stats.marked_missing >= 3
+    cam1 = world.clips["CAM1"]
+    assert cam1.path is not None
+    assert not (new_root / cam1.path).exists()  # không để tệp dở
+    assert not list(new_root.rglob("*.part"))
+    stats = await restore.restore_evidence(
+        settings, db, report, keys=_crypto.keyring(KEY_B, KEY_A), store=memory_store, evidence_only=True
+    )
+    assert stats.recovered == 3
+    refreshed = await db.scalar(
+        select(Clip).where(Clip.id == cam1.id).execution_options(populate_existing=True)
+    )
+    assert refreshed is not None
+    assert refreshed.status == "READY"
+    loose = (await db.scalars(select(Clip.status).where(Clip.session_id == world.loose.id))).all()
+    assert set(loose) == {"MISSING"}  # không có bản cloud → vẫn thiếu
+
+
+async def test_restore_skips_retention_deleted(
+    db: AsyncSession, redis_client: object, world: World, memory_store: MemoryStore, tmp_path: Path
+) -> None:
+    from aicam.modules.cloud import crypto as _crypto
+
+    await _backed_up(db, world, memory_store)
+    cam1 = world.clips["CAM1"]
+    cam1.status = "DELETED"
+    await db.flush()
+    settings = make_backup_settings(video_root=tmp_path / "may-moi")
+    stats = await restore.restore_evidence(
+        settings, db, restore.Report(), keys=_crypto.keyring(KEY_A), store=memory_store
+    )
+    assert stats.skipped_deleted == 1
+    assert cam1.path is not None
+    assert not (tmp_path / "may-moi" / cam1.path).exists()

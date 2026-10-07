@@ -281,6 +281,8 @@ def _classify(exc: BaseException) -> tuple[str, str]:
         return "VERIFY_FAILED", f"Bản sao đọc lại không giải mã được: {exc}"[:200]
     if isinstance(exc, TimeoutError):
         return "TIMEOUT", "Sao lưu DB quá ngân sách thời gian."
+    if type(exc).__module__.startswith("redis"):
+        return "REDIS_UNAVAILABLE", "Không kết nối được Redis (giới hạn tốc độ tải) — thử lại lượt sau."
     log.exception("backup_db_unexpected")
     return "BACKUP_ERROR", f"Lỗi không rõ ({type(exc).__name__})."
 
