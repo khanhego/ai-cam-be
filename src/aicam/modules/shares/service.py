@@ -164,16 +164,21 @@ async def _source_ref(
     )
 
 
-async def _candidates(db: AsyncSession, session_ids: list[uuid.UUID]) -> dict[uuid.UUID, _Candidate]:
+async def _candidates(
+    db: AsyncSession, session_ids: list[uuid.UUID], *, lock: bool = False
+) -> dict[uuid.UUID, _Candidate]:
     if not session_ids:
         return {}
-    rows = (
-        await db.execute(
-            select(PackSession, Station.name)
-            .outerjoin(Station, Station.id == PackSession.station_id)
-            .where(PackSession.id.in_(sorted(set(session_ids))))
-        )
-    ).all()
+    query = (
+        select(PackSession, Station.name)
+        .outerjoin(Station, Station.id == PackSession.station_id)
+        .where(PackSession.id.in_(sorted(set(session_ids))))
+    )
+    if lock:
+        # G3V-1 (DEC-932): API-160 nguồn PHIÊN — `FOR SHARE` phiên (API-189 MARK khóa `FOR UPDATE` rồi mới
+        # truy `affected_shares`) + đọc lại bản mới → `held_back` kiểm sau khóa.
+        query = query.with_for_update(read=True, of=PackSession).execution_options(populate_existing=True)
+    rows = (await db.execute(query)).all()
     clips: dict[uuid.UUID, dict[str, Clip]] = {}
     for c in (await db.scalars(select(Clip).where(Clip.session_id.in_(sorted(set(session_ids)))))).all():
         clips.setdefault(c.session_id, {})[c.camera_role] = c
@@ -191,13 +196,13 @@ async def _load_source(
     claim_id: uuid.UUID | None,
     session_id: uuid.UUID | None,
     *,
-    lock_claim: bool = False,
+    lock: bool = False,
 ) -> _Source:
     if source_type == "CLAIM":
         if claim_id is None:
             raise _invalid({"claim_id": "Thiếu hồ sơ."})
         query = select(Claim).where(Claim.id == claim_id)
-        if lock_claim:  # 02a API-160: đọc `evidence` nhất quán (API-134 / 189 khóa FOR UPDATE)
+        if lock:  # 02a API-160: đọc `evidence` nhất quán (API-134 / 189 khóa FOR UPDATE)
             query = query.with_for_update(read=True)
         claim = await db.scalar(query.execution_options(populate_existing=True))
         if claim is None:
@@ -240,7 +245,7 @@ async def _load_source(
         return _Source(ref, claim, _order(list(by_id.values())))
     if session_id is None:
         raise _invalid({"session_id": "Thiếu phiên."})
-    by_id = await _candidates(db, [session_id])
+    by_id = await _candidates(db, [session_id], lock=lock)
     if session_id not in by_id:
         raise AppError("NOT_FOUND", "Không tìm thấy phiên.", 404)
     candidate = by_id[session_id]
@@ -355,7 +360,7 @@ def _validate(body: ShareCreateIn) -> tuple[list[uuid.UUID], str]:
 
 async def create(db: AsyncSession, body: ShareCreateIn, p: Principal, settings: Settings) -> ShareCreated:
     ids, recipient = _validate(body)
-    src = await _load_source(db, body.source_type, body.claim_id, body.session_id, lock_claim=True)
+    src = await _load_source(db, body.source_type, body.claim_id, body.session_id, lock=True)
     by_id = {c.session.id: c for c in src.candidates}
     if any(sid not in by_id for sid in ids):
         raise _invalid({"session_ids": "Phiên không thuộc hồ sơ này."})
