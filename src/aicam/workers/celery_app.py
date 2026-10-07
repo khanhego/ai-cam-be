@@ -62,7 +62,7 @@ app.conf.update(
         # Sao lưu cloud (02a §7): J-20 01, 07, 13, 19 giờ VN = 18, 0, 6, 12 UTC (RPO DB ≤ 6 giờ — NFR-40).
         "j20-backup-db": {"task": "backup.run_db", "schedule": crontab(hour="0,6,12,18", minute=0)},
         "j21-backup-enqueue": {"task": "backup.enqueue_evidence", "schedule": 600.0},
-        # RPO bằng chứng ≤ 1 giờ. G3-BK-8: worker-backup -c 1, một lượt J-22 có thể > 5 phút (tệp lớn đang tải) →
+        # RPO bằng chứng ≤ 1 giờ. G3-BK-8: worker-backup -c 1, lượt J-22 có thể > 5 phút (tệp lớn đang tải) →
         # tin lịch cũ hết hạn sau 300 giây thay vì dồn hàng chờ rồi chạy nối đuôi.
         "j22-backup-upload": {
             "task": "backup.upload_evidence",
