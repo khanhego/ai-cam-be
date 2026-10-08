@@ -1,6 +1,6 @@
 [project]
 name = "aicam"
-version = "0.1.0"
+version = "0.3.0"
 description = "Hệ thống X — ghi hình và đối soát đóng gói (backend: api, worker, beat, vision)"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
