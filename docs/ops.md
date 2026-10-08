@@ -337,7 +337,8 @@ Phase 3 thêm 2 migration: **0006** (9 bảng mới, cột mới, CHECK mở r�
 audit, phiên mở hoàn trước vào bằng chứng hồ sơ đang mở (BR-39), index báo cáo) và **0007** (mã đơn / mã yêu cầu trả
 unique theo shop). Cả hai là một transaction, `lock_timeout` 5 giây. Như 7.1: **dừng mọi service ứng dụng trước
 khi migrate** — image Phase 2 còn chạy sẽ ghi dữ liệu theo luật cũ (một shop, "yêu cầu hủy" = hủy) lên schema mới;
-image Phase 3 thấy DB chưa nâng cấp thì thoát (`schema_version_mismatch`, mã 78).
+image Phase 3 thấy DB chưa nâng cấp thì thoát (`schema_version_mismatch`; worker / beat / vision mã 78, api mã 3 — đo ở
+G5 item 03, như 7.1).
 
 Service Phase 3 mới (compose production đã có): `worker-sync-long` (J-06, J-13 — queue `sync`), `worker-backup`
 (J-20..J-23 — queue `backup`), `worker-notify` (J-26..J-28 — queue `notify`); `worker-sync` nay nghe `sync_fast`.
@@ -363,7 +364,9 @@ liệu) — trước go-live chạy lại trên bản sao `pg_dump` của DB pro
 dc exec backup /bin/sh /pg-backup.sh once                  # 1. sao lưu DB + snapshot volume video (NAS / RAID)
 git -C ../ai-cam-be pull && git -C ../ai-cam-fe pull         # 2. mã Phase 3 (BE + FE cùng lúc)
 (cd ../ai-cam-fe && pnpm install --frozen-lockfile && pnpm build)
-dc stop api vision worker worker-sync worker-export beat   # 3. BẮT BUỘC: không còn tiến trình Phase 2 nào
+dc stop api vision worker worker-sync worker-sync-long worker-export worker-backup worker-notify beat   # 3. BẮT BUỘC:
+#    không còn tiến trình Phase 2 nào (gồm 3 worker Phase 3 chạy image Phase 2 sau khi lùi — G5 item 03; service chưa
+#    tạo lần đầu nâng cấp: `dc stop` bỏ qua, mã 0)
 dc exec postgres psql -U aicam -d aicam -Atc \
   "SELECT count(*) FROM pg_stat_activity WHERE datname = 'aicam' AND pid <> pg_backend_pid()"   #    phải in 0
 dc build migrate && dc run --rm migrate alembic current    # 4. image mới; phải in 0005 (Phase 2)
@@ -446,7 +449,9 @@ Hệ quả khi chạy Phase 2 sau khi lùi (biết trước để báo người 
 - **Không** xóa schema `phase3_archive`; **không** xóa bucket / đối tượng cloud; không bỏ hồ sơ "Bằng chứng đã bỏ" khi
   đang chạy Phase 2 (J-02 cũ sẽ xóa clip).
 
-**Nâng cấp lại lên Phase 3** sau khi đã lùi: như phần Nâng cấp (bước 7 `fix-cancel-requests` chạy lại vô hại). 0006
+**Nâng cấp lại lên Phase 3** sau khi đã lùi: như phần Nâng cấp (bước 7 `fix-cancel-requests` chạy lại vô hại). Bước 3
+phải dừng đủ 9 service như trên: sau bước 6 của phần lùi, `worker-sync-long` / `worker-backup` / `worker-notify` vẫn chạy
+image Phase 2 (`worker-sync-long` nhận queue `sync` = J-04 / J-06 / J-13 của Phase 2 — ghi DB nếu có shop thật). 0006
 khôi phục từ `phase3_archive` rồi drop schema; log `0006: khôi phục từ phase3_archive {…}` (`detached_reattached`,
 `removed_evidence_reinserted`, `legacy_hold_claims_dropped`…). Cảnh báo `nhóm UNKNOWN` cho trạng thái TikTok
 (`AWAITING_SHIPMENT`, `IN_TRANSIT`…) **trong lượt nâng cấp lại là bình thường**: bảng ánh xạ Shopee chạy trước, nhóm
