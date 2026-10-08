@@ -77,7 +77,15 @@ async def test_mark_wrong_scan_reports_affected_shares(
         link = await db.get(ShareLink, sid, populate_existing=True)
         assert link is not None
         assert link.status == "ACTIVE"
-    entry = await db.scalar(select(AuditLog).where(AuditLog.action == "SESSION_WRONG_SCAN_MARK"))
+    # BUG-G4-2: lọc theo phiên của test — `audit_log` chỉ thêm (trigger cấm DELETE / TRUNCATE) nên dòng
+    # do test commit thật khác (`test_share_mark_race`) để lại vẫn còn trong DB test.
+    entry = await db.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "SESSION_WRONG_SCAN_MARK",
+            AuditLog.object_type == "SESSION",
+            AuditLog.object_id == str(w.ret_a.id),
+        )
+    )
     assert entry is not None
     assert entry.data is not None
     assert sorted(entry.data["active_shares"]) == sorted([active1, active2])
