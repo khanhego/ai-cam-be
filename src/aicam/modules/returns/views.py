@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import ColumnElement, and_, case, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from aicam.core import clock
 from aicam.core.errors import AppError
@@ -87,22 +88,24 @@ def case_shop_sql() -> ColumnElement[object]:
     )
 
 
-async def _open_claims_by_order(db: AsyncSession, order_ids: set[uuid.UUID]) -> dict[uuid.UUID, CaseRef]:
-    """Hồ sơ khiếu nại chưa đóng **mới nhất** của mỗi đơn (theo `claim.order_id` hoặc kiện của đơn)."""
-    if not order_ids:
+async def _handling_claims(db: AsyncSession, case_ids: list[uuid.UUID]) -> dict[uuid.UUID, CaseRef]:
+    """Hồ sơ khiếu nại chưa đóng **mới nhất** xử lý từng hồ sơ hàng hoàn — cùng luật BR-40
+    (`queries.handling_claim_exists`, L26 — DEC-1001): không tính `LEGACY_HOLD` / hồ sơ của yêu cầu khác."""
+    if not case_ids:
         return {}
-    key = func.coalesce(Claim.order_id, Package.order_id)
+    rc = aliased(ReturnCase)
     rows = (
         await db.execute(
-            select(key, Claim.id, Claim.code)
+            select(rc.id, Claim.id, Claim.code)
             .join(Package, Package.id == Claim.package_id)
-            .where(Claim.status != "CLOSED", key.in_(sorted(order_ids)))
-            .order_by(key, Claim.created_at.desc(), Claim.id.desc())
+            .join(rc, queries.handling_claim_condition(rc))
+            .where(rc.id.in_(case_ids))
+            .order_by(rc.id, Claim.created_at.desc(), Claim.id.desc())
         )
     ).all()
     out: dict[uuid.UUID, CaseRef] = {}
-    for order_id, claim_id, code in rows:
-        out.setdefault(order_id, CaseRef(id=claim_id, code=code))
+    for case_id, claim_id, code in rows:
+        out.setdefault(case_id, CaseRef(id=claim_id, code=code))
     return out
 
 
@@ -146,7 +149,7 @@ async def items_of(db: AsyncSession, cases: list[ReturnCase], tz: str) -> list[R
     shops = await shops_by_id(
         db, [c.shop_id or (orders[c.order_id].shop_id if c.order_id in orders else None) for c in cases]
     )
-    open_claims = await _open_claims_by_order(db, set(orders))
+    open_claims = await _handling_claims(db, ids)
     out = []
     for c in cases:
         order = orders.get(c.order_id) if c.order_id else None
@@ -183,7 +186,7 @@ async def items_of(db: AsyncSession, cases: list[ReturnCase], tz: str) -> list[R
                 platform_status_group=c.platform_status_group,
                 response_due_at=due_at,
                 response_due_source=due_source,
-                claim=open_claims.get(c.order_id) if c.order_id else None,
+                claim=open_claims.get(c.id),
             )
         )
     return out
