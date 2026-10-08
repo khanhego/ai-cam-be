@@ -140,7 +140,9 @@ async def test_remove_is_soft_and_keeps_clip_until_deadline(
     assert all(r.removed_at == REMOVED_AT and r.removed_reason == REASON for r in rows)
     audits = (
         await db.scalars(
-            select(AuditLog).where(AuditLog.action == "CLAIM_EVIDENCE_REMOVE").order_by(AuditLog.id)
+            select(AuditLog)
+            .where(AuditLog.action == "CLAIM_EVIDENCE_REMOVE", AuditLog.object_id == claim["id"])
+            .order_by(AuditLog.id)
         )
     ).all()
     assert len(audits) == 2

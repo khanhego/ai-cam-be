@@ -159,7 +159,10 @@ async def test_mark_wrong_scan_soft_removes_from_open_claims_only(
     assert sorted(r.object_id for r in removes if r.data["session_id"] == str(a.id)) == sorted(
         [str(c1.id), str(c2.id)]
     )
-    mark = await db.scalar(select(AuditLog).where(AuditLog.action == "SESSION_WRONG_SCAN_MARK"))
+    # Lọc theo phiên của test: `audit_log` chỉ thêm — dòng do test commit thật khác để lại vẫn còn (BUG-G4-2).
+    mark = await db.scalar(
+        select(AuditLog).where(AuditLog.action == "SESSION_WRONG_SCAN_MARK", AuditLog.object_id == str(a.id))
+    )
     assert mark is not None
     assert sorted(mark.data["removed_from_claims"]) == sorted([str(c1.id), str(c2.id)])
     # J-02 không xóa clip A trước `keep_until` (dòng đã bỏ còn hạn bảo vệ — BR-38)
@@ -206,7 +209,11 @@ async def test_unmark_does_not_re_add_then_manual_add_can_be_primary(
     )  # fmt: skip
     assert put.status_code == 200, put.text
     assert _primary(put.json()) == [str(a.id)]  # thêm lại tay → lại là phiên chính (sớm nhất)
-    unmark_audit = await db.scalar(select(AuditLog).where(AuditLog.action == "SESSION_WRONG_SCAN_UNMARK"))
+    unmark_audit = await db.scalar(
+        select(AuditLog).where(
+            AuditLog.action == "SESSION_WRONG_SCAN_UNMARK", AuditLog.object_id == str(a.id)
+        )
+    )
     assert unmark_audit is not None
 
 
@@ -340,7 +347,14 @@ async def test_review_errors(api: AsyncClient, db: AsyncSession) -> None:
     )
     assert forbidden.status_code == 403
     assert (
-        await db.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action.like("SESSION_%")))
+        await db.scalar(
+            select(func.count())
+            .select_from(AuditLog)
+            .where(
+                AuditLog.action.like("SESSION_%"),
+                AuditLog.object_id.in_([str(s.id) for s in (a, done, station_cancel, foreign)]),
+            )
+        )
         == 0
     )
 
