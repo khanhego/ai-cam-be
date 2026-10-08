@@ -65,13 +65,13 @@ def alembic_config() -> Config:
 
 
 def single_run_lock_path(url: str) -> Path:
-    """Tệp khóa theo DB test (một máy) — xem `_single_pytest_run`."""
+    """Tệp khóa theo DB test (một máy) — xem `single_pytest_run`."""
     digest = hashlib.sha256(url.encode()).hexdigest()[:12]
     return Path(tempfile.gettempdir()) / f"aicam-pytest-{digest}.lock"
 
 
 @pytest.fixture(scope="session")
-def _single_pytest_run() -> Iterator[None]:
+def single_pytest_run() -> Iterator[None]:
     """BUG-G4-2 (DEC-971): chỉ **một** tiến trình pytest dùng DB test cùng lúc. Hai lượt chồng nhau (vd
     chạy lẻ một file trong lúc chạy cả bộ) làm test đếm dữ liệu toàn cục chập chờn (`check_timeouts`, J-02,
     migration dựng lại schema `_mig` của bên kia) — lượt thứ hai dừng ngay với lời nhắn thay vì fail ngẫu
@@ -94,7 +94,7 @@ def _single_pytest_run() -> Iterator[None]:
 
 
 @pytest.fixture(scope="session")
-def migrated_database_url(_single_pytest_run: None) -> str:
+def migrated_database_url(single_pytest_run: None) -> str:
     asyncio.run(_ensure_database(TEST_DATABASE_URL))
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     get_settings.cache_clear()
