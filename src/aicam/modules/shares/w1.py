@@ -115,8 +115,9 @@ def _session_html(s: W1Session, tz: ZoneInfo) -> str:
     return (
         f'<section class="card"><h2>Phiên {s.number}</h2><dl>{"".join(rows)}</dl>'
         + (f'<p class="note">{_e(note)}</p>' if note else "")
+        # Câu "không phát được" chỉ là nội dung dự phòng trong `<video>` — không có đoạn luôn hiện dưới video
+        # (G4, DEC-972); không script được (CSP), nút "Tải video" luôn hiện.
         + f'<video controls preload="metadata" playsinline src="{_e(s.video_url)}">{_e(NO_PLAYBACK)}</video>'
-        + f'<p class="muted">{_e(NO_PLAYBACK)}</p>'
         + f'<a class="button" href="{_e(s.download_url)}">Tải video (MP4, {mb} MB)</a>'
         + photos
         + "</section>"

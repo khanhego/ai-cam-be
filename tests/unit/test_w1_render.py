@@ -124,3 +124,18 @@ def test_origin_of() -> None:
     assert w1.origin_of("http://192.168.1.5:59000/b/k") == "http://192.168.1.5:59000"
     with pytest.raises(ValueError, match="scheme"):
         w1.origin_of("memory://")
+
+
+def test_no_playback_text_only_as_video_fallback() -> None:
+    """G4 quan sát W1: câu "Trình duyệt không phát được video…" chỉ là nội dung dự phòng **trong**
+    `<video>` (trình duyệt chỉ hiện khi không phát được thẻ video) — không còn đoạn chữ luôn hiện dưới video
+    khi video phát được. Không script (CSP `default-src 'none'`); nút "Tải video" luôn hiện (DEC-972)."""
+    page = w1.render(_ctx())
+    assert page.count(w1.NO_PLAYBACK) == 2  # 2 phiên, mỗi phiên một lần
+    fallbacks = re.findall(r"<video\b[^>]*>(.*?)</video>", page, flags=re.S)
+    assert len(fallbacks) == 2
+    assert all(w1.NO_PLAYBACK in f for f in fallbacks)
+    outside = re.sub(r"<video\b[^>]*>.*?</video>", "", page, flags=re.S)
+    assert w1.NO_PLAYBACK not in outside
+    assert outside.count("Tải video (MP4,") == 2
+    assert "<script" not in page.lower()
