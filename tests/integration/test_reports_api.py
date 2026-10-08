@@ -785,7 +785,7 @@ async def test_export_csv_returns_with_audit(api: AsyncClient, db: AsyncSession)
     assert res.content.startswith(b"\xef\xbb\xbf")
     text_ = res.content.decode("utf-8-sig")
     assert text_.startswith(
-        "Báo cáo hàng hoàn\r\nKỳ,06/09/2026 – 05/10/2026\r\nSàn,Shopee\r\nShop,Áo Đẹp\r\n"
+        "Báo cáo hàng hoàn\r\nKỳ;06/09/2026 – 05/10/2026\r\nSàn;Shopee\r\nShop;Áo Đẹp\r\n"
     )
     for title in (
         "Chỉ số",
@@ -796,9 +796,10 @@ async def test_export_csv_returns_with_audit(api: AsyncClient, db: AsyncSession)
         "Biểu đồ — theo ngày",
     ):
         assert f"\r\n\r\n{title}\r\n" in text_
-    assert 'Tỷ lệ hoàn,"3,7%",26,700\r\n' in text_
-    assert 'Tỷ lệ có vấn đề,"20,7%",6,29\r\n' in text_
-    assert 'Shopee,Áo Đẹp,700,26,"3,7%"\r\n' in text_
+    # BUG-G4-1: dấu `;` (Excel vùng VN), tỷ lệ "3,7%" không cần nháy
+    assert "Tỷ lệ hoàn;3,7%;26;700\r\n" in text_
+    assert "Tỷ lệ có vấn đề;20,7%;6;29\r\n" in text_
+    assert "Shopee;Áo Đẹp;700;26;3,7%\r\n" in text_
     rows = (
         await db.execute(
             text(
@@ -835,8 +836,8 @@ async def test_export_permissions_and_errors(api: AsyncClient, db: AsyncSession)
     assert bad.status_code == 422
     assert ok.status_code == 200
     assert 'filename="bao-cao-nang-suat-2026-09-06_2026-10-05.csv"' in ok.headers["content-disposition"]
-    assert "Kiện đã đóng gói,0" in ok.content.decode("utf-8-sig")
+    assert "Kiện đã đóng gói;0" in ok.content.decode("utf-8-sig")
     assert claims.status_code == 200
-    assert "Tỷ lệ thắng,—,0,0" in claims.content.decode("utf-8-sig")
+    assert "Tỷ lệ thắng;—;0;0" in claims.content.decode("utf-8-sig")
     n = (await db.execute(text("SELECT count(*) FROM audit_log WHERE action = 'REPORT_EXPORT'"))).scalar()
     assert n == 2

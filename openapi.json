@@ -17000,7 +17000,7 @@
                 }
               }
             },
-            "description": "CSV UTF-8 có BOM"
+            "description": "CSV UTF-8 có BOM, dấu tách `;` (Excel vùng VN)"
           },
           "422": {
             "content": {

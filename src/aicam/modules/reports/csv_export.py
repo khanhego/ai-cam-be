@@ -1,7 +1,9 @@
-"""API-153 CSV tab báo cáo (FR-09.06, DEC-476): UTF-8 có BOM, dấu phẩy, mọi bảng của tab.
+"""API-153 CSV tab báo cáo (FR-09.06, DEC-476 / DEC-970): UTF-8 có BOM, dấu tách `;`, mọi bảng của tab.
 
 Mỗi bảng mở đầu bằng một dòng tiêu đề tiếng Việt, cách nhau một dòng trống; tỷ lệ dạng chuỗi `4,0%`, số tiền
-nguyên (đồng). Ô chuỗi bắt đầu `= + - @ \\t \\r` được thêm `'` (G3-RP-1 — `core.csv_safe`)."""
+nguyên (đồng). Ô chuỗi bắt đầu `= + - @ \\t \\r` được thêm `'` (G3-RP-1 — `core.csv_safe`).
+Dấu `;` (BUG-G4-1): Excel vùng VN (dấu thập phân `,`) bấm đúp mở tệp tách cột theo `;`; dấu phẩy dồn cả dòng
+vào cột A."""
 
 import io
 from collections.abc import Sequence
@@ -10,12 +12,13 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from aicam.core.csv_safe import SafeWriter
+from aicam.core.csv_safe import EXCEL_VN_DELIMITER, SafeWriter
 from aicam.modules.claims.service import CONCLUSION_LABELS
 from aicam.modules.claims.service import STATUS_LABELS as CLAIM_STATUS_LABELS
 from aicam.modules.reports import schemas as s
 
 BOM = "\ufeff"  # Excel nhận UTF-8
+DELIMITER = EXCEL_VN_DELIMITER
 FILE_PREFIX = {
     "returns": "bao-cao-hang-hoan",
     "claims": "bao-cao-khieu-nai",
@@ -254,7 +257,7 @@ def render(
     else:  # pragma: no cover — REPORTS chỉ có 3 loại
         raise TypeError(type(out))
     buf = io.StringIO()
-    writer = SafeWriter(buf, lineterminator="\r\n")  # G3-RP-1: chống formula injection
+    writer = SafeWriter(buf, delimiter=DELIMITER, lineterminator="\r\n")  # G3-RP-1: chống formula injection
     writer.writerows(_head(report, out, shop_name, station_name))
     for title, rows in tables:
         writer.writerow([])

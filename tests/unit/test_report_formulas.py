@@ -147,10 +147,10 @@ def test_csv_percent_and_render() -> None:
     )
     body = csv_export.render("productivity", out, station_name="Station 01").decode("utf-8")
     assert body.startswith("﻿Báo cáo năng suất\r\n")
-    assert "Kỳ,06/09/2026 – 05/10/2026\r\nSàn,TikTok Shop\r\nShop,Tất cả\r\nStation,Station 01\r\n" in body
+    assert "Kỳ;06/09/2026 – 05/10/2026\r\nSàn;TikTok Shop\r\nShop;Tất cả\r\nStation;Station 01\r\n" in body
     assert "\r\n\r\nTheo người đứng bàn\r\n" in body
-    assert "(Không ghi tên),3,90,0,0,0,0\r\n" in body
-    assert "TB / kiện hoàn (giây),—\r\n" in body
+    assert "(Không ghi tên);3;90;0;0;0;0\r\n" in body
+    assert "TB / kiện hoàn (giây);—\r\n" in body
 
 
 def test_csv_formula_injection_guarded() -> None:
@@ -188,6 +188,53 @@ def test_csv_formula_injection_guarded() -> None:
         return_by_operator=[],
     )
     body = csv_export.render("productivity", out, shop_name="+Shop", station_name="@St").decode("utf-8")
-    assert "Shop,'+Shop\r\n" in body
-    assert "Station,'@St\r\n" in body
-    assert '"\'=HYPERLINK(""http://x"",""bấm"")",1,—' in body
+    assert "Shop;'+Shop\r\n" in body
+    assert "Station;'@St\r\n" in body
+    assert '"\'=HYPERLINK(""http://x"",""bấm"")";1;—' in body
+
+
+def test_csv_semicolon_for_excel_vn() -> None:
+    """BUG-G4-1 (TC-09.40, AC-47): Excel vùng VN (dấu thập phân `,`) tách cột theo `;` — CSV báo cáo dùng `;`,
+    vẫn UTF-8 BOM; tỷ lệ "4,0%" không cần nháy; ô chứa `;` được bọc nháy; đọc lại bằng `;` đúng từng ô."""
+    import csv
+    import io
+
+    from aicam.modules.reports import csv_export
+    from aicam.modules.reports import schemas as s
+
+    out = s.ProductivityReportOut(
+        period=s.PeriodOut(from_=date(2026, 9, 6), to=date(2026, 10, 5)),
+        filters=s.ProductivityFilters(platform=None, shop_id=None, station_id=None),
+        generated_at=datetime(2026, 10, 6, tzinfo=UTC),
+        cards=s.ProductivityCards(packed=2, pack_avg_seconds=75, returns_inspected=1, return_avg_seconds=40),
+        by_station=[],
+        by_operator=[
+            s.OperatorRow(
+                operator_name="Lan; ca 2",
+                packed=2,
+                avg_seconds=75,
+                mismatch=0,
+                abandoned=0,
+                cancelled=0,
+                repacked=0,
+            )
+        ],
+        return_by_operator=[
+            s.ReturnOperatorRow(
+                operator_name="Minh",
+                inspected=1,
+                avg_seconds=40,
+                issue_rate=s.Ratio(numerator=1, denominator=1, value=0.04),
+            )
+        ],
+    )
+    raw = csv_export.render("productivity", out)
+    assert raw.startswith(b"\xef\xbb\xbf")
+    body = raw.decode("utf-8-sig")
+    assert csv_export.DELIMITER == ";"
+    assert "Kỳ;06/09/2026 – 05/10/2026\r\n" in body
+    assert '"Lan; ca 2";2;75;0;0;0;0\r\n' in body
+    assert "Minh;1;40;1;4,0%\r\n" in body
+    rows = list(csv.reader(io.StringIO(body), delimiter=";"))
+    assert ["Lan; ca 2", "2", "75", "0", "0", "0", "0"] in rows
+    assert ["Minh", "1", "40", "1", "4,0%"] in rows

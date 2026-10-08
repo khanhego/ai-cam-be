@@ -88,7 +88,10 @@ async def productivity_report(
     "/reports/{report}/export",
     response_class=StreamingResponse,
     responses={
-        200: {"content": {"text/csv": {"schema": {"type": "string"}}}, "description": "CSV UTF-8 có BOM"}
+        200: {
+            "content": {"text/csv": {"schema": {"type": "string"}}},
+            "description": "CSV UTF-8 có BOM, dấu tách `;` (Excel vùng VN)",
+        }
     },
 )
 async def export_report(

@@ -148,8 +148,9 @@ def test_tc_09_37_bad_period(client: httpx.Client, tokens: dict[str, dict[str, s
 
 
 def test_tc_09_40_csv_export_and_audit(client: httpx.Client, tokens: dict[str, dict[str, str]]) -> None:
-    """TC-09.40 (phần API): API-153 `returns` → `text/csv; charset=utf-8` có BOM, tên tệp theo kỳ, dấu phẩy,
-    tiêu đề tiếng Việt, tỷ lệ dạng "x,y%"; audit `REPORT_EXPORT {report, from, to}`. Mở Excel: MAN."""
+    """TC-09.40 (phần API): API-153 `returns` → `text/csv; charset=utf-8` có BOM, tên tệp theo kỳ,
+    dấu `;` (BUG-G4-1), tiêu đề tiếng Việt, tỷ lệ dạng "x,y%"; audit `REPORT_EXPORT {report, from, to}`.
+    Mở Excel: MAN."""
     res = client.get("/reports/returns/export", params=PERIOD, headers=tokens["SUPERVISOR"])
     assert res.status_code == 200, res.text
     assert res.headers["content-type"] == "text/csv; charset=utf-8"
@@ -158,12 +159,12 @@ def test_tc_09_40_csv_export_and_audit(client: httpx.Client, tokens: dict[str, d
     assert res.content.startswith("﻿".encode())
     text = res.content.decode("utf-8-sig")
     assert text.startswith("Báo cáo hàng hoàn\r\n")
-    assert "Chỉ số,Giá trị,Tử số,Mẫu số" in text
+    assert "Chỉ số;Giá trị;Tử số;Mẫu số" in text
     rep = _get(client, tokens["SUPERVISOR"], "returns")
     card = rep["cards"]["return_rate"]
     if card["value"] is not None:
         shown = f"{card['value'] * 100:.1f}".replace(".", ",")
-        assert f'Tỷ lệ hoàn,"{shown}%",{card["numerator"]},{card["denominator"]}' in text
+        assert f"Tỷ lệ hoàn;{shown}%;{card['numerator']};{card['denominator']}" in text
     rows = p3.audit_rows(client, tokens["ADMIN"], "REPORT_EXPORT")
     assert len(rows) == 1
     assert {"report": "returns", "from": PERIOD["from"], "to": PERIOD["to"]}.items() <= rows[0][

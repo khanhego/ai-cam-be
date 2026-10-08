@@ -10,6 +10,9 @@ from collections.abc import Iterable, Sequence
 from typing import Any
 
 _TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+# Dấu tách cho CSV người dùng mở bằng Excel (BUG-G4-1, 02a DEC-970): vùng vi-VN / en-VN dùng `,` làm dấu thập
+# phân nên Excel tách cột theo `;` khi bấm đúp mở tệp. File kỹ thuật (CSV lệnh khôi phục) giữ `,`.
+EXCEL_VN_DELIMITER = ";"
 _NUMERIC = re.compile(r"^[+-]?\d[\d.,]*%?$")
 
 
