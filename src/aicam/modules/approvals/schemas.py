@@ -78,7 +78,9 @@ class ApprovalItem(BaseModel):
 
 class DecisionIn(BaseModel):
     action: Action
-    note: str | None = Field(default=None, max_length=500)
+    # Độ dài kiểm ở service **sau khi trim** → `fields.note` tiếng Việt (TC-04.70: 501 ký tự trước đây trả lời
+    # nhắn tiếng Anh của pydantic — DEC-974).
+    note: str | None = None
     # Phase 3 (02 §6.2 API-21 v0.3 — DEC-514, 521): bắt buộc khi CANCEL_SESSION phiên RETURN (service kiểm,
     # trả 422 `fields.reason_code` tiếng Việt); phiên PACK bỏ qua.
     reason_code: str | None = Field(default=None, max_length=32)

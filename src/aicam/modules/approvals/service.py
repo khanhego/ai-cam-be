@@ -49,6 +49,7 @@ log = structlog.get_logger()
 _REQUIRED_STATUS = {"MISMATCH": "MISMATCH", "ASSIST": "OPEN"}
 RETURN_ACTIONS = ("CONTINUE", "CANCEL_SESSION")  # yêu cầu từ phiên RETURN (02 API-21)
 RETURN_CANCEL_NOTE_MIN, RETURN_CANCEL_NOTE_MAX = 5, 500
+NOTE_MAX = 500
 
 
 def _not_eligible(message: str) -> AppError:
@@ -312,6 +313,8 @@ async def _decide_on_session(
             fields["note"] = "Nhập ghi chú (5–500 ký tự)."
         if fields:
             raise AppError("VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": fields})
+    elif note is not None and len(note) > NOTE_MAX:  # hủy phiên PACK: ghi chú tùy chọn, tối đa 500
+        raise _invalid("note", "Nhập ghi chú (1–500 ký tự)")
     tray = await read_tray(get_redis(), station.id, pack.open_code)
     pack.status_before_approval = None
     pack.warn_notified = False  # cảnh báo 15 phút tính lại từ lúc hết chờ (DEC-60)
@@ -343,6 +346,8 @@ async def decide(
     """API-21: ADMIN / SUPERVISOR duyệt. Người sau → ALREADY_RESOLVED; audit APPROVAL_DECISION (FR-03.12)."""
     note = body.note.strip() if body.note and body.note.strip() else None
     if body.action == "CLOSE_WITH_NOTE" and note is None:
+        raise _invalid("note", "Nhập ghi chú (1–500 ký tự)")
+    if note is not None and len(note) > NOTE_MAX and body.action != "CANCEL_SESSION":
         raise _invalid("note", "Nhập ghi chú (1–500 ký tự)")
     found = await session.get(ApprovalRequest, approval_id)
     if found is None:
