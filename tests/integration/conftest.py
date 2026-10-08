@@ -5,9 +5,13 @@ DB được tạo nếu chưa có, migrate tới head một lần mỗi phiên t
 """
 
 import asyncio
+import fcntl
+import hashlib
 import os
-from collections.abc import AsyncIterator
+import tempfile
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import IO
 
 import pytest
 from alembic import command
@@ -60,8 +64,37 @@ def alembic_config() -> Config:
     return cfg
 
 
+def single_run_lock_path(url: str) -> Path:
+    """Tệp khóa theo DB test (một máy) — xem `_single_pytest_run`."""
+    digest = hashlib.sha256(url.encode()).hexdigest()[:12]
+    return Path(tempfile.gettempdir()) / f"aicam-pytest-{digest}.lock"
+
+
 @pytest.fixture(scope="session")
-def migrated_database_url() -> str:
+def _single_pytest_run() -> Iterator[None]:
+    """BUG-G4-2 (DEC-971): chỉ **một** tiến trình pytest dùng DB test cùng lúc. Hai lượt chồng nhau (vd
+    chạy lẻ một file trong lúc chạy cả bộ) làm test đếm dữ liệu toàn cục chập chờn (`check_timeouts`, J-02,
+    migration dựng lại schema `_mig` của bên kia) — lượt thứ hai dừng ngay với lời nhắn thay vì fail ngẫu
+    nhiên."""
+    fh: IO[str] = single_run_lock_path(TEST_DATABASE_URL).open("a")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        pytest.exit(
+            f"Một tiến trình pytest khác đang dùng DB test {make_url(TEST_DATABASE_URL).database} — "
+            "chạy lần lượt (BUG-G4-2).",
+            returncode=3,
+        )
+    try:
+        yield
+    finally:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
+@pytest.fixture(scope="session")
+def migrated_database_url(_single_pytest_run: None) -> str:
     asyncio.run(_ensure_database(TEST_DATABASE_URL))
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     get_settings.cache_clear()
