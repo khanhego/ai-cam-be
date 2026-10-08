@@ -70,27 +70,45 @@ def single_run_lock_path(url: str) -> Path:
     return Path(tempfile.gettempdir()) / f"aicam-pytest-{digest}.lock"
 
 
+def acquire_single_run_lock(path: Path) -> IO[str] | None:
+    """Lấy khóa tệp (không chờ). Trả tệp đang giữ khóa; `None` nếu khóa thuộc **chính tiến trình này**
+    (fixture nhập lại qua `tests/contract/conftest.py`). Tiến trình khác giữ → `pytest.exit` mã 3."""
+    fh: IO[str] = path.open("a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.seek(0)
+        owner = fh.read().strip()
+        fh.close()
+        if owner == str(os.getpid()):
+            return None
+        pytest.exit(
+            f"Một tiến trình pytest khác (PID {owner or '?'}) đang dùng DB test "
+            f"{make_url(TEST_DATABASE_URL).database} — chạy lần lượt (BUG-G4-2).",
+            returncode=3,
+        )
+    fh.seek(0)
+    fh.truncate()
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
+
+
 @pytest.fixture(scope="session")
 def single_pytest_run() -> Iterator[None]:
     """BUG-G4-2 (DEC-971): chỉ **một** tiến trình pytest dùng DB test cùng lúc. Hai lượt chồng nhau (vd
     chạy lẻ một file trong lúc chạy cả bộ) làm test đếm dữ liệu toàn cục chập chờn (`check_timeouts`, J-02,
     migration dựng lại schema `_mig` của bên kia) — lượt thứ hai dừng ngay với lời nhắn thay vì fail ngẫu
     nhiên."""
-    fh: IO[str] = single_run_lock_path(TEST_DATABASE_URL).open("a")
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        fh.close()
-        pytest.exit(
-            f"Một tiến trình pytest khác đang dùng DB test {make_url(TEST_DATABASE_URL).database} — "
-            "chạy lần lượt (BUG-G4-2).",
-            returncode=3,
-        )
+    fh = acquire_single_run_lock(single_run_lock_path(TEST_DATABASE_URL))
     try:
         yield
     finally:
-        fcntl.flock(fh, fcntl.LOCK_UN)
-        fh.close()
+        if fh is not None:
+            fh.seek(0)
+            fh.truncate()
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.close()
 
 
 @pytest.fixture(scope="session")

@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from .conftest import single_run_lock_path
+from .conftest import acquire_single_run_lock, single_run_lock_path
 
 pytestmark = pytest.mark.integration
 
@@ -26,3 +26,9 @@ def test_second_pytest_process_cannot_take_test_db_lock(migrated_database_url: s
     )
     out = subprocess.run([sys.executable, "-c", probe], check=False, timeout=30)  # noqa: S603
     assert out.returncode == 7  # phiên pytest này đang giữ khóa
+
+
+def test_same_process_reacquire_is_allowed(migrated_database_url: str) -> None:
+    """`tests/contract/conftest.py` nhập lại fixture của integration (`import *`) → hai fixture phiên cùng một
+    tiến trình: lần lấy thứ hai phải nhận ra khóa của **chính tiến trình này** (PID trong tệp), không dừng."""
+    assert acquire_single_run_lock(single_run_lock_path(migrated_database_url)) is None
