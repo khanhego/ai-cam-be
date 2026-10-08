@@ -20,16 +20,20 @@ from aicam.modules.media import protection
 from aicam.modules.media import snapshots as snapshot_media
 from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.orders.models import Order, OrderItem, Package, Shop, StatusHistory
-from aicam.modules.orders.service import MANUAL_TRANSITIONS
+from aicam.modules.orders.refs import ShopRef, shop_conditions, shop_ref, shops_by_id
+from aicam.modules.orders.service import MANUAL_TRANSITIONS, merged_orders
 from aicam.modules.reconciliation.models import ReconAlert
 from aicam.modules.reconciliation.service import RULE_BR
 from aicam.modules.returns import views as return_views
 from aicam.modules.returns.models import OPEN_CASE_STATUSES, ReturnCase, ReturnCasePackage
 from aicam.modules.returns.schemas import ReturnCaseItem
 from aicam.modules.sessions import inspection
-from aicam.modules.sessions.models import PackSession
+from aicam.modules.sessions.models import SESSION_STATUSES, PackSession, SessionEvent
+from aicam.modules.sessions.queries import dropped_return_filter
 from aicam.modules.sessions.schemas import InspectionLineOut, InspectionOut
 from aicam.modules.settings import service as settings_service
+from aicam.modules.shares import queries as share_queries
+from aicam.modules.shares.schemas import ShareBrief
 from aicam.modules.stations.models import Station
 from aicam.modules.users.models import User
 
@@ -57,6 +61,9 @@ class PackageItem(BaseModel):
     id: uuid.UUID
     tracking_number: str
     platform_order_sn: str | None
+    # Phase 3 (02 §6.2 API-30 — T-215): null = chưa gắn shop.
+    platform: str | None = None
+    shop: ShopRef | None = None
     warehouse_status: str
     platform_status: str | None
     source: Literal["API", "CSV"] | None
@@ -73,11 +80,19 @@ class ItemDetail(BaseModel):
     image_url: str | None
 
 
+class MergedOrderOut(BaseModel):
+    platform_order_sn: str
+
+
 class OrderDetail(BaseModel):
     id: uuid.UUID
-    platform: str
+    # Phase 3: `null` = đơn chưa gắn shop (đơn file — "Chưa rõ sàn", DEC-541).
+    platform: str | None
+    shop: ShopRef | None = None
     platform_order_sn: str
     platform_status: str | None
+    platform_status_group: str = "UNKNOWN"
+    merged_orders: list[MergedOrderOut] = []
     buyer_note: str | None
     source: str
     items: list[ItemDetail]
@@ -140,15 +155,15 @@ class SessionSnapshot(BaseModel):
     id: uuid.UUID
     kind: Literal["MANUAL", "PACK_CLOSE"]
     taken_at: datetime
-    url: str | None  # null khi ảnh đã xóa theo lưu trữ
-    status: Literal["READY", "DELETED"]
+    url: str | None  # null khi ảnh đã xóa theo lưu trữ / thiếu tệp
+    status: Literal["READY", "DELETED", "MISSING"]  # MISSING (v0.3 — DEC-524): url, protection = null
     protection: Protection | None
 
 
 class PackSnapshot(BaseModel):
     id: uuid.UUID
     url: str | None
-    status: Literal["READY", "DELETED"]
+    status: Literal["READY", "DELETED", "MISSING"]
 
 
 class SessionDetail(BaseModel):
@@ -190,12 +205,20 @@ class PackageClaimBrief(BaseModel):
     status: str
 
 
+class TimelineShop(BaseModel):
+    platform: str
+    name: str | None
+
+
 class TimelineItem(BaseModel):
     at: datetime
     source: str
     from_status: str | None
     to_status: str
     actor: str | None
+    # Phase 3 (02 §6.2 API-31, BR-32, DEC-561): dòng của sự kiện phiên `AMBIGUOUS_SHOP` — mã có ở ≥ 2 shop khi
+    # quét (`source = WAREHOUSE`, `to_status = PACKING`, `actor` = station); dòng trạng thái thường → null.
+    shops: list[TimelineShop] | None = None
 
 
 class PackageDetail(BaseModel):
@@ -213,6 +236,9 @@ class PackageDetail(BaseModel):
     recon_alerts: list[ReconAlertBrief]
     claims: list[PackageClaimBrief]
     allowed_status_targets: list[str]  # đích "Điều chỉnh trạng thái" (API-122); rỗng → FE ẩn menu
+    # Phase 3 link chia sẻ (02 §6.2 API-31, FR-07.09): ≤ 3 link mới nhất có phiên của kiện (trừ `FAILED`).
+    shares: list[ShareBrief] = []
+    shares_active_count: int = 0
 
 
 # ---------------------------------------------------------------- API-30
@@ -232,6 +258,22 @@ def _validate_range(date_from: date | None, date_to: date | None) -> None:
                            {"fields": {"date_to": f"Khoảng ngày tối đa {MAX_RANGE_DAYS} ngày"}})  # fmt: skip
 
 
+SESSION_STATUS_MAX = 4
+
+
+def parse_session_statuses(raw: str | None) -> list[str] | None:
+    """API-30 `session_status` (Phase 3): một hoặc nhiều giá trị cách dấu phẩy (≤ 4) — sai → 422."""
+    if raw is None or not raw.strip():
+        return None
+    values = list(dict.fromkeys(v.strip().upper() for v in raw.split(",") if v.strip()))
+    if not values or len(values) > SESSION_STATUS_MAX or any(v not in SESSION_STATUSES for v in values):
+        message = f"Tối đa {SESSION_STATUS_MAX} trạng thái phiên hợp lệ, cách nhau dấu phẩy"
+        raise AppError(
+            "VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": {"session_status": message}}
+        )
+    return values
+
+
 async def search(
     db: AsyncSession,
     *,
@@ -243,10 +285,13 @@ async def search(
     date_to: date | None = None,
     station_id: uuid.UUID | None = None,
     warehouse_status: str | None = None,
-    session_status: str | None = None,
+    session_status: str | list[str] | None = None,
     session_flag: str | None = None,
     session_type: str | None = None,
     source: str | None = None,
+    platform: str | None = None,
+    shop_id: uuid.UUID | None = None,
+    return_dropped: bool = False,
 ) -> Page[PackageItem]:
     """Lọc theo phiên (EXISTS): `session_status` theo ngày kết thúc, `session_flag` theo ngày bắt đầu (khớp
     định nghĩa thẻ API-32); không lọc phiên thì ngày theo lúc phiên kết thúc (hoặc bắt đầu nếu còn mở)."""
@@ -271,12 +316,17 @@ async def search(
         conditions.append(Package.warehouse_status == warehouse_status)
     if source:
         conditions.append(Order.source == source)
+    conditions += shop_conditions(Order.shop_id, platform, shop_id)
+    statuses = [session_status] if isinstance(session_status, str) else session_status
 
     session_conds: list[ColumnElement[bool]] = [PackSession.package_id == Package.id]
     if station_id:
         session_conds.append(PackSession.station_id == station_id)
-    if session_status:
-        session_conds.append(PackSession.status == session_status)
+    if statuses:
+        session_conds.append(PackSession.status.in_(statuses))
+    if return_dropped:
+        # BR-39 v0.4: phiên mở hoàn hủy / bỏ dở **trừ** phiên bị loại (quét nhầm) — cùng luật thẻ D2, N03.
+        session_conds.append(dropped_return_filter())
     if session_flag:
         session_conds.append(literal(session_flag) == any_(PackSession.flags))
     if session_type:
@@ -284,7 +334,7 @@ async def search(
     if date_from or date_to:
         when = (
             PackSession.ended_at
-            if session_status
+            if statuses or return_dropped
             else PackSession.started_at
             if session_flag
             else func.coalesce(PackSession.ended_at, PackSession.started_at)
@@ -306,6 +356,7 @@ async def search(
         )
     ).all()
     ids = [p.id for p, _ in rows]
+    shops = await shops_by_id(db, [o.shop_id for _, o in rows if o is not None])
     last: dict[uuid.UUID, LastSession] = {}
     with_clip: set[uuid.UUID] = set()
     cases = await _case_briefs(db, ids)
@@ -335,6 +386,8 @@ async def search(
             id=p.id,
             tracking_number=p.tracking_number,
             platform_order_sn=o.platform_order_sn if o else None,
+            platform=(shop.platform if (shop := shops.get(o.shop_id) if o and o.shop_id else None) else None),
+            shop=shop_ref(shop),
             warehouse_status=p.warehouse_status,
             platform_status=o.platform_status if o else None,
             source=o.source if o else None,
@@ -559,9 +612,15 @@ async def detail(
             items = (await db.scalars(select(OrderItem).where(OrderItem.order_id == order.id))).all()
             order_out = OrderDetail(
                 id=order.id,
-                platform=shop.platform if shop else "SHOPEE",
+                platform=shop.platform if shop else None,
+                shop=ShopRef(id=shop.id, name=shop.name) if shop else None,
                 platform_order_sn=order.platform_order_sn,
                 platform_status=order.platform_status,
+                platform_status_group=order.platform_status_group,
+                merged_orders=[
+                    MergedOrderOut(platform_order_sn=m.platform_order_sn)
+                    for m in await merged_orders(db, package.id)
+                ],
                 buyer_note=order.buyer_note,
                 source=order.source,
                 items=[
@@ -601,6 +660,30 @@ async def detail(
         )
         for h, display in history
     ]
+    # BR-32 (DEC-561): mỗi sự kiện phiên `AMBIGUOUS_SHOP` thêm một dòng `shops` (D4 "Mã có ở 2 shop: …").
+    station_of = {s.id: name for s, name in rows}
+    ambiguous = (
+        await db.scalars(
+            select(SessionEvent)
+            .where(
+                SessionEvent.session_id.in_(list(station_of)),
+                SessionEvent.type == "AMBIGUOUS_SHOP",
+            )
+            .order_by(SessionEvent.at, SessionEvent.id)
+        )
+    ).all()
+    for ev in ambiguous:
+        timeline.append(
+            TimelineItem(
+                at=ev.at, source="WAREHOUSE", from_status=None, to_status="PACKING",
+                actor=station_of.get(ev.session_id),
+                shops=[
+                    TimelineShop(platform=str(x.get("platform")), name=x.get("name"))
+                    for x in (ev.payload or {}).get("shops") or []
+                ],
+            )
+        )  # fmt: skip
+    timeline.sort(key=lambda t: t.at)
     case_ids = set(
         (
             await db.scalars(
@@ -634,6 +717,9 @@ async def detail(
             select(Claim).where(Claim.package_id == package.id).order_by(Claim.created_at.desc())
         )
     ).all()
+    shares, shares_active = await share_queries.package_shares(
+        db, package.id, viewer=viewer, role=role, settings=settings
+    )
     return PackageDetail(
         id=package.id,
         tracking_number=package.tracking_number,
@@ -659,4 +745,6 @@ async def detail(
         ],
         claims=[PackageClaimBrief(id=c.id, code=c.code, type=c.type, status=c.status) for c in claims],
         allowed_status_targets=list(MANUAL_TRANSITIONS.get(package.warehouse_status, ())),
+        shares=shares,
+        shares_active_count=shares_active,
     )

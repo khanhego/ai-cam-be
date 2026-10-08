@@ -1,0 +1,89 @@
+# Stack QA thứ hai, chạy song song stack dev (`aicam-dev`) trên cùng máy mà không đụng nó (T-229, DEC-820).
+# Là file override của compose.dev.yml: cổng host khác hẳn, image riêng `aicam-qa`, project riêng → volume riêng
+# (`aicam-qa_*`). Phase 3 bật đủ (PRE-13): Shopee mock 2 shop, TikTok mock, MinIO 2 bucket, thông báo mock.
+#
+#   QA="docker compose -p aicam-qa -f docker/compose.dev.yml -f docker/compose.qa.yml"
+#   $QA build api && $QA up -d --pull never     # dựng (từ thư mục ai-cam-be)
+#   . docker/qa.env && scripts/qa-reset.sh      # biến môi trường cho qa-reset / tests/qa / E2E
+#   $QA down -v                                 # dọn — CHỈ project aicam-qa
+#
+# Cổng host: api 8280 · postgres 55542 · redis 56489 · MediaMTX RTSP 58654 / WebRTC 58989 / API 60097 / ICE 8289 ·
+# MinIO 59200 (console 59201). FE dev riêng: `API_URL=http://localhost:8280 MEDIAMTX_WEBRTC_URL=http://localhost:58989
+# pnpm dev --port 5281 --strictPort`.
+name: aicam-qa
+
+x-qa-env: &qa_env
+  LOG_JSON: "true"
+  MEDIAMTX_API_URL: http://mediamtx:9997
+  MEDIAMTX_RTSP_URL: rtsp://mediamtx:8554
+  SHOPEE_ENABLED: ${QA_SHOPEE_ENABLED:-true}
+  PLATFORM_ADAPTER: mock
+  MOCK_SHOPEE_SHOP_IDS: "990001,990002"
+  TIKTOK_ENABLED: "true"
+  TIKTOK_RETURNS_ENABLED: "true"
+  TIKTOK_ADAPTER: mock
+  S3_ENDPOINT: ${QA_S3_ENDPOINT:-http://minio:9000}
+  S3_PUBLIC_ENDPOINT: http://localhost:59200
+  S3_REGION: us-east-1
+  S3_BUCKET: aicam-dev-backup
+  S3_SHARE_BUCKET: aicam-dev-share
+  S3_ADDRESSING_STYLE: path
+  S3_ACCESS_KEY_ID: aicam-app
+  S3_SECRET_ACCESS_KEY: aicam-app-dev-secret
+  BACKUP_ENCRYPTION_KEY: ${QA_BACKUP_ENCRYPTION_KEY:-ZGV2LW9ubHktYmFja3VwLWtleS0zMi1ieXRlcyEhISE=}
+  BACKUP_OLD_KEYS: ${QA_BACKUP_OLD_KEYS:-}
+  NOTIFY_TRANSPORT: mock
+  NOTIFY_MOCK_FAIL: ""
+  SITE_ADDRESS: http://localhost:5281
+  CORS_ORIGINS: '["http://localhost:5281"]'
+
+services:
+  postgres:
+    ports: !override ["55542:5432"]
+  redis:
+    ports: !override ["56489:6379"]
+  mediamtx:
+    # ICE: cổng trong = ngoài (nằm trong candidate) → đổi cổng lắng nghe qua biến MTX_*.
+    environment:
+      MTX_WEBRTCLOCALUDPADDRESS: ":8289"
+      MTX_WEBRTCLOCALTCPADDRESS: ":8289"
+    ports: !override
+      - "58654:8554"
+      - "58989:8889"
+      - "8289:8289/udp"
+      - "8289:8289"
+      - "60097:9997"
+  fake-cam1:
+    image: aicam-qa-fake-cam
+  fake-cam2:
+    image: aicam-qa-fake-cam
+  minio:
+    ports: !override ["59200:9000", "59201:9001"]
+  api:
+    image: aicam-qa
+    environment: *qa_env
+    ports: !override ["8280:8000"]
+  vision:
+    image: aicam-qa
+    environment: *qa_env
+  worker:
+    image: aicam-qa
+    environment: *qa_env
+  worker-sync:
+    image: aicam-qa
+    environment: *qa_env
+  worker-sync-long:
+    image: aicam-qa
+    environment: *qa_env
+  worker-notify:
+    image: aicam-qa
+    environment: *qa_env
+  worker-export:
+    image: aicam-qa
+    environment: *qa_env
+  worker-backup:
+    image: aicam-qa
+    environment: *qa_env
+  beat:
+    image: aicam-qa
+    environment: *qa_env

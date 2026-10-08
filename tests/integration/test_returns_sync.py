@@ -26,6 +26,7 @@ from aicam.modules.platforms.base import PlatformItem, PlatformOrder, ShopCreden
 from aicam.modules.platforms.mock.adapter import MOCK_SHOP_ID, MockAdapter
 from aicam.modules.platforms.shopee.adapter import ShopeeAdapter
 from aicam.modules.platforms.shopee.client import ShopeeClient
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 from aicam.modules.returns import service as returns
 from aicam.modules.returns.models import ReturnCase, ReturnCasePackage
 from aicam.realtime import publish
@@ -111,6 +112,7 @@ def _platform_order(n: int, status: str, quantity: int) -> PlatformOrder:
         items=(PlatformItem("Áo thun basic", quantity, "AT-DEN-L", "Đen / L"),),
         created_at=NOW,
         updated_at=NOW,
+        status_group=shopee_order_group(status),
     )
 
 
@@ -402,7 +404,7 @@ async def test_j04_cancel_after_pickup_and_to_return(
         platform_order_sn="2410TST00043", status="TO_RETURN",
         tracking_numbers=("SPXTST0000043-1", "SPXTST0000043-2"),
         items=(PlatformItem("Áo thun basic", 2, "AT-DEN-L", "Đen / L"),), created_at=NOW, updated_at=NOW,
-    )  # fmt: skip
+    status_group=shopee_order_group("TO_RETURN"))  # fmt: skip
     first = await orders.upsert_platform_order(db, replace(two, status="READY_TO_SHIP"))
     first.packages[0].warehouse_status = "PACKED"
     first.packages[1].warehouse_status = "HANDED_OVER"

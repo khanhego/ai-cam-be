@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Máy dev không cài postgresql-client: chạy pg_restore 16 trong container postgres:16-alpine tạm (--rm), stdin / stdout đi
+# qua. PGHOST localhost → host.docker.internal (Docker Desktop). Chỉ dùng cho test / diễn tập.
+set -euo pipefail
+host="${PGHOST:-localhost}"
+case "$host" in localhost|127.0.0.1) host=host.docker.internal ;; esac
+exec docker run --rm -i -e PGHOST="$host" -e PGPORT -e PGUSER -e PGPASSWORD -e PGDATABASE \
+  "${AICAM_PG_IMAGE:-postgres:16-alpine}" pg_restore "$@"

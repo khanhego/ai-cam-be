@@ -334,7 +334,8 @@ async def build_session_clips(
     incomplete_any = False
     for role in ROLES:
         clip = await _lock_clip(db, session_id, role)
-        if clip is None or clip.status in ("READY", "DELETED"):
+        # `MISSING` (EX-K8, EX-K9): không cắt lại đè — tệp mới khác mã băm, mất toàn vẹn (DEC-520).
+        if clip is None or clip.status in ("READY", "DELETED", "MISSING"):
             await db.commit()
             continue
         began = time.monotonic()
@@ -432,6 +433,10 @@ async def sessions_missing_clips(
 # ---------------------------------------------------------------- API-40 / 41
 
 
+MISSING_PLAY_MESSAGE = "Thiếu tệp clip trên máy chủ — không phát được."
+MISSING_REBUILD_MESSAGE = "Clip thiếu tệp trên máy chủ — không cắt lại được."
+
+
 def _clip_unavailable(clip: Clip, retention_clip_days: int) -> AppError | None:
     if clip.status == "DELETED":
         return AppError(
@@ -441,6 +446,8 @@ def _clip_unavailable(clip: Clip, retention_clip_days: int) -> AppError | None:
             {"deleted_at": clock.iso_z(clip.deleted_at) if clip.deleted_at else None,
              "retention_clip_days": retention_clip_days},
         )  # fmt: skip
+    if clip.status == "MISSING":  # 02 §6.1 API-40 / 41 / 42 / 43 (v0.4 — DEC-520, 530)
+        return AppError("CLIP_NOT_READY", MISSING_PLAY_MESSAGE, 409, {"status": "MISSING"})
     if clip.status != "READY":
         # FAILED dùng chung mã CLIP_NOT_READY (02 không có mã riêng), phân biệt qua details.status (DEC-102).
         return AppError(
@@ -572,7 +579,7 @@ async def set_hold(
     if clip is None:
         raise AppError("NOT_FOUND", "Không tìm thấy clip.", 404)
     cfg = await settings_service.get(db)
-    if clip.status == "DELETED":
+    if clip.status in ("DELETED", "MISSING"):  # MISSING: không có tệp để giữ (02 §6.1 API-42, DEC-676)
         error = _clip_unavailable(
             clip, protection.clip_days(cfg.retention_clip_days, settings.retention_clip_min_days)
         )
@@ -610,7 +617,11 @@ async def rebuild(db: AsyncSession, session_id: uuid.UUID, p: Principal) -> Rebu
         )
     ).all()
     if not failed:
-        raise AppError("CLIP_NOT_FAILED", "Clip không ở trạng thái lỗi.", 409)
+        statuses = set((await db.scalars(select(Clip.status).where(Clip.session_id == session_id))).all())
+        if "MISSING" in statuses:  # 02 §6.1 API-46 (v0.4): không cắt lại đè clip thiếu tệp (DEC-520)
+            raise AppError("CLIP_NOT_FAILED", MISSING_REBUILD_MESSAGE, 409, {"status": "MISSING"})
+        status = next(iter(sorted(statuses)), None)
+        raise AppError("CLIP_NOT_FAILED", "Clip không ở trạng thái lỗi.", 409, {"status": status})
     for clip in failed:
         clip.status = "PENDING"
         clip.error = None

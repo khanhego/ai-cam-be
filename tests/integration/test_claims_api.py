@@ -103,6 +103,7 @@ async def test_issue_creates_claim_with_pack_and_return_evidence(
     tự chọn = phiên PACK hiệu lực + phiên RETURN + ảnh (lúc đóng gói + chụp tay)."""
     order, (package,) = await make_order(db, 41)
     case = await buyer_return_case(db, order, 41)
+    case.seller_due_at = clock.now() + timedelta(days=2)  # hạn sàn còn (hạn đã qua → BR-42, T-214)
     old = await pack_session_with_clips(db, desk.station, package, clock.now() - timedelta(days=6))
     old.status = "SUPERSEDED"
     pack = await pack_session_with_clips(db, desk.station, package, clock.now() - timedelta(days=5))
@@ -584,9 +585,7 @@ async def test_evidence_remove_auto_requires_note(api: AsyncClient, db: AsyncSes
     no_note = await api.put(
         url, headers=headers, json={"version": 1, "session_ids": [str(old.id)], "snapshot_ids": []}
     )
-    assert no_note.json()["error"]["details"]["fields"] == {
-        "note": "Nhập lý do bỏ bằng chứng tự chọn (5–500 ký tự)"
-    }
+    assert no_note.json()["error"]["details"]["fields"] == {"note": "Nhập lý do bỏ bằng chứng (5–500 ký tự)."}
     foreign_res = await api.put(
         url, headers=headers, json={"version": 1, "session_ids": [str(foreign.id)], "snapshot_ids": []}
     )
@@ -600,7 +599,14 @@ async def test_evidence_remove_auto_requires_note(api: AsyncClient, db: AsyncSes
     assert ok.status_code == 200, ok.text
     detail = ok.json()
     assert [(e["session"]["id"], e["auto"]) for e in detail["evidence"]] == [(str(old.id), False)]
-    assert [o["id"] for o in detail["other_sessions"]] == [str(pack.id)]
+    # BR-38 (Phase 3): bằng chứng bỏ không mất dòng — hiện ở `removed_evidence` (thêm lại được), không ở
+    # `other_sessions`.
+    assert detail["other_sessions"] == []
+    assert [e["session"]["id"] for e in detail["removed_evidence"] if e["session"]] == [str(pack.id)]
+    assert sorted((e["kind"], e["removed"]["reason"]) for e in detail["removed_evidence"]) == [
+        ("SESSION", REASON),
+        ("SNAPSHOT", REASON),
+    ]
     assert detail["notes"][-1]["text"] == f"Cập nhật bằng chứng: thêm 1, bỏ 2. Lý do: {REASON}"
     assert detail["version"] == 2
 

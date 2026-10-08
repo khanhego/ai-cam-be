@@ -1,0 +1,24 @@
+{
+  "_shop": "TTMOCKA",
+  "id": "5761TT0000000013",
+  "status": "AWAITING_SHIPMENT",
+  "fulfillment_type": "FULFILLMENT_BY_SELLER",
+  "buyer_message": "",
+  "line_items": [
+    {
+      "id": "LI13",
+      "product_name": "Áo thun TikTok",
+      "sku_name": "Trắng / M",
+      "seller_sku": "TT-AO-TRANG-M",
+      "sku_id": "SKUTT-AO-TRANG-M",
+      "sku_image": "https://example.invalid/tt-ao.jpg",
+      "package_id": "PK13",
+      "tracking_number": "TTTST0000000013"
+    }
+  ],
+  "packages": [
+    {
+      "id": "PK13"
+    }
+  ]
+}

@@ -17,9 +17,11 @@ from aicam.core.logging import configure_logging
 from aicam.core.redis import close_redis, init_redis
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.approvals.router import router as approvals_router
+from aicam.modules.backup.router import router as backup_router
 from aicam.modules.claims.router import router as claims_router
 from aicam.modules.imports.router import router as imports_router
 from aicam.modules.media.router import router as media_router
+from aicam.modules.notify.router import router as notify_router
 from aicam.modules.orders.router import router as orders_router
 from aicam.modules.orders.service import InvalidTransition
 from aicam.modules.platforms.router import router as platforms_router
@@ -30,6 +32,7 @@ from aicam.modules.sessions.listeners import on_tray_changed
 from aicam.modules.sessions.router import router as sessions_router
 from aicam.modules.sessions.tray import TRAY_CHANGED_CHANNEL
 from aicam.modules.settings.router import router as settings_router
+from aicam.modules.shares.router import router as shares_router
 from aicam.modules.stations.listeners import CAMERA_HEALTH_CHANNEL, on_camera_health
 from aicam.modules.stations.router import router as stations_router
 from aicam.modules.users.router import router as users_router
@@ -37,9 +40,27 @@ from aicam.realtime.bus import Bus, start
 from aicam.realtime.hub import router as ws_router
 
 
+async def _warn_cancel_revert_pending() -> None:
+    """G3-EV-3: log cảnh báo nếu còn kiện hủy oan chưa trả lại. Không bao giờ chặn khởi động (DB chưa sẵn
+    sàng /
+    schema cũ → bỏ qua)."""
+    import asyncio
+
+    import structlog
+
+    from aicam.core.db import sessionmaker
+    from aicam.modules.orders import cancel_revert
+
+    try:
+        async with asyncio.timeout(5), sessionmaker()() as session:
+            await cancel_revert.log_pending_on_startup(session)
+    except Exception as exc:
+        structlog.get_logger().info("cancel_revert_check_skipped", error=type(exc).__name__)
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    configure_logging(settings.log_level, settings.log_json)
+    configure_logging(settings.log_level, settings.log_json, settings.secret_values())
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -48,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             settings, "api"
         )  # G3 M-F1: schema lệch image → thoát (staging / production)
         init_engine(settings.database_url)
+        await _warn_cancel_revert_pending()
         redis = init_redis(settings.redis_url)
         bus = Bus()
         bus.on(CAMERA_HEALTH_CHANNEL, on_camera_health)
@@ -104,6 +126,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(claims_router, prefix="/api/v1")
     app.include_router(recon_router, prefix="/api/v1")
     app.include_router(settings_router, prefix="/api/v1")
+    app.include_router(backup_router, prefix="/api/v1")
+    app.include_router(shares_router, prefix="/api/v1")
+    app.include_router(notify_router, prefix="/api/v1")
     app.include_router(ws_router)
 
     @app.get("/healthz", tags=["system"])

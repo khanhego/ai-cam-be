@@ -39,6 +39,8 @@ def channels_for(path: str, claims: AccessClaims) -> list[str] | None:
     channels = ["ws:dashboard", f"ws:user:{claims.user_id}"]
     if claims.role in APPROVER_ROLES:
         channels.append("ws:approvals")
+    if claims.role == "ADMIN":
+        channels.append("ws:admin")  # Phase 3: shop.updated, backup.updated (02 §6.2 WS-02)
     return channels
 
 

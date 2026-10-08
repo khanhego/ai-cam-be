@@ -27,7 +27,7 @@ from aicam.modules.claims import service as claims
 from aicam.modules.claims.models import Claim
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, OrderItem, Package, StatusHistory
-from aicam.modules.platforms.base import PlatformReturn
+from aicam.modules.platforms.base import SHIPPED_GROUPS, PlatformReturn
 from aicam.modules.returns.models import (
     OPEN_CASE_STATUSES,
     PLACEHOLDER_CODE_SEQ,
@@ -49,7 +49,8 @@ RECEIVED_STATUSES = ("RETURN_RECEIVED_OK", "RETURN_RECEIVED_ISSUE")
 RECEIVED_CASE_STATUSES = ("RECEIVED_OK", "RECEIVED_ISSUE")
 # Kiện mở được phiên hoàn (02 §5.3) — `NEW` chỉ khi đơn sàn đã giao / đang hoàn (EX-R3).
 OPENABLE_STATUSES = ("RETURN_EXPECTED", "RETURN_MISSING", "HANDED_OVER", "DELIVERED")
-SHIPPED_PLATFORM_STATUSES = frozenset({"SHIPPED", "TO_CONFIRM_RECEIVE", "COMPLETED", "TO_RETURN"})
+# Đơn đã rời kho trên sàn (nhóm — BR-30) → kiện `NEW` mở phiên hoàn được (EX-R3).
+SHIPPED_ORDER_GROUPS = SHIPPED_GROUPS
 # Kiện được gắn vào hồ sơ khi có tín hiệu sàn (đã rời kho hoặc đang trong luồng hoàn).
 _LINKABLE_STATUSES = (
     "NEW",
@@ -82,14 +83,15 @@ _ACTIVE_PACKAGE_STATUSES = (
 # của người mua chỉ chạy khi sàn đã chấp nhận trả (có mã vận đơn chiều về, hoặc trạng thái khác các trạng thái
 # chờ duyệt dưới đây). Kiện vẫn vào RETURN_EXPECTED (người mua có thể gửi sớm — bàn hoàn vẫn nhận), nhưng
 # J-14 không chuyển MISSING / không báo HIGH khi người mua còn đang yêu cầu / tranh chấp.
-AWAITING_ACCEPT_STATUSES = ("REQUESTED", "JUDGING", "SELLER_DISPUTE")
+# Nhóm chung (BR-31): Shopee REQUESTED / JUDGING / SELLER_DISPUTE → `REQUESTED`.
+AWAITING_ACCEPT_GROUP = "REQUESTED"
 
 
 def clock_started(case: ReturnCase) -> bool:
     return (
         case.kind != "BUYER_RETURN"
         or bool(case.return_tracking_number)
-        or (case.platform_status or "").upper() not in AWAITING_ACCEPT_STATUSES
+        or case.platform_status_group != AWAITING_ACCEPT_GROUP
         or any(k.startswith("FAILED:") for k in case.signal_keys or [])
     )
 
@@ -102,7 +104,7 @@ def clock_not_started_for_package(
     awaiting = and_(
         ReturnCase.kind == "BUYER_RETURN",
         ReturnCase.return_tracking_number.is_(None),
-        func.upper(func.coalesce(ReturnCase.platform_status, "")).in_(AWAITING_ACCEPT_STATUSES),
+        ReturnCase.platform_status_group == AWAITING_ACCEPT_GROUP,
         not_(func.array_to_string(ReturnCase.signal_keys, ",").like("%FAILED:%")),
     )
     return exists().where(
@@ -324,9 +326,18 @@ async def _apply_platform_fields(session: AsyncSession, case: ReturnCase, ret: P
         case.expected_since = clock.now()  # G3 C3: sàn vừa chấp nhận trả → đồng hồ BR-12 bắt đầu từ đây
 
 
+def set_platform_status(case: ReturnCase, raw: str | None, group: str | None) -> str | None:
+    """**Nơi duy nhất** ghi `return_case.platform_status` + `platform_status_group` (BR-30 / BR-31, DEC-508 —
+    test AST). Chữ lạ → nhóm None (như `OPEN` cũ). Trả nhóm cũ."""
+    old = case.platform_status_group
+    case.platform_status = raw
+    case.platform_status_group = group
+    return old
+
+
 async def _set_platform_fields(session: AsyncSession, case: ReturnCase, ret: PlatformReturn) -> None:
     case.platform_return_sn = ret.return_sn
-    case.platform_status = ret.status
+    set_platform_status(case, ret.status, ret.status_group)
     case.needs_parcel = ret.needs_parcel
     case.return_tracking_number = ret.return_tracking_number or case.return_tracking_number
     case.reason = ret.reason
@@ -446,8 +457,12 @@ async def attach_or_create(
     if signal.ret is not None:
         # Mã yêu cầu sàn là định danh (unique): đã có hồ sơ (kể cả đã hủy) → không gắn lại; cập nhật
         # trạng thái sàn của hồ sơ đó là việc của J-13 `upsert_from_platform` (T-105).
+        # §5.1 #8 (BR-29): mã yêu cầu trả unique **theo shop** (0007) — tra trong shop của đơn (đơn file →
+        # shop NULL); shop khác cùng mã là yêu cầu khác.
         known: ReturnCase | None = await session.scalar(
-            select(ReturnCase).where(ReturnCase.platform_return_sn == signal.ret.return_sn)
+            select(ReturnCase).where(
+                ReturnCase.platform_return_sn == signal.ret.return_sn, _same_shop(order.shop_id)
+            )
         )
         if known is not None:
             return AttachResult(known)
@@ -496,6 +511,7 @@ async def _create(session: AsyncSession, order: Order, signal: Signal, actor_lab
     now = clock.now()
     case = ReturnCase(
         order_id=order.id,
+        shop_id=order.shop_id,  # Phase 3 (§5.1, DEC-553 (3)): hồ sơ mới mang shop của đơn
         kind=kind,
         status="NO_PARCEL" if kind == "REFUND_ONLY" else "EXPECTED",
         source="WAREHOUSE" if signal.kind == SIGNAL_WAREHOUSE_SCAN else "PLATFORM",
@@ -535,6 +551,16 @@ def failed_signal_key(order_sn: str, at: datetime | None) -> str:
     return f"FAILED:{order_sn}:{int(at.timestamp()) if at else '-'}"
 
 
+def _same_shop(shop_id: uuid.UUID | None) -> Any:
+    """Vị từ "hồ sơ cùng shop" cho tra mã yêu cầu trả (§5.1 #8, #9): shop của hồ sơ, hồ sơ cũ chưa có
+    `shop_id` thì shop của đơn (`return_case.shop_id` backfill 0006 — phòng dòng sót)."""
+    owner = func.coalesce(
+        ReturnCase.shop_id,
+        select(Order.shop_id).where(Order.id == ReturnCase.order_id).scalar_subquery(),
+    )
+    return owner.is_(None) if shop_id is None else owner == shop_id
+
+
 async def upsert_from_platform(
     session: AsyncSession, order: Order, ret: PlatformReturn, *, actor_label: str = "Sàn"
 ) -> AttachResult:
@@ -546,12 +572,15 @@ async def upsert_from_platform(
     Khóa `order:{sn}` → hồ sơ → kiện (DEC-266). `changed` = có gì đổi cần báo dashboard.
     """
     await orders.lock_orders(session, [order.platform_order_sn])
+    # §5.1 #9: (shop của đơn, mã yêu cầu trả) `FOR UPDATE` — shop B cùng mã không đụng hồ sơ shop A.
     known: ReturnCase | None = await session.scalar(
         select(ReturnCase)
-        .where(ReturnCase.platform_return_sn == ret.return_sn)
+        .where(ReturnCase.platform_return_sn == ret.return_sn, _same_shop(order.shop_id))
         .with_for_update()
         .execution_options(populate_existing=True)
     )
+    if known is not None and known.shop_id is None and order.shop_id is not None:
+        known.shop_id = order.shop_id
     if known is None:
         if ret.status_group in ("CANCELLED", "CLOSED"):
             return AttachResult(None)
@@ -627,12 +656,15 @@ async def apply_redelivery(
 
 @dataclass
 class Resolution:
-    """`FOUND` (có `package`), `MULTIPLE` (đơn > 1 kiện, chưa có hồ sơ chỉ ra kiện), `NOT_FOUND`."""
+    """`FOUND` (có `package`), `MULTIPLE` (đơn > 1 kiện, chưa có hồ sơ chỉ ra kiện), `NOT_FOUND`,
+    `MULTIPLE_ORDERS` (Phase 3 — mã khớp ≥ 2 đơn khác nhau: mã đơn / mã yêu cầu trả trùng giữa shop, §5.1 #10;
+    mã chiều về của ≥ 2 hồ sơ mở, §5.1 #15) — `orders` = các đơn, không mở phiên (bàn hoàn cho chọn)."""
 
     status: str
     package: Package | None = None
     case: ReturnCase | None = None
     order: Order | None = None
+    orders: tuple[Order, ...] = ()
 
 
 async def _first_unreceived(session: AsyncSession, case: ReturnCase) -> Package | None:
@@ -664,7 +696,7 @@ def _openable_by_status(package: Package, order: Order | None, has_open_case: bo
     if package.warehouse_status in OPENABLE_STATUSES:
         return True
     return package.warehouse_status == "NEW" and (
-        has_open_case or (order is not None and (order.platform_status or "") in SHIPPED_PLATFORM_STATUSES)
+        has_open_case or (order is not None and order.platform_status_group in SHIPPED_ORDER_GROUPS)
     )
 
 
@@ -693,18 +725,24 @@ async def resolve_code(session: AsyncSession, code: str) -> Resolution:
         if package is not None:
             return Resolution("FOUND", package, unidentified, await _order_of(session, package))
     # 1. Mã vận đơn chiều về (ưu tiên hồ sơ chưa kết thúc; hồ sơ đã hủy không dùng — G3 SM-F1, EX-R7: xử lý
-    # như
-    #    hàng hoàn không báo trước).
-    case = await session.scalar(
-        select(ReturnCase)
-        .where(func.upper(ReturnCase.return_tracking_number) == code)
-        .order_by(
-            ReturnCase.status.in_(OPEN_CASE_STATUSES).desc(),
-            ReturnCase.status.in_(RECEIVED_CASE_STATUSES).desc(),
-            ReturnCase.created_at.desc(),
+    #    như hàng hoàn không báo trước).
+    #    §5.1 #15 (v0.3 — DEC-523, T-288): mã chiều về **không unique** → lấy mọi hồ sơ khớp; ≥ 2 hồ sơ chưa
+    # kết    thúc thuộc ≥ 2 đơn khác nhau → cho chọn đơn (`MULTIPLE_ORDERS`); còn lại thứ tự Phase 2.
+    by_return_code = (
+        await session.scalars(
+            select(ReturnCase)
+            .where(func.upper(ReturnCase.return_tracking_number) == code)
+            .order_by(
+                ReturnCase.status.in_(OPEN_CASE_STATUSES).desc(),
+                ReturnCase.status.in_(RECEIVED_CASE_STATUSES).desc(),
+                ReturnCase.created_at.desc(),
+            )
         )
-        .limit(1)
-    )
+    ).all()
+    ambiguous = await _orders_of_open_cases(session, by_return_code)
+    if len(ambiguous) >= 2:
+        return Resolution("MULTIPLE_ORDERS", orders=tuple(ambiguous))
+    case = by_return_code[0] if by_return_code else None
     if (
         case is not None
         and case.merged_into_id is None
@@ -732,12 +770,21 @@ async def resolve_code(session: AsyncSession, code: str) -> Resolution:
         found_case = await session.get(ReturnCase, case_ids[0]) if case_ids else None
         return Resolution("FOUND", package, found_case, await _order_of(session, package))
 
-    # 3. Mã đơn sàn / mã yêu cầu trả của sàn.
-    order = await session.scalar(select(Order).where(Order.platform_order_sn == code))
-    if order is None:
-        by_return_sn = await session.scalar(select(ReturnCase).where(ReturnCase.platform_return_sn == code))
-        if by_return_sn is not None and by_return_sn.order_id is not None:
-            order = await session.get(Order, by_return_sn.order_id)
+    # 3. Mã đơn sàn / mã yêu cầu trả của sàn — §5.1 #10 (BR-29): mã không còn unique toàn cục → mọi đơn khớp
+    #    (mọi shop + đơn file); không có → mã yêu cầu trả (mọi shop) → đơn của chúng; ≥ 2 đơn → cho chọn.
+    matched = await orders.find_orders_by_sn(session, code)
+    if not matched:
+        order_ids = (
+            await session.scalars(
+                select(ReturnCase.order_id)
+                .where(ReturnCase.platform_return_sn == code, ReturnCase.order_id.is_not(None))
+                .distinct()
+            )
+        ).all()
+        matched = [o for oid in order_ids if (o := await session.get(Order, oid)) is not None]
+    if len(matched) >= 2:
+        return Resolution("MULTIPLE_ORDERS", orders=tuple(matched))
+    order = matched[0] if matched else None
     if order is None:
         return Resolution("NOT_FOUND")
     open_case = await open_case_of_order(session, order.id)
@@ -913,6 +960,36 @@ async def apply_close_to_packages(
 # ---------------------------------------------------------------- gộp hồ sơ chưa xác định (DEC-269, R3-2)
 
 
+async def _orders_of_open_cases(session: AsyncSession, cases: Sequence[ReturnCase]) -> list[Order]:
+    """Đơn (khác nhau) của các hồ sơ **chưa kết thúc** trong `cases` (§5.1 #15)."""
+    ids = list(
+        dict.fromkeys(
+            c.order_id
+            for c in cases
+            if c.status in OPEN_CASE_STATUSES and c.merged_into_id is None and c.order_id is not None
+        )
+    )
+    return [o for oid in ids if (o := await session.get(Order, oid)) is not None]
+
+
+async def ambiguous_return_code(session: AsyncSession, code: str) -> list[uuid.UUID]:
+    """Id hồ sơ mở mang mã chiều về `code` khi chúng thuộc ≥ 2 đơn khác nhau (rỗng = không mơ hồ)."""
+    cases = (
+        await session.scalars(
+            select(ReturnCase)
+            .where(
+                func.upper(ReturnCase.return_tracking_number) == code.strip().upper(),
+                ReturnCase.status.in_(OPEN_CASE_STATUSES),
+                ReturnCase.merged_into_id.is_(None),
+            )
+            .order_by(ReturnCase.id)
+        )
+    ).all()
+    if len({c.order_id for c in cases if c.order_id is not None}) < 2:
+        return []
+    return [c.id for c in cases]
+
+
 async def _unidentified_candidates(
     session: AsyncSession, codes: Sequence[str]
 ) -> list[tuple[ReturnCase, str]]:
@@ -951,6 +1028,15 @@ async def merge_unidentified_by_code(session: AsyncSession, order: Order) -> lis
         codes.append(open_case.return_tracking_number)  # J-13: mã chiều về của yêu cầu mới (02 §6.3 #6)
     merged: list[uuid.UUID] = []
     for candidate, code in await _unidentified_candidates(session, codes):
+        # §5.1 #15 (DEC-523): mã quét của hồ sơ chưa xác định khớp mã chiều về của ≥ 2 hồ sơ mở thuộc đơn khác
+        # nhau → không tự gộp (không đoán đơn); giữ `UNIDENTIFIED`, gộp tay API-112.
+        ambiguous = await ambiguous_return_code(session, code)
+        if ambiguous:
+            log.warning(
+                "unidentified_merge_ambiguous", code=code, case_ids=[str(i) for i in ambiguous],
+                unidentified_case_id=str(candidate.id),
+            )  # fmt: skip
+            continue
         await orders.lock_orders(session, [order.platform_order_sn])
         case = await lock_case(session, candidate.id)
         if case is None or case.status == "CANCELLED" or case.order_id is not None:
@@ -1036,6 +1122,7 @@ async def merge_unidentified(
         case.merged_into_id = open_case.id
     else:
         case.order_id = order.id
+        case.shop_id = order.shop_id
         case.kind = "UNANNOUNCED"
         case.single_session = await order_package_count(session, order.id) <= 1
     case.pending_merge_order_id = None

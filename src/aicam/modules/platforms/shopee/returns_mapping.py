@@ -11,13 +11,13 @@ from typing import Any
 
 from aicam.modules.platforms.base import PlatformReturn, ReturnItem
 
-# Trạng thái yêu cầu trả → nhóm chung (02a §7, DEC-262: DONE chỉ REFUND_PAID; CLOSED tách riêng).
+# Trạng thái yêu cầu trả → nhóm chung (02 §5.3, BR-31; DEC-262: DONE chỉ REFUND_PAID; CLOSED tách riêng).
 STATUS_GROUPS: dict[str, str] = {
-    "REQUESTED": "OPEN",
-    "PROCESSING": "OPEN",
-    "ACCEPTED": "OPEN",
-    "JUDGING": "OPEN",
-    "SELLER_DISPUTE": "OPEN",
+    "REQUESTED": "REQUESTED",
+    "JUDGING": "REQUESTED",
+    "SELLER_DISPUTE": "REQUESTED",
+    "PROCESSING": "ACCEPTED",
+    "ACCEPTED": "ACCEPTED",
     "CANCELLED": "CANCELLED",
     "REFUND_PAID": "DONE",
     "CLOSED": "CLOSED",
@@ -47,9 +47,9 @@ REASON_LABELS: dict[str, str] = {
 }
 
 
-def status_group(status: str) -> str:
-    """Trạng thái lạ → OPEN (an toàn: hồ sơ vẫn chờ kiện, không tự hủy / đóng)."""
-    return STATUS_GROUPS.get(status.upper(), "OPEN")
+def status_group(status: str) -> str | None:
+    """Trạng thái lạ → None (an toàn: hồ sơ vẫn chờ kiện, không tự hủy / đóng; BR-12 chạy như Phase 2)."""
+    return STATUS_GROUPS.get(status.upper())
 
 
 def normalize_reason(reason: str | None) -> str | None:

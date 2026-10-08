@@ -1,0 +1,25 @@
+{
+  "_shop": "TTMOCKA",
+  "id": "5761TT0000000772",
+  "status": "AWAITING_SHIPMENT",
+  "fulfillment_type": "FULFILLMENT_BY_SELLER",
+  "buyer_message": "",
+  "line_items": [
+    {
+      "id": "LI772",
+      "product_name": "Tất cổ ngắn",
+      "sku_name": "Đen",
+      "seller_sku": "TT-TAT-DEN",
+      "sku_id": "SKUTT-TAT-DEN",
+      "sku_image": "https://example.invalid/tt-ao.jpg",
+      "package_id": "PK77",
+      "tracking_number": "TTTST0000000077"
+    }
+  ],
+  "packages": [
+    {
+      "id": "PK77"
+    }
+  ],
+  "split_or_combine_tag": "COMBINED"
+}

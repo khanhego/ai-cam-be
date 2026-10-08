@@ -3,7 +3,12 @@
 - `aicam create-admin --username admin --display-name "Quản trị"`: tạo Admin đầu tiên (mật khẩu hỏi qua stdin
   hoặc biến `AICAM_ADMIN_PASSWORD`).
 - `aicam seed-demo`: dữ liệu demo / test theo 04-test-cases §1 (tiền tố TST, mật khẩu `matkhau123`)
-  + hàng hoàn mẫu (`seed_returns`, T-116). Chặn trên production.
+  + hàng hoàn mẫu (`seed_returns`, T-116) + 4 shop mock Phase 3 (`seed_phase3`, T-211). Chặn trên production.
+- `aicam fix-cancel-requests [--apply]`: trả lại kiện hủy oan do Phase 2 coi yêu cầu hủy là hủy (T-285).
+- `aicam notify-reset-zalo-token`: xóa token Zalo OA trong DB để dùng lại `ZALO_OA_REFRESH_TOKEN` (G3-NT-1).
+- `aicam backup-keygen`: sinh khóa sao lưu 256 bit + dấu vân tay (02 API-186, FR-02.13, T-219).
+- `aicam backup-restore` / `aicam backup-verify`: khôi phục từ cloud, kiểm SHA-256 (API-186, docs/ops.md
+§6.2).
 """
 
 import argparse
@@ -93,7 +98,8 @@ async def seed_demo() -> list[str]:
     from aicam.modules.stations.models import Station
     from aicam.modules.stations.schemas import CameraIn
 
-    from .seed_returns import seed_returns
+    from .seed_phase3 import seed_phase3
+    from .seed_returns import seed_returns, upsert_seed_order
 
     settings = get_settings()
     init_engine(settings.database_url)
@@ -135,7 +141,7 @@ async def seed_demo() -> list[str]:
 
             adapter = MockAdapter()
             for order in adapter.orders.values():
-                await orders.upsert_platform_order(session, order)
+                await upsert_seed_order(session, order)  # chạy lại: giữ đơn trong shop đã nhận (DEC-821)
             lines.append(f"= {len(adapter.orders)} đơn SPXTST0000001..30")
 
             for code, final in (("SPXTST0000010", "PACKED"), ("SPXTST0000011", "HANDED_OVER")):
@@ -181,11 +187,109 @@ async def seed_demo() -> list[str]:
 
             # Phase 2 (T-116): hàng hoàn mẫu — đang về, chỉ hoàn tiền, chưa xác định, cảnh báo, khiếu nại.
             lines += await seed_returns(session, settings, station_ids[2], users["tst_sup"])
+            # Phase 3 (T-211): 2 shop Shopee + 2 shop TikTok mock, đồng bộ qua adapter mock.
+            lines += await seed_phase3(session, settings)
     finally:
         await close_redis()
         await dispose_engine()
     lines.append(f"Mật khẩu mọi tài khoản demo: {DEMO_PASSWORD}")
     return lines
+
+
+async def fix_cancel_requests(apply: bool) -> int:
+    """BR-21 v0.4 (DEC-519, T-285): trả lại kiện bị hủy oan do Phase 2 coi "yêu cầu hủy" là hủy."""
+    from aicam.modules.orders.cancel_revert import fix_cancel_requests as run
+
+    init_engine(get_settings().database_url)
+    try:
+        report = await run(sessionmaker(), apply=apply)
+    finally:
+        await dispose_engine()
+    print("\n".join(report.lines))
+    return 1 if report.failed else 0
+
+
+async def notify_reset_zalo_token() -> int:
+    """G3-NT-1: xóa cặp token Zalo OA trong DB → lần gửi kế dùng `ZALO_OA_REFRESH_TOKEN` (ops §10)."""
+    from aicam.modules.notify.providers import zalo
+
+    settings = get_settings()
+    if not settings.zalo_oa_refresh_token.strip():
+        print("ZALO_OA_REFRESH_TOKEN trống — đặt refresh token mới vào docker/.env, tạo lại api + "
+              "worker-notify (dc up -d api worker-notify) rồi chạy lại lệnh này.")  # fmt: skip
+        return 2
+    init_engine(settings.database_url)
+    try:
+        async with sessionmaker()() as session:
+            removed = await zalo.reset_stored_token(session)
+            await session.commit()
+    finally:
+        await dispose_engine()
+    print(
+        ("Đã xóa token Zalo OA lưu trong DB" if removed else "DB chưa có token Zalo OA")
+        + " — lần gửi kế làm mới bằng ZALO_OA_REFRESH_TOKEN. Kiểm: Dashboard → Thông báo → Gửi thử kênh Zalo."
+    )
+    return 0
+
+
+def backup_keygen() -> list[str]:
+    """API-186 `aicam backup-keygen`: khóa chỉ in ra màn hình cho IT chép — không ghi log / tệp / DB."""
+    from aicam.modules.cloud import crypto
+
+    key = crypto.generate_key()
+    return [
+        f"BACKUP_ENCRYPTION_KEY={key}",
+        f"Dấu vân tay: {crypto.fingerprint(crypto.parse_key(key))}",
+        "1. Chép dòng BACKUP_ENCRYPTION_KEY vào docker/.env của máy kho, khởi động lại api + worker-backup.",
+        "2. Cất bản sao khóa NGOÀI máy kho (két / trình quản lý mật khẩu) — mất khóa = bản sao vô dụng.",
+        "3. Dashboard → Sao lưu cloud: đối chiếu dấu vân tay rồi bấm 'Đã cất bản sao khóa giải mã'.",
+        "Đổi khóa: thêm khóa cũ vào BACKUP_OLD_KEYS (cách dấu phẩy) để khôi phục bản cũ (ops.md §6.2).",
+    ]
+
+
+async def backup_restore(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from aicam.modules.backup import restore
+
+    if args.list:  # G3-BK-3: xem các bản DB trên kho trước khi chọn --db
+        listed = await asyncio.to_thread(restore.list_dumps, get_settings())
+        print("\n".join(listed.lines))
+        return listed.exit_code
+    report = await restore.restore(
+        get_settings(),
+        db_key=None if args.evidence_only else args.db,
+        key_files=[Path(p) for p in args.key_file],
+        force=args.force,
+        evidence=args.evidence,
+        evidence_only=args.evidence_only,
+        target_dir=Path(args.target_dir) if args.target_dir else None,
+    )
+    print("\n".join(report.lines))
+    return report.exit_code
+
+
+async def backup_verify(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from aicam.modules.backup import restore
+
+    settings = get_settings()
+    init_engine(settings.database_url)
+    try:
+        async with sessionmaker()() as db:
+            report = await restore.verify(
+                settings,
+                db,
+                accept=list(args.accept or []),
+                reason=args.reason,
+                from_cloud=args.from_cloud,
+                key_files=[Path(p) for p in args.key_file],
+            )
+    finally:
+        await dispose_engine()
+    print("\n".join(report.lines))
+    return report.exit_code
 
 
 def _read_password() -> str:
@@ -207,7 +311,74 @@ def main(argv: list[str] | None = None) -> int:
     seed = sub.add_parser("seed-demo", help="Tạo dữ liệu demo / test (TST…) — chỉ dev / test")
     seed.add_argument("--confirm-staging", action="store_true", help="cho phép chạy khi APP_ENV=staging")
 
+    fix = sub.add_parser(
+        "fix-cancel-requests",
+        help="Trả lại kiện bị hủy oan do yêu cầu hủy (BR-21 v0.4) — mặc định chạy thử, --apply để ghi",
+    )
+    fix.add_argument("--apply", action="store_true", help="ghi thay đổi (không có = chỉ in danh sách)")
+
+    sub.add_parser(
+        "notify-reset-zalo-token",
+        help="Xóa token Zalo OA lưu trong DB — lần gửi kế dùng ZALO_OA_REFRESH_TOKEN mới (ops §10)",
+    )
+    sub.add_parser("backup-keygen", help="Sinh khóa sao lưu cloud 256 bit + dấu vân tay (không lưu ở đâu)")
+    rst = sub.add_parser(
+        "backup-restore", help="Khôi phục DB (+ bằng chứng) từ kho lưu cloud (docs/ops.md §6.2)"
+    )
+    rst.add_argument(
+        "--db",
+        default="latest",
+        help="latest (mặc định: bản hoàn tất mới nhất, hỏng thì thử bản kế) hoặc khóa đối tượng backup/db/…",
+    )
+    rst.add_argument("--list", action="store_true", help="chỉ liệt kê bản DB trên kho (không khôi phục)")
+    rst.add_argument("--evidence", action="store_true", help="khôi phục cả bằng chứng (hồ sơ mở trước)")
+    rst.add_argument("--evidence-only", action="store_true", help="không đụng DB — chỉ phần bằng chứng")
+    rst.add_argument(
+        "--claims-first", action="store_true", help="(mặc định) bằng chứng hồ sơ chưa đóng trước"
+    )
+    rst.add_argument("--target-dir", help="thư mục gốc ghi tệp (mặc định VIDEO_ROOT)")
+    rst.add_argument(
+        "--key-file", action="append", default=[], help="tệp chứa một khóa cũ (base64), lặp được"
+    )
+    rst.add_argument(
+        "--force",
+        action="store_true",
+        help="cho phép ghi đè DB đích không trống — dừng worker-backup + beat trước (ops §6.2)",
+    )
+    ver = sub.add_parser(
+        "backup-verify", help="Kiểm SHA-256 clip / ảnh sau khôi phục; đạt → gỡ 'Chờ kiểm khôi phục'"
+    )
+    # ops §6.2 "Lối ra" (DEC-518): chấp nhận lệch / thiếu theo id, kiểm sâu bản cloud. Thiếu các tùy chọn này
+    # thì lệnh văng AttributeError ngay cả khi chạy không tham số (T-229, DEC-824).
+    ver.add_argument(
+        "--accept",
+        nargs="+",
+        default=[],
+        metavar="ID",
+        help="id clip / ảnh chấp nhận lệch / thiếu (cần --reason)",
+    )
+    ver.add_argument("--reason", help="lý do chấp nhận (5–500 ký tự)")
+    ver.add_argument(
+        "--from-cloud",
+        action="store_true",
+        help="giải mã từng bản cloud, so SHA-256 (chẩn đoán, không gỡ cờ)",
+    )
+    ver.add_argument(
+        "--key-file", action="append", default=[], help="tệp chứa một khóa cũ (base64), lặp được"
+    )
+
     args = parser.parse_args(argv)
+    if args.command == "backup-restore":
+        return asyncio.run(backup_restore(args))
+    if args.command == "backup-verify":
+        return asyncio.run(backup_verify(args))
+    if args.command == "notify-reset-zalo-token":
+        return asyncio.run(notify_reset_zalo_token())
+    if args.command == "backup-keygen":
+        print("\n".join(backup_keygen()))
+        return 0
+    if args.command == "fix-cancel-requests":
+        return asyncio.run(fix_cancel_requests(args.apply))
     if args.command == "create-admin":
         print(asyncio.run(create_admin(args.username, args.display_name, _read_password())))
         return 0

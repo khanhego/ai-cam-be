@@ -23,6 +23,72 @@ def _e(*values: str) -> frozenset[str]:
     return frozenset(values)
 
 
+# API-160..164 (02 §6.2 "link chia sẻ", M16).
+SHARE_SOURCE = ("type", "claim_id", "claim_code", "package_id", "tracking_number")
+SHARE_ITEM = (
+    "id", "status", "progress", "step", "step_index", "step_total", "url", "recipient",
+    *(f"source.{f}" for f in SHARE_SOURCE), "session_count", "layout", "include_snapshots", "expires_at",
+    "created_at", "created_by.id", "created_by.display_name", "revoked_at", "revoked_by.id", "revoke_pending",
+    "error.code", "error.message", "can_revoke",
+)  # fmt: skip
+SHARE_ITEM_ROW = (
+    "session_id", "order", "video_sha256", "size_bytes", "source_sha256.CAM1", "source_sha256.CAM2",
+    "snapshot_count",
+)  # fmt: skip
+SHARE_OPTION_SESSION = (
+    "id", "type", "status", "started_at", "ended_at", "station_name", "operator_name", "conclusion",
+    "duration_s", "prior_return", "primary", "default_selected", "selectable", "unavailable_reason",
+    "unavailable_at", "cameras", "review_needed",
+)  # fmt: skip
+
+# API-170..176 (02 §6.2 "thông báo", M17). `last_error` = `{code, message, at, provider_code}` (FE DEC-760).
+NOTIFY_CODES = tuple(f"N{i:02d}" for i in range(1, 11))
+NOTIFY_CHANNEL = (
+    "id", "name", "type", "target", "events", "enabled", "last_status", "last_sent_at", "last_error.code",
+    "last_error.message", "last_error.at", "created_at",
+)  # fmt: skip
+
+# API-180..185 (02 §6.2 "sao lưu", M15).
+BACKUP_STATES = ("ON", "NOT_CONFIGURED", "KEY_UNCONFIRMED", "KEY_CHANGED", "DISABLED", "RESTORE_PENDING")
+BACKUP_STATUS_FIELDS = (
+    "configured", "storage.endpoint_host", "storage.bucket", "key.configured", "key.fingerprint",
+    "key.confirmed_fingerprint", "key.confirmed_at", "key.confirmed_by.id", "key.confirmed_by.display_name",
+    "key.old_keys[].fingerprint", "key.old_keys[].evidence_objects", "key.old_keys[].db_runs",
+    "key.old_keys[].reuploadable", "key.old_keys[].reuploadable_bytes", "state", "enabled",
+    "db.last_success_at", "db.last_size_bytes", "db.next_run_at", "db.hours_since_success", "db.late",
+    "db.running", "db.consecutive_failures", "evidence.uploaded", "evidence.pending", "evidence.failed",
+    "evidence.oldest_pending_at", "evidence.late_count", "evidence.hash_mismatch", "evidence.ignored",
+    "evidence.source_deleted", "evidence.source_missing", "cloud_bytes", "last_error.code",
+    "last_error.message", "last_error.at", "settings.upload_mbps", "settings.all_pack_clips",
+    "settings.all_pack_clips_estimate_gb_per_day", "history[].id", "history[].kind", "history[].started_at",
+    "history[].finished_at", "history[].status", "history[].size_bytes", "history[].error",
+    "history[].key_fingerprint",
+)  # fmt: skip
+BACKUP_ISSUE_FIELDS = (
+    "object_id", "kind", "status", "session_id", "package_id", "tracking_number", "detected_at", "detail",
+    "sha256_expected", "sha256_actual", "resolution.action", "resolution.note", "resolution.by.id",
+    "resolution.by.display_name", "resolution.at",
+)  # fmt: skip
+
+
+# API-70 item / API-154 response (02 §6.2).
+SHOP_FIELDS = (
+    "id",
+    "platform",
+    "name",
+    "auth_status",
+    "auth_expires_at",
+    "last_synced_at",
+    "today_synced_orders",
+    "last_error",
+    "region",
+    "sync_warnings[].code",
+    "sync_warnings[].message",
+    "disconnected_at",
+    "sync_in_progress",
+)
+
+
 # API-10 dùng lại trong API-11..14 (`state`) và WS-01 `station.state`.
 STATE_FIELDS = (
     "station.id",
@@ -94,6 +160,11 @@ STATE_FIELDS = (
     "session.pack_reference.clips[].status",
     "session.pack_reference.snapshot.id",
     "session.pack_reference.snapshot.url",
+    # Phase 3 (02 §6.2 API-10 mở rộng — T-212).
+    "station.operator_required",
+    "session.package.order.shop_name",
+    "session.package.order.merged_orders[].platform_order_sn",
+    "session.package.items[].platform_order_sn",
     "today_return_count",
     "today_return_issue_count",
     "approval_request.id",
@@ -128,6 +199,18 @@ def _prefixed_enums(prefix: str, enums: dict[str, frozenset[str]]) -> dict[str, 
 
 
 PAGE = ("page", "page_size", "total")
+# API-150..152 (02 §6.2): khung chung + tỷ lệ `{numerator, denominator, value}`.
+REPORT_HEAD = ("period.from", "period.to", "filters.platform", "filters.shop_id", "generated_at")
+# FR-09.07 (C, T-217) — API-150 / 151.
+REPORT_SERIES = (
+    "series[].bucket",
+    "series[].packed",
+    "series[].return_cases",
+    "series[].claims",
+    "series_granularity",
+)
+RATIO = ("numerator", "denominator", "value")
+PRODUCTIVITY_COLS = ("packed", "avg_seconds", "mismatch", "abandoned", "cancelled", "repacked")
 # `closed_session` của API-11 (02 §6.2) — cũng là WS-01 `alert SESSION_AUTO_CLOSED`.
 CLOSED_SESSION = (
     "id",
@@ -163,6 +246,15 @@ RETURN_CASE_ITEM = (
     "claims[].status",
     "merged_into.id",
     "merged_into.code",
+    # Phase 3 (02 §6.2 API-110 — T-215).
+    "platform",
+    "shop.id",
+    "shop.name",
+    "platform_status_group",
+    "response_due_at",
+    "response_due_source",
+    "claim.id",
+    "claim.code",
 )
 RETURN_CASE_ENUMS = {
     "kind": _e("FAILED_DELIVERY", "BUYER_RETURN", "REFUND_ONLY", "UNANNOUNCED", "UNIDENTIFIED"),
@@ -195,6 +287,9 @@ SETTINGS_FIELDS = (
     *SETTINGS_THRESHOLDS,
     "retention_clip_min_days",
     "updated_at",
+    # Phase 3 (02 §6.2 API-80 — T-212, T-215).
+    "packer_name_required",
+    "refund_only_default_hours",
 )
 # `sessions[]` API-31 mở rộng (02 §6.2) — cũng là response API-113.
 SESSION_RETURN_FIELDS = (
@@ -243,6 +338,9 @@ RECON_ALERT_ITEM = (
     "resolution.to_status",
     "resolution.claim_id",
     "allowed_status_targets",
+    "platform",  # Phase 3 (T-215)
+    "shop.id",
+    "shop.name",
 )
 # Hồ sơ khiếu nại (02 §6.2 API-130..135) — chi tiết dùng lại trong API-131, 133, 134.
 CLAIM_ENUMS = {
@@ -253,6 +351,13 @@ CLAIM_ENUMS = {
     "status": _e("NEW", "SUBMITTED", "WAITING", "WON", "LOST", "CLOSED"),
     "source": _e("AUTO_RETURN", "MANUAL", "RECON", "LEGACY_HOLD"),
 }
+# `shares[]` API-31 / API-132 (02 §6.2 API-31 — M16, T-224).
+SHARE_BRIEF = (
+    "id", "status", "recipient", "expires_at", "session_count", "url", "can_revoke",
+    "revoke_pending",  # EX-S7 "Đang thu hồi — chờ Internet" (FE DEC-702, BE DEC-678)
+)  # fmt: skip
+SHARE_STATUSES = ("CREATING", "ACTIVE", "FAILED", "REVOKED", "EXPIRED")
+
 CLAIM_DETAIL = (
     "id",
     "code",
@@ -299,6 +404,33 @@ CLAIM_DETAIL = (
     "evidence[].snapshot.kind",
     "evidence[].snapshot.taken_at",
     "evidence[].snapshot.url",
+    # Phase 3 BR-39 v0.3–v0.5 (02 §5.1 SESSION, §6.2 API-132 — T-279).
+    "evidence[].primary",
+    "evidence[].prior_return",
+    "evidence[].session.cancel_reason",
+    "evidence[].session.cancel_cause",
+    "evidence[].session.wrong_scan.at",
+    "evidence[].session.wrong_scan.by.id",
+    "evidence[].session.wrong_scan.code",
+    "evidence[].session.wrong_scan.note",
+    "evidence[].session.review_needed",
+    "evidence[].session.evidence_exclusion",
+    "evidence[].session.return_confirmed.at",
+    "evidence[].session.return_confirmed.by.display_name",
+    "evidence[].session.return_confirmed.note",
+    "excluded_return_sessions[].session_id",
+    "excluded_return_sessions[].status",
+    "excluded_return_sessions[].cancel_reason",
+    "excluded_return_sessions[].cancel_cause",
+    "excluded_return_sessions[].evidence_exclusion",
+    "excluded_return_sessions[].wrong_scan.at",
+    "excluded_return_sessions[].started_at",
+    "excluded_return_sessions[].has_clip",
+    "excluded_return_sessions[].in_evidence",
+    "review_sessions[].session_id",
+    "review_sessions[].status",
+    "review_sessions[].started_at",
+    "review_sessions[].in_evidence",
     "other_sessions[].id",
     "other_sessions[].type",
     "other_sessions[].status",
@@ -311,11 +443,19 @@ CLAIM_DETAIL = (
     "notes[].author.display_name",
     "notes[].at",
     "allowed_transitions",
+    *(f"shares[].{f}" for f in SHARE_BRIEF),
+    "shares_active_count",
 )
 CLAIM_DETAIL_ENUMS = {
     **CLAIM_ENUMS,
-    "deadline_source": _e("PLATFORM", "DEFAULT", "MANUAL"),
+    "deadline_source": _e("PLATFORM", "DEFAULT", "MANUAL", "DEFAULT_PLATFORM_PASSED"),  # + BR-42 (Phase 3)
     "evidence[].kind": _e("SESSION", "SNAPSHOT"),
+    # T-286 (02 §5.2 `MISSING` Thiếu tệp — DEC-520, 524).
+    "evidence[].session.clips[].status": _e("PENDING", "READY", "FAILED", "DELETED", "MISSING"),
+    "evidence[].snapshot.status": _e("READY", "DELETED", "MISSING"),
+    "evidence[].session.cancel_cause": _e("WRONG_SCAN", "NOT_A_RETURN", "OTHER"),
+    "evidence[].session.evidence_exclusion": _e("STATION_CANCEL", "SUPERVISOR_CANCEL", "MARKED"),
+    "excluded_return_sessions[].evidence_exclusion": _e("STATION_CANCEL", "SUPERVISOR_CANCEL", "MARKED"),
     "missing[]": _e("NO_PACK_CLIP", "PACK_CLIP_DELETED", "RETURN_CLIP_PENDING"),
     "notes[].kind": _e("NOTE", "STATUS_CHANGE", "SYSTEM"),
 }
@@ -431,6 +571,8 @@ CONTRACT: tuple[Api, ...] = (
             "outcome": _e("SESSION_OPENED", "SESSION_COMPLETED", "MISMATCH", "ALERT", "IGNORED"),
             "alert.code": _e(
                 "ORDER_CANCELLED",
+                "ORDER_CANCEL_REQUESTED",
+                "RETURN_MULTIPLE_ORDERS",  # Phase 3 (DEC-492)
                 "ALREADY_PACKED",
                 "ALREADY_HANDED_OVER",
                 "INVALID_CODE",
@@ -526,7 +668,7 @@ CONTRACT: tuple[Api, ...] = (
             "approval_request.decided_by.display_name",
             "approval_request.decided_at",
         ),
-        request_fields=("action", "note"),
+        request_fields=("action", "note", "reason_code"),  # reason_code: Phase 3 v0.3 (T-281)
     ),
     Api(
         "API-30",
@@ -548,6 +690,9 @@ CONTRACT: tuple[Api, ...] = (
                     "last_session.ended_at",
                     "has_clip",
                     "is_placeholder",  # Phase 2 (02 §6.2 API-30, DEC-260)
+                    "platform",  # Phase 3 (T-215)
+                    "shop.id",
+                    "shop.name",
                     "return_case.id",
                     "return_case.code",
                     "return_case.kind",
@@ -573,6 +718,11 @@ CONTRACT: tuple[Api, ...] = (
             "order.platform_status",
             "order.buyer_note",
             "order.source",
+            # Phase 3 (02 §6.2 API-31 — T-212).
+            "order.shop.id",
+            "order.shop.name",
+            "order.platform_status_group",
+            "order.merged_orders[].platform_order_sn",
             "order.items[].product_name",
             "order.items[].variation",
             "order.items[].quantity",
@@ -624,13 +774,21 @@ CONTRACT: tuple[Api, ...] = (
             "claims[].type",
             "claims[].status",
             "allowed_status_targets",
+            *(f"shares[].{f}" for f in SHARE_BRIEF),
+            "shares_active_count",
             "timeline[].at",
             "timeline[].source",
             "timeline[].from_status",
             "timeline[].to_status",
             "timeline[].actor",
+            "timeline[].shops",  # Phase 3 BR-32 (DEC-561): dòng sự kiện `AMBIGUOUS_SHOP`
         ),
-        {"sessions[].clips[].protection.reasons[]": _e("CLAIM", "RETURN_CASE", "HELD")},
+        {
+            "sessions[].clips[].protection.reasons[]": _e("CLAIM", "RETURN_CASE", "HELD"),
+            # T-286 (02 §6.1 API-31 ảnh — DEC-524): ảnh `MISSING` → `url = null`.
+            "sessions[].snapshots[].status": _e("READY", "DELETED", "MISSING"),
+            "sessions[].pack_snapshot.status": _e("READY", "DELETED", "MISSING"),
+        },
     ),
     Api(
         "API-100",
@@ -726,6 +884,8 @@ CONTRACT: tuple[Api, ...] = (
             "items[].return_case.return_tracking_number",
             "items[].can_open",
             "items[].blocked_reason",
+            "items[].platform",  # Phase 3 (02 §6.2 API-104, §5.1 #11)
+            "items[].shop_name",
             "platform_checked",
         ),
     ),
@@ -853,6 +1013,9 @@ CONTRACT: tuple[Api, ...] = (
                     "due_soon",
                     "overdue",
                     "created_at",
+                    "platform",  # Phase 3 (T-215)
+                    "shop.id",
+                    "shop.name",
                 ),
             ),
             *(f"status_counts.{s}" for s in ("NEW", "SUBMITTED", "WAITING", "WON", "LOST", "CLOSED")),
@@ -894,6 +1057,20 @@ CONTRACT: tuple[Api, ...] = (
         CLAIM_DETAIL,
         CLAIM_DETAIL_ENUMS,
         request_fields=("version", "session_ids", "snapshot_ids", "note"),
+    ),
+    Api(
+        "API-189",  # Phase 3 v0.3 (T-281): soát phiên mở hoàn — 200 = API-132 + affected_shares (v0.4, T-292)
+        "POST",
+        "/claims/{claim_id}/return-sessions/{session_id}/review",
+        200,
+        (
+            *CLAIM_DETAIL,
+            *(f"affected_shares[].{f}" for f in ("id", "recipient", "status", "expires_at", "can_revoke")),
+            "affected_shares[].created_by.id",
+            "affected_shares[].created_by.display_name",
+        ),
+        CLAIM_DETAIL_ENUMS,
+        request_fields=("version", "action", "reason_code", "note"),
     ),
     Api(
         "API-135",
@@ -968,6 +1145,10 @@ CONTRACT: tuple[Api, ...] = (
             "counts.claims_due_soon",
             "counts.label_on_tray",
             "counts.cam2_unverified",
+            # Phase 3 (02 §6.2 API-32 mở rộng — T-215).
+            "counts.returns_dropped_7d",
+            "counts.refund_only_pending",
+            "counts.claims_overdue_unsent",
             "stations[].work_mode",
             "stations[].operator_name",
             "stations[].id",
@@ -980,6 +1161,282 @@ CONTRACT: tuple[Api, ...] = (
             "attention",  # mỗi kind một dạng (dict tự do); `kind` kiểm ở test runtime
         ),
     ),
+    # Phase 3 M09 (02 §6.2 API-150..152 — T-216).
+    Api(
+        "API-150",
+        "GET",
+        "/reports/returns",
+        200,
+        (
+            *REPORT_HEAD,
+            *_prefixed("cards.return_rate", RATIO),
+            *_prefixed("cards.issue_rate", RATIO),
+            "cards.refund_only.count",
+            "cards.refund_only.rate_of_handed_over",
+            "cards.expected_now",
+            "by_kind[].kind",
+            "by_kind[].count",
+            "by_kind[].share",
+            "reason_by_conclusion.conclusions",
+            "reason_by_conclusion.rows[].reason",
+            "reason_by_conclusion.rows[].reason_label",
+            "reason_by_conclusion.rows[].counts",
+            "reason_by_conclusion.rows[].total",
+            *_prefixed(
+                "top_products[]",
+                ("sku", "product_name", "variation", "shipped", "return_requests", "rate", "issue"),
+            ),
+            *_prefixed(
+                "by_shop[]", ("platform", "shop_id", "shop_name", "handed_over", "return_cases", "rate")
+            ),
+            *REPORT_SERIES,
+        ),
+        {
+            "by_kind[].kind": _e("BUYER_RETURN", "FAILED_DELIVERY", "UNANNOUNCED", "UNIDENTIFIED"),
+            "filters.platform": _e("SHOPEE", "TIKTOK"),
+            "series_granularity": _e("day", "week", "month"),
+        },
+    ),
+    Api(
+        "API-151",
+        "GET",
+        "/reports/claims",
+        200,
+        (
+            *REPORT_HEAD,
+            "cards.created",
+            *_prefixed("cards.win_rate", RATIO),
+            "cards.recovered_amount",
+            *_prefixed("cards.submitted_before_deadline", RATIO),
+            "cards.overdue_unsent_now",
+            "by_status[].status",
+            "by_status[].count",
+            *_prefixed("by_type_result[]", ("type", "won", "lost", "pending")),
+            *_prefixed("by_counterparty[]", ("counterparty", "count", "won", "lost", "recovered_amount")),
+            *_prefixed(
+                "by_shop[]", ("platform", "shop_id", "shop_name", "count", "won", "lost", "recovered_amount")
+            ),
+            *REPORT_SERIES,
+        ),
+        {
+            "by_status[].status": _e("NEW", "SUBMITTED", "WAITING", "WON", "LOST", "CLOSED"),
+            "by_counterparty[].counterparty": _e("PLATFORM", "CARRIER"),
+        },
+    ),
+    Api(
+        "API-152",
+        "GET",
+        "/reports/productivity",
+        200,
+        (
+            *REPORT_HEAD,
+            "filters.station_id",
+            "cards.packed",
+            "cards.pack_avg_seconds",
+            "cards.returns_inspected",
+            "cards.return_avg_seconds",
+            *_prefixed("by_station[]", ("station_id", "station_name", *PRODUCTIVITY_COLS)),
+            *_prefixed("by_operator[]", ("operator_name", *PRODUCTIVITY_COLS)),
+            "return_by_operator[].operator_name",
+            "return_by_operator[].inspected",
+            "return_by_operator[].avg_seconds",
+            *_prefixed("return_by_operator[].issue_rate", RATIO),
+        ),
+    ),
+    Api("API-153", "GET", "/reports/{report}/export", 200),  # text/csv (T-217)
+    # Phase 3 M15 sao lưu cloud (02 §6.2 API-180..188).
+    Api(
+        "API-180",
+        "GET",
+        "/backup",
+        200,
+        BACKUP_STATUS_FIELDS,
+        {
+            "state": _e(*BACKUP_STATES),
+            "history[].status": _e("RUNNING", "SUCCESS", "FAILED"),
+        },
+    ),
+    Api(
+        "API-181",
+        "PUT",
+        "/backup/settings",
+        200,
+        BACKUP_STATUS_FIELDS,
+        request_fields=("enabled", "upload_mbps", "all_pack_clips"),
+    ),
+    Api("API-182", "POST", "/backup/confirm-key", 200, BACKUP_STATUS_FIELDS, request_fields=("fingerprint",)),
+    Api("API-183", "POST", "/backup/test", 200, ("ok", "elapsed_ms")),
+    Api("API-184", "POST", "/backup/run-db", 202, ("run_id",)),
+    Api("API-187", "POST", "/backup/reupload-old-key", 202, ("queued", "bytes")),
+    Api(
+        "API-188",
+        "POST",
+        "/backup/issues/{object_id}/resolve",
+        200,
+        BACKUP_ISSUE_FIELDS,
+        request_fields=("action", "note"),
+    ),
+    Api(
+        "API-185",
+        "GET",
+        "/backup/issues",
+        200,
+        (*(f"items[].{f}" for f in BACKUP_ISSUE_FIELDS), "page", "page_size", "total"),
+        {
+            "items[].kind": _e("CLIP", "SNAPSHOT"),
+            "items[].status": _e("HASH_MISMATCH", "FAILED", "IGNORED", "PENDING"),
+            "items[].resolution.action": _e("UPLOAD_ANYWAY", "IGNORE", "RETRY", "ACCEPT_RESTORED"),
+        },
+    ),
+    # Phase 3 M17 thông báo (02 §6.2 API-170..176).
+    Api(
+        "API-170",
+        "GET",
+        "/notify/channels",
+        200,
+        (
+            "providers.TELEGRAM.configured",
+            "providers.ZALO_OA.configured",
+            "quiet_hours.enabled",
+            "quiet_hours.start",
+            "quiet_hours.end",
+            "events[].code",
+            "events[].label",
+            "events[].severity",
+            "events[].suggested_channel",
+            *(f"items[].{f}" for f in NOTIFY_CHANNEL),
+        ),
+        {
+            "events[].code": _e(*NOTIFY_CODES),
+            "events[].severity": _e("HIGH", "MEDIUM", "INFO"),
+            "items[].type": _e("TELEGRAM", "ZALO_OA"),
+            "items[].events[]": _e(*NOTIFY_CODES),
+            "items[].last_status": _e("OK", "ERROR", "NEVER"),
+        },
+    ),
+    Api(
+        "API-171",
+        "POST",
+        "/notify/channels",
+        201,
+        NOTIFY_CHANNEL,
+        request_fields=("name", "type", "target", "events", "enabled"),
+    ),
+    Api(
+        "API-172",
+        "PATCH",
+        "/notify/channels/{channel_id}",
+        200,
+        NOTIFY_CHANNEL,
+        request_fields=("name", "type", "target", "events", "enabled"),
+    ),
+    Api("API-173", "DELETE", "/notify/channels/{channel_id}", 204),
+    Api("API-174", "POST", "/notify/channels/{channel_id}/test", 200, ("ok", "sent_at")),
+    Api(
+        "API-175",
+        "GET",
+        "/notify/messages",
+        200,
+        (
+            "items[].id",
+            "items[].channel.id",
+            "items[].channel.name",
+            "items[].event_code",
+            "items[].event_label",
+            "items[].item_count",
+            "items[].text",
+            "items[].status",
+            "items[].attempts",
+            "items[].last_error",
+            "items[].created_at",
+            "items[].sent_at",
+            "items[].next_attempt_at",
+            *PAGE,
+        ),
+        {
+            "items[].status": _e("QUEUED", "HELD", "SENT", "RETRYING", "DROPPED", "SKIPPED"),
+            "items[].event_code": _e(*NOTIFY_CODES),
+        },
+    ),
+    Api(
+        "API-176",
+        "PUT",
+        "/notify/quiet-hours",
+        200,
+        ("enabled", "start", "end"),
+        request_fields=("enabled", "start", "end"),
+    ),
+    # Phase 3 M16 link chia sẻ (02 §6.2 API-160..164).
+    Api(
+        "API-164",
+        "GET",
+        "/shares/options",
+        200,
+        (
+            "storage_configured",
+            *(f"source.{f}" for f in SHARE_SOURCE),
+            *(f"sessions[].{f}" for f in SHARE_OPTION_SESSION),
+            "snapshot_count",
+            "review_pending_count",  # v0.4 (DEC-531, T-292)
+            "limits.max_sessions",
+            "limits.max_total_seconds",
+            "limits.max_snapshots",
+            "default_expires_days",
+        ),
+        {
+            "source.type": _e("CLAIM", "SESSION"),
+            "sessions[].unavailable_reason": _e(
+                "CLIP_PENDING", "CLIP_FAILED", "CLIP_DELETED", "CLIP_MISSING"
+            ),
+            "sessions[].cameras[]": _e("CAM1", "CAM2"),
+        },
+    ),
+    Api(
+        "API-160",
+        "POST",
+        "/shares",
+        202,
+        ("id", "status"),
+        {"status": _e("CREATING")},
+        request_fields=(
+            "source_type",
+            "claim_id",
+            "session_id",
+            "session_ids",
+            "layout",
+            "include_snapshots",
+            "recipient",
+            "expires_days",
+        ),
+    ),
+    Api(
+        "API-161",
+        "GET",
+        "/shares",
+        200,
+        (
+            *PAGE,
+            *(f"items[].{f}" for f in SHARE_ITEM),
+            "counts.ACTIVE",
+            "counts.REVOKED",
+            "counts.EXPIRED",
+            "counts.ALL",
+        ),
+        {"items[].status": _e(*SHARE_STATUSES), "items[].layout": _e("SIDE_BY_SIDE", "CAM1")},
+    ),
+    Api(
+        "API-162",
+        "GET",
+        "/shares/{share_id}",
+        200,
+        (*SHARE_ITEM, *(f"items[].{f}" for f in SHARE_ITEM_ROW)),
+        {
+            "status": _e(*SHARE_STATUSES),
+            "step": _e("RENDERING", "UPLOADING", "PUBLISHING"),
+            "error.code": _e("RENDER_FAILED", "UPLOAD_FAILED", "TIMEOUT"),
+        },
+    ),
+    Api("API-163", "POST", "/shares/{share_id}/revoke", 200, SHARE_ITEM, {"status": _e(*SHARE_STATUSES)}),
     Api("API-40", "GET", "/clips/{clip_id}/play-url", 200, ("url", "expires_at")),
     Api("API-41", "GET", "/media/clips/{clip_id}", 200),
     Api(
@@ -1124,23 +1581,28 @@ CONTRACT: tuple[Api, ...] = (
         "GET",
         "/shops",
         200,
-        _prefixed(
-            "items[]",
-            (
-                "id",
-                "platform",
-                "name",
-                "auth_status",
-                "auth_expires_at",
-                "last_synced_at",
-                "today_synced_orders",
-                "last_error",
-            ),
+        (
+            # Phase 3 (02 §6.2 API-70 mở rộng): cấu hình từng sàn + trường shop mới.
+            "platforms[].platform",
+            "platforms[].enabled",
+            "platforms[].returns_enabled",
+            "platforms[].configured",
+            *_prefixed("items[]", SHOP_FIELDS),
         ),
     ),
-    Api("API-71", "POST", "/shops/shopee/auth-url", 200, ("url",)),
+    # Phase 3: path tổng quát `{platform}` (`shopee` | `tiktok`) — đường cũ `/shops/shopee/auth-url` khớp mẫu.
+    Api("API-71", "POST", "/shops/{platform}/auth-url", 200, ("url",)),
     Api("API-72", "GET", "/shops/shopee/callback", 302),
     Api("API-73", "POST", "/shops/{shop_id}/sync", 202, ("queued",)),
+    Api("API-154", "POST", "/shops/{shop_id}/disconnect", 200, SHOP_FIELDS),
+    Api("API-155", "GET", "/shops/tiktok/callback", 302),
+    Api(
+        "API-156",
+        "GET",
+        "/shops/brief",
+        200,
+        _prefixed("items[]", ("id", "platform", "name", "auth_status")),
+    ),
     Api("API-80 get", "GET", "/settings", 200, SETTINGS_FIELDS),
     Api(
         "API-80 put",
@@ -1185,6 +1647,13 @@ CONTRACT: tuple[Api, ...] = (
             "sync[].shop_id",
             "sync[].last_success_at",
             "sync[].last_error",
+            "sync[].platform",
+            "sync[].shop_name",
+            "backup.state",
+            "backup.last_db_success_at",
+            "backup.pending",
+            "backup.late",
+            "backup.last_error.code",
         ),
         {"db": _e("OK", "ERROR"), "redis": _e("OK", "ERROR"), "mediamtx": _e("OK", "ERROR")},
     ),

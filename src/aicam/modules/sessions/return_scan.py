@@ -6,9 +6,9 @@ Hai bước như Phase 1 `_lookup_platform`:
 2. `handle()` — **trong** khóa station: kiểm lại dưới khóa (khóa hồ sơ → kiện), mở / cảnh báo / đóng.
 """
 
-import asyncio
 import re
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -23,8 +23,8 @@ from aicam.core.settings import Settings
 from aicam.modules.claims import service as claims
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package
-from aicam.modules.platforms import service as platforms
-from aicam.modules.platforms.base import PlatformAdapter, PlatformError, PlatformOrder
+from aicam.modules.platforms import lookup
+from aicam.modules.platforms.base import PlatformAdapter
 from aicam.modules.returns import service as returns
 from aicam.modules.returns.models import OPEN_CASE_STATUSES, ReturnCase
 from aicam.modules.sessions.models import ACTIVE_STATUSES, PackSession
@@ -67,37 +67,36 @@ def is_valid_code(code: str, settings: Settings) -> bool:
 async def platform_find(
     session: AsyncSession, code: str, adapter: PlatformAdapter, settings: Settings
 ) -> Order | None:
-    """Tra sàn ≤ `PLATFORM_LOOKUP_TIMEOUT_S` theo mã vận đơn hoặc mã đơn; có → upsert đơn (savepoint)."""
+    """Tra mọi shop đang kết nối song song ≤ `PLATFORM_LOOKUP_TIMEOUT_S` (BR-32) theo mã đơn (nếu đúng định
+    dạng) rồi mã vận đơn; ghi đơn (savepoint) vào đúng shop trả về.
+
+    ≥ 2 shop có **mã đơn** trùng (BR-29) → ghi cả các đơn (mỗi đơn vào shop của nó) để `resolve_code` trả
+    `MULTIPLE_ORDERS` (bàn hoàn cho chọn đơn — EX-R20); ≥ 2 shop cùng trả một mã vận đơn → mơ hồ, không
+    ghi."""
+    by_order_sn = re.fullmatch(settings.order_sn_regex, code) is not None
     try:
-        target = await platforms.lookup_target(session, adapter, settings)
-        if target is None:
-            return None
-
-        async def _find() -> PlatformOrder | None:
-            if re.fullmatch(settings.order_sn_regex, code):
-                found = await adapter.get_order(target.creds, code)
-                if found is not None:
-                    return found
-            return await adapter.find_by_tracking(target.creds, code)
-
-        data = await asyncio.wait_for(_find(), timeout=settings.platform_lookup_timeout_s)
-    except (TimeoutError, PlatformError) as exc:
-        log.info("return_platform_lookup_failed", code=code, error=type(exc).__name__)
-        return None
+        found = await lookup.find_everywhere(session, code, settings, adapter, by_order_sn=by_order_sn)
     except SQLAlchemyError:
         raise
     except Exception:  # tra sàn lỗi bất ngờ không làm quét 500 (như Phase 1 G3-P2-6)
         log.exception("return_platform_lookup_error", code=code)
         return None
-    if data is None:
-        return None
-    try:
-        async with session.begin_nested():
-            result = await orders.upsert_platform_order(session, data, shop_id=target.shop_id)
-            await returns.merge_unidentified_by_code(session, result.order)
-    except IntegrityError:
-        return None
-    return result.order
+    hits = found.hits
+    if found.ambiguous:
+        hits = [h for h in hits if h.order.platform_order_sn.upper() == code]
+        if len(hits) != len(found.hits):
+            log.info("return_platform_lookup_ambiguous", code=code, shops=found.shops_brief())
+            return None
+    first: Order | None = None
+    for hit in hits:
+        try:
+            async with session.begin_nested():
+                result = await orders.upsert_platform_order(session, hit.order, shop_id=hit.shop_id)
+                await returns.merge_unidentified_by_code(session, result.order)
+        except IntegrityError:
+            continue
+        first = first or result.order
+    return first
 
 
 async def lookup_with_platform(
@@ -242,7 +241,7 @@ async def check_openable(
         package.warehouse_status == "NEW"
         and (
             has_open_case
-            or (order is not None and (order.platform_status or "") in returns.SHIPPED_PLATFORM_STATUSES)
+            or (order is not None and order.platform_status_group in returns.SHIPPED_ORDER_GROUPS)
         )
     ):
         return None
@@ -354,9 +353,43 @@ async def open_return_session(
 # ---------------------------------------------------------------- API-11 trong khóa station
 
 
+MULTIPLE_ORDERS_MAX = 10  # 02a API-11: ≤ 10 đơn trong `data.orders`
+
+
+async def multiple_orders_alert(session: AsyncSession, code: str, found: Sequence[Order]) -> AlertOut:
+    """ALERT `RETURN_MULTIPLE_ORDERS` (02 §6.2 API-11, BR-29, EX-R20): mã khớp ≥ 2 đơn khác nhau → không mở
+    phiên, station mở R3 với `code`. `orders[]` sắp theo sàn, tên shop (đơn file: sàn / shop null, cuối)."""
+    rows = []
+    for order in found:
+        shop = await orders.shop_of(session, order)
+        rows.append(
+            {
+                "platform": shop.platform if shop else None,
+                "shop_name": shop.name if shop else None,
+                "platform_order_sn": order.platform_order_sn,
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            r["platform"] is None,
+            r["platform"] or "",
+            r["shop_name"] or "",
+            r["platform_order_sn"],
+        )
+    )
+    return _alert(
+        "RETURN_MULTIPLE_ORDERS",
+        f"Mã {code} có ở {len(rows)} đơn của các shop khác nhau. Chọn đúng đơn.",
+        code=code,
+        orders=rows[:MULTIPLE_ORDERS_MAX],
+    )
+
+
 async def open_from_resolution(
     session: AsyncSession, station: Station, code: str, resolution: returns.Resolution, settings: Settings
 ) -> tuple[str, AlertOut | None]:
+    if resolution.status == "MULTIPLE_ORDERS":
+        return "ALERT", await multiple_orders_alert(session, code, resolution.orders)
     if resolution.status == "NOT_FOUND" or (resolution.package is None and resolution.status != "MULTIPLE"):
         return "ALERT", _alert(
             "RETURN_NOT_FOUND",
@@ -465,7 +498,9 @@ async def _open(
             "INVALID_CODE", "Mã vừa quét không phải mã vận đơn / mã đơn. Quét lại mã trên kiện."
         )
     if not station.operator_name:
-        return "ALERT", _alert("OPERATOR_REQUIRED", "Nhập tên người kiểm trước khi nhận hàng hoàn.")
+        return "ALERT", _alert(
+            "OPERATOR_REQUIRED", "Nhập tên người kiểm trước khi nhận hàng hoàn.", mode="RETURN"
+        )
     resolution = prepared.resolution if prepared and prepared.resolution else None
     if resolution is None:  # chế độ vừa đổi giữa lúc quét: tra trong khóa, không tra sàn
         resolution = await returns.resolve_code(session, code)
@@ -636,6 +671,8 @@ async def open_force_new(
 
     if resolution.status == "MULTIPLE":
         reason = "RETURN_MULTIPLE_PACKAGES"
+    elif resolution.status == "MULTIPLE_ORDERS":
+        reason = "RETURN_MULTIPLE_ORDERS"
     elif resolution.package is None:
         reason = "RETURN_NOT_FOUND"
     else:

@@ -3,6 +3,7 @@
 import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import ColumnElement, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core import clock
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings
+from aicam.modules.claims import evidence_rules
+from aicam.modules.claims import service as claims_service
+from aicam.modules.claims.evidence_rules import primary_session as primary_session
 from aicam.modules.claims.models import CLAIM_STATUSES, Claim, ClaimEvidence, ClaimNote
 from aicam.modules.claims.schemas import (
     ClaimDetail,
@@ -24,18 +28,30 @@ from aicam.modules.claims.schemas import (
     EvidenceOut,
     EvidenceSession,
     EvidenceSnapshot,
+    ExcludedReturnSession,
     NoteOut,
     OtherSession,
+    PriorReturnSession,
+    RemovedInfo,
+    ReviewSession,
+    SessionMark,
     StatusCounts,
     UserBrief,
 )
-from aicam.modules.claims.service import DUE_STATUSES, allowed_sessions, allowed_transitions
+from aicam.modules.claims.service import (
+    DUE_STATUSES,
+    allowed_sessions,
+    allowed_transitions,
+    effective_pack_session,
+)
 from aicam.modules.media import snapshots as media_snapshots
 from aicam.modules.media.models import Clip, Snapshot
 from aicam.modules.orders.models import Order, Package
+from aicam.modules.orders.refs import shop_conditions, shop_ref, shops_by_id
 from aicam.modules.returns.models import ReturnCase
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.settings import service as settings_service
+from aicam.modules.shares import queries as share_queries
 from aicam.modules.stations.models import Station
 from aicam.modules.users.models import User
 
@@ -68,8 +84,11 @@ async def list_claims(
     q: str | None,
     page: int,
     page_size: int,
+    platform: str | None = None,
+    shop_id: uuid.UUID | None = None,
 ) -> ClaimPage:
-    """API-130 (FR-08.03, 08.04): lọc; `status_counts` cùng bộ lọc (trừ `status`), một truy vấn."""
+    """API-130 (FR-08.03, 08.04): lọc; `status_counts` cùng bộ lọc (trừ `status`), một truy vấn. Phase 3:
+    `platform`, `shop_id` theo shop của đơn (`claim.order_id`, không có → đơn của kiện)."""
     cfg = await settings_service.get(db)
     now = clock.now()
     conds: list[ColumnElement[bool]] = []
@@ -110,6 +129,15 @@ async def list_claims(
                 Claim.order_id.in_(select(Order.id).where(func.upper(Order.platform_order_sn) == code)),
             )
         )
+    if platform or shop_id:
+        claim_shop = (
+            select(Order.shop_id)
+            .select_from(Package)
+            .join(Order, Order.id == func.coalesce(Claim.order_id, Package.order_id))
+            .where(Package.id == Claim.package_id)
+            .scalar_subquery()
+        )
+        conds += shop_conditions(claim_shop, platform, shop_id)
     counts_row = (
         await db.execute(
             select(*(func.count(case((Claim.status == s, 1))).label(s) for s in CLAIM_STATUSES)).where(*conds)
@@ -124,18 +152,20 @@ async def list_claims(
     )
     rows = (
         await db.execute(
-            select(Claim, Package.tracking_number, Order.platform_order_sn)
+            select(Claim, Package.tracking_number, Order.platform_order_sn, Order.shop_id)
             .join(Package, Package.id == Claim.package_id)
-            .outerjoin(Order, Order.id == Claim.order_id)
+            .outerjoin(Order, Order.id == func.coalesce(Claim.order_id, Package.order_id))
             .where(*where)
             .order_by(*order_by)
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
     ).all()
-    owners = await _users(db, {c.owner_user_id for c, _, _ in rows if c.owner_user_id})
+    owners = await _users(db, {c.owner_user_id for c, _, _, _ in rows if c.owner_user_id})
+    shops = await shops_by_id(db, [shop for _, _, _, shop in rows])
     items = []
-    for c, tracking, order_sn in rows:
+    for c, tracking, order_sn, shop_key in rows:
+        shop = shops.get(shop_key) if shop_key else None
         soon, overdue = due_flags(c, now, cfg.claim_due_soon_hours)
         items.append(
             ClaimListItem(
@@ -152,6 +182,8 @@ async def list_claims(
                 due_soon=soon,
                 overdue=overdue,
                 created_at=c.created_at,
+                platform=shop.platform if shop else None,
+                shop=shop_ref(shop),
             )
         )
     return ClaimPage(
@@ -161,6 +193,33 @@ async def list_claims(
         total=total,
         status_counts=StatusCounts(**counts_row._asdict()),
     )
+
+
+def _mark(
+    at: datetime | None,
+    by: uuid.UUID | None,
+    note: str | None,
+    users: dict[uuid.UUID, UserBrief],
+    code: str | None = None,
+) -> SessionMark | None:
+    if at is None:
+        return None
+    return SessionMark(at=at, by=users.get(by) if by else None, code=code, note=note)
+
+
+def exclusion_fields(s: PackSession, users: dict[uuid.UUID, UserBrief]) -> dict[str, Any]:
+    """`session.{cancel_reason, cancel_cause, wrong_scan, review_needed, evidence_exclusion,
+    return_confirmed}` (02 §5.1 SESSION — BR-39 v0.3–v0.5)."""
+    return {
+        "cancel_reason": s.cancel_reason,
+        "cancel_cause": s.cancel_cause,
+        "wrong_scan": _mark(s.wrong_scan_at, s.wrong_scan_by, s.wrong_scan_note, users, s.wrong_scan_code),
+        "review_needed": evidence_rules.review_needed(s),
+        "evidence_exclusion": evidence_rules.evidence_exclusion(s),
+        "return_confirmed": _mark(
+            s.review_confirmed_at, s.review_confirmed_by, s.review_confirmed_note, users
+        ),
+    }
 
 
 def _missing(evidence: list[EvidenceOut]) -> list[str]:
@@ -180,7 +239,7 @@ def _missing(evidence: list[EvidenceOut]) -> list[str]:
 
 
 async def claim_detail(
-    db: AsyncSession, claim_id: uuid.UUID, viewer: uuid.UUID, settings: Settings
+    db: AsyncSession, claim_id: uuid.UUID, viewer: uuid.UUID, settings: Settings, *, role: str | None = None
 ) -> ClaimDetail:
     """API-132 (FR-08.02, 08.06): hồ sơ, bằng chứng (phiên, clip, ảnh ký URL), phiên khác, thiếu, ghi chú."""
     claim = await db.get(Claim, claim_id, populate_existing=True)
@@ -230,48 +289,128 @@ async def claim_detail(
             s.id: s for s in (await db.scalars(select(Snapshot).where(Snapshot.id.in_(snapshot_ids)))).all()
         }
 
+    excluded_sessions = await evidence_rules.excluded_return_sessions(
+        db, claim.package_id, claim.return_case_id
+    )
+    review_list = await evidence_rules.review_sessions(db, claim.package_id, claim.return_case_id)
+    marks_by = await _users(
+        db,
+        {
+            uid
+            for x in [*(s for s, _ in sessions.values()), *excluded_sessions]
+            for uid in (x.wrong_scan_by, x.review_confirmed_by)
+            if uid is not None
+        },
+    )
     evidence: list[EvidenceOut] = []
+    removed_evidence: list[EvidenceOut] = []
+    removed_rows: dict[uuid.UUID, ClaimEvidence] = {}
     for e in evidence_rows:
+        item: EvidenceOut | None = None
         if e.session_id and e.session_id in sessions:
             s, name = sessions[e.session_id]
-            evidence.append(
-                EvidenceOut(
-                    id=e.id,
-                    kind="SESSION",
-                    auto=e.auto,
-                    session=EvidenceSession(
-                        id=s.id,
-                        type=s.type,
-                        status=s.status,
-                        station_name=name,
-                        operator_name=s.operator_name,
-                        started_at=s.started_at,
-                        ended_at=s.ended_at,
-                        flags=list(s.flags),
-                        clips=clips[s.id],
-                    ),
-                )
+            item = EvidenceOut(
+                id=e.id,
+                kind="SESSION",
+                auto=e.auto,
+                session=EvidenceSession(
+                    id=s.id,
+                    type=s.type,
+                    status=s.status,
+                    station_name=name,
+                    operator_name=s.operator_name,
+                    started_at=s.started_at,
+                    ended_at=s.ended_at,
+                    flags=list(s.flags),
+                    clips=clips[s.id],
+                    **exclusion_fields(s, marks_by),
+                ),
             )
         elif e.snapshot_id and e.snapshot_id in snaps:
             snap = snaps[e.snapshot_id]
-            evidence.append(
-                EvidenceOut(
-                    id=e.id,
-                    kind="SNAPSHOT",
-                    auto=e.auto,
-                    snapshot=EvidenceSnapshot(
-                        id=snap.id,
-                        kind=snap.kind,
-                        taken_at=snap.taken_at,
-                        status=snap.status,
-                        url=media_snapshots.url_for(settings, snap.id, viewer)
-                        if snap.status == "READY"
-                        else None,
-                    ),
-                )
+            item = EvidenceOut(
+                id=e.id,
+                kind="SNAPSHOT",
+                auto=e.auto,
+                snapshot=EvidenceSnapshot(
+                    id=snap.id,
+                    kind=snap.kind,
+                    taken_at=snap.taken_at,
+                    status=snap.status,
+                    url=media_snapshots.url_for(settings, snap.id, viewer)
+                    if snap.status == "READY"
+                    else None,
+                ),
             )
-    # Phân loại bằng chứng: phiên đóng gói trước, phiên mở hoàn, rồi ảnh.
-    evidence.sort(key=lambda x: (x.kind != "SESSION", x.session.type != "PACK" if x.session else False))
+        if item is None:
+            continue
+        if e.removed_at is None:
+            evidence.append(item)
+        else:  # BR-38: bằng chứng đã bỏ — không vào gói / link, hiện riêng
+            removed_evidence.append(item)
+            removed_rows[e.id] = e
+    # BR-38 (L15): hạn giữ nếu bỏ bây giờ (dòng đang dùng) / theo lúc đã bỏ (dòng đã bỏ).
+    days = await claims_service.keep_days(db)
+    keep_now = await evidence_rules.keep_until(
+        db,
+        [x.session.id for x in evidence if x.session],
+        [x.snapshot.id for x in evidence if x.snapshot],
+        clock.now(),
+        days,
+    )
+    removed_at = {
+        (r.session_id or r.snapshot_id): r.removed_at
+        for r in removed_rows.values()
+        if r.removed_at is not None
+    }
+    keep_removed = await evidence_rules.keep_until(
+        db,
+        [r.session_id for r in removed_rows.values() if r.session_id],
+        [r.snapshot_id for r in removed_rows.values() if r.snapshot_id],
+        removed_at,  # type: ignore[arg-type]
+        days,
+    )
+    for x in evidence:
+        x.removal_keep_until = keep_now.get(
+            x.session.id if x.session else x.snapshot.id if x.snapshot else x.id
+        )
+    removed_by = await _users(db, {r.removed_by for r in removed_rows.values() if r.removed_by})
+    for x in removed_evidence:
+        row = removed_rows[x.id]
+        key = row.session_id or row.snapshot_id
+        if row.removed_at is None or key is None:  # chỉ dòng đã bỏ có trong `removed_rows`
+            continue
+        x.removed = RemovedInfo(
+            at=row.removed_at,
+            by=removed_by.get(row.removed_by) if row.removed_by else None,
+            reason=row.removed_reason or "",
+            keep_until=keep_removed[key],
+        )
+    active_sessions = {x.session.id for x in evidence if x.session}
+    # BR-39 (DEC-448): phiên mở hoàn trước, phiên chính — suy ra lúc đọc (chỉ bằng chứng đang dùng).
+    in_evidence = [sessions[sid][0] for sid in active_sessions]
+    with_clip = await evidence_rules.live_clip_sessions(db, active_sessions)
+    effective = await effective_pack_session(db, claim.package_id)
+    primary = primary_session(in_evidence, with_clip, effective.id if effective else None)
+    primary_reason = await evidence_rules.primary_unavailable_reason(db, primary)
+    latest_done = await evidence_rules.latest_completed_return_start(
+        db, claim.package_id, claim.return_case_id
+    )
+    for item in evidence:
+        if item.session is not None:
+            s, _ = sessions[item.session.id]
+            item.primary = s.id == primary
+            item.prior_return = s.id in with_clip and evidence_rules.is_prior_return(s, latest_done)
+    priors = await evidence_rules.prior_return_sessions(db, claim.package_id, claim.return_case_id)
+    # Phân loại bằng chứng: phiên đóng gói trước, phiên chính, phiên mở hoàn (sớm trước), rồi ảnh.
+    evidence.sort(
+        key=lambda x: (
+            x.kind != "SESSION",
+            x.session.type != "PACK" if x.session else False,
+            not x.primary,
+            x.session.started_at if x.session else x.snapshot.taken_at if x.snapshot else clock.now(),
+        )
+    )
 
     candidates = await allowed_sessions(db, claim)
     other_ids = [sid for sid in candidates if sid not in sessions]
@@ -295,6 +434,9 @@ async def claim_detail(
     users = await _users(
         db,
         {n.author_user_id for n in notes if n.author_user_id} | ({claim.owner_user_id} - {None}),  # type: ignore[operator]
+    )
+    shares, shares_active = await share_queries.claim_shares(
+        db, claim.id, viewer=viewer, role=role, settings=settings
     )
     return ClaimDetail(
         id=claim.id,
@@ -325,7 +467,40 @@ async def claim_detail(
         created_at=claim.created_at,
         closed_at=claim.closed_at,
         evidence=evidence,
+        primary_unavailable=primary_reason is not None,
+        primary_unavailable_reason=primary_reason,
         other_sessions=others,
+        removed_evidence=removed_evidence,
+        prior_return_sessions=[
+            PriorReturnSession(
+                session_id=s.id, status=s.status, started_at=s.started_at, in_evidence=s.id in active_sessions
+            )
+            for s in priors
+        ],
+        excluded_return_sessions=[
+            ExcludedReturnSession(
+                session_id=s.id,
+                status=s.status,
+                cancel_reason=s.cancel_reason,
+                cancel_cause=s.cancel_cause,
+                evidence_exclusion=evidence_rules.evidence_exclusion(s),
+                wrong_scan=_mark(
+                    s.wrong_scan_at, s.wrong_scan_by, s.wrong_scan_note, marks_by, s.wrong_scan_code
+                ),
+                started_at=s.started_at,
+                has_clip=True,
+                in_evidence=s.id in active_sessions,
+            )
+            for s in excluded_sessions
+        ],
+        review_sessions=[
+            ReviewSession(
+                session_id=s.id, status=s.status, started_at=s.started_at, in_evidence=s.id in active_sessions
+            )
+            for s in review_list
+        ],
+        shares=shares,
+        shares_active_count=shares_active,
         missing=_missing(evidence),
         notes=[
             NoteOut(

@@ -395,3 +395,17 @@ async def test_duplicate_pack_close_does_not_overwrite_file(
     shot = await snapshots.pack_close_of(db, pack.id)
     assert shot is not None
     assert shot.sha256 == first_sha == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+async def test_snapshot_missing_is_409_g3_ev5(desk: Desk, db: AsyncSession, grabs: list[str]) -> None:
+    """G3-EV-5: ảnh `MISSING` (thiếu tệp — EX-K8 / K9) → API-106 `409 SNAPSHOT_MISSING` (như clip `MISSING`),
+    kể cả khi tệp vẫn nằm trên đĩa (không phục vụ tệp chưa được kiểm lại)."""
+    session = await _open_41(desk, db)
+    shot = (await _snap(desk, session["id"])).json()["snapshot"]
+    row = await db.get(Snapshot, uuid.UUID(shot["id"]))
+    assert row is not None
+    row.status = "MISSING"
+    await db.flush()
+    res = await desk.api.get(shot["url"])
+    assert (res.status_code, res.json()["error"]["code"]) == (409, "SNAPSHOT_MISSING")
+    assert res.json()["error"]["details"] == {"status": "MISSING"}

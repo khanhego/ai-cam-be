@@ -1,0 +1,35 @@
+{
+  "_shop": "TTMOCKA",
+  "_note": "TTTST0000000050: người mua xin hủy, chờ người bán — chặn quét (BR-01), không hủy kiện (BR-21)",
+  "order": {
+    "id": "5761TT0000000050",
+    "status": "AWAITING_SHIPMENT",
+    "fulfillment_type": "FULFILLMENT_BY_SELLER",
+    "buyer_message": "",
+    "line_items": [
+      {
+        "id": "LI50",
+        "product_name": "Áo thun TikTok",
+        "sku_name": "Trắng / M",
+        "seller_sku": "TT-AO-TRANG-M",
+        "sku_id": "SKUTT-AO-TRANG-M",
+        "sku_image": "https://example.invalid/tt-ao.jpg",
+        "package_id": "PK50",
+        "tracking_number": "TTTST0000000050"
+      }
+    ],
+    "packages": [
+      {
+        "id": "PK50"
+      }
+    ]
+  },
+  "steps": [
+    [
+      {
+        "cancel_id": "CC050-1",
+        "cancel_status": "PENDING"
+      }
+    ]
+  ]
+}

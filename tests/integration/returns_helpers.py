@@ -12,6 +12,8 @@ from aicam.core import clock
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package
 from aicam.modules.platforms.base import PlatformItem, PlatformOrder, PlatformReturn, ReturnItem
+from aicam.modules.platforms.shopee import returns_mapping
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 from aicam.modules.returns import service as returns
 from aicam.modules.returns.models import ReturnCase
 from aicam.modules.sessions.models import PackSession
@@ -42,6 +44,7 @@ async def make_order(
         tracking_numbers=codes,
         items=items,
         created_at=datetime(2026, 10, 1, tzinfo=UTC),
+        status_group=shopee_order_group(status),
     )
     result = await orders.upsert_platform_order(db, data)
     for package in result.packages:
@@ -62,7 +65,7 @@ def platform_return(
         return_sn=f"2410RTTST{n:03d}",
         order_sn=f"2410TST{n:05d}",
         status=status,
-        status_group="OPEN",
+        status_group=returns_mapping.status_group(status),
         needs_parcel=needs_parcel,
         return_tracking_number=tracking if tracking is not None else f"SPXRTTST{n:06d}",
         reason="ITEM_DAMAGED",

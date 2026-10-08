@@ -20,6 +20,7 @@ from aicam.core.redis import get_redis
 from aicam.core.settings import Settings
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package, StatusHistory
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 from aicam.modules.reconciliation import service as recon
 from aicam.modules.reconciliation.models import ReconAlert
 from aicam.modules.returns import service as returns
@@ -90,6 +91,7 @@ async def _package(
 ) -> Package:
     order = Order(
         platform_order_sn=f"2410REC{n:05d}", platform_status=platform,
+        platform_status_group=shopee_order_group(platform),
         created_at_platform=created_at_platform or NOW - timedelta(days=2),
     )  # fmt: skip
     db.add(order)
@@ -275,10 +277,10 @@ async def test_br19_refund_paid_not_received_and_closed(db: AsyncSession, test_s
     """TC-06.09 / 06.10 (DEC-262): sàn `REFUND_PAID` mà kiện còn đang về → Cao; `CLOSED` → không cảnh báo."""
     order, (package,) = await make_order(db, 51)
     case = await buyer_return_case(db, order, 51)
-    case.platform_status = "REFUND_PAID"
+    case.platform_status, case.platform_status_group = "REFUND_PAID", "DONE"
     other_order, (other,) = await make_order(db, 54)
     closed = await buyer_return_case(db, other_order, 54)
-    closed.platform_status = "CLOSED"
+    closed.platform_status, closed.platform_status_group = "CLOSED", "CLOSED"
     await db.flush()
     await _run(db, test_settings)
     (alert,) = await _alerts(db, package)
@@ -475,7 +477,7 @@ async def test_c2_cases_before_recon_start_ignored(db: AsyncSession, test_settin
     """C2: hồ sơ có từ trước `recon_start_at` → không BR-19, không MISSING."""
     order, (package,) = await make_order(db, 62)
     case = await buyer_return_case(db, order, 62)
-    case.platform_status = "REFUND_PAID"
+    case.platform_status, case.platform_status_group = "REFUND_PAID", "DONE"
     case.created_at = NOW - timedelta(days=40)
     await _backdate(db, package, case, 20)
     out = await _run(db, test_settings)
@@ -505,11 +507,13 @@ async def test_c3_dispute_without_tracking_never_missing(db: AsyncSession, test_
 async def test_c4_br10_key_by_group_resolved_stays(
     api: AsyncClient, db: AsyncSession, test_settings: Settings
 ) -> None:
-    """C4: BR-10 xử lý tay rồi sàn tiến SHIPPED → COMPLETED → không bắn lại; BR-11 IN_CANCEL → CANCELLED cũng
-    vậy."""
+    """C4: BR-10 xử lý tay rồi sàn tiến SHIPPED → COMPLETED → không bắn lại; BR-11 xử lý tay giữ nguyên.
+    Phase 3 (T-285, DEC-519): `IN_CANCEL` (yêu cầu hủy) + `PACKED` không bật BR-11 — sàn có thể từ chối."""
     package = await _package(db, 64, "NEW", platform="SHIPPED")
-    cancel = await _package(db, 65, "PACKED", platform="IN_CANCEL")
+    cancel = await _package(db, 65, "PACKED", platform="CANCELLED")
+    requested = await _package(db, 63, "PACKED", platform="IN_CANCEL")
     await _run(db, test_settings)
+    assert await _alerts(db, requested) == []
     headers = await _login(api, db, "SUPERVISOR", "c4")
     for p in (package, cancel):
         (alert,) = await _alerts(db, p)
@@ -517,8 +521,16 @@ async def test_c4_br10_key_by_group_resolved_stays(
             f"/api/v1/recon-alerts/{alert.id}/resolve", json={"note": "đã kiểm"}, headers=headers
         )
         assert res.status_code == 200, res.text
-    await db.execute(update(Order).where(Order.id == package.order_id).values(platform_status="COMPLETED"))
-    await db.execute(update(Order).where(Order.id == cancel.order_id).values(platform_status="CANCELLED"))
+    await db.execute(
+        update(Order)
+        .where(Order.id == package.order_id)
+        .values(platform_status="COMPLETED", platform_status_group="DELIVERED")
+    )
+    await db.execute(
+        update(Order)
+        .where(Order.id == cancel.order_id)
+        .values(platform_status="CANCELLED", platform_status_group="CANCELLED")
+    )
     await _run(db, test_settings)
     assert [a.status for a in await _alerts(db, package)] == ["RESOLVED"]
     assert [a.status for a in await _alerts(db, cancel)] == ["RESOLVED"]

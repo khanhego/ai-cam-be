@@ -30,6 +30,7 @@ ACTIONS = frozenset(
         "USER_UPDATE",
         "SESSIONS_REVOKED",
         "SHOP_CONNECT",
+        "SHOP_DISCONNECT",  # Phase 3 API-154
         "ORDER_OVERWRITTEN_BY_API",
         # Phase 2 (02 §6.2 API-92, §6.3 #19, §6.5 #1).
         "STATION_WORK_MODE",
@@ -49,6 +50,35 @@ ACTIONS = frozenset(
         "RETENTION_REDUCED",
         "RETENTION_RAISED_TO_MINIMUM",
         "CLIP_PROTECTION_MIGRATED",
+        # Phase 3 (02 API-92) — thêm dần theo task; đủ 15 + v0.3 ở T-228.
+        "CLAIM_EVIDENCE_REMOVE",
+        "SESSION_WRONG_SCAN_MARK",  # API-189 (v0.3)
+        "SESSION_WRONG_SCAN_UNMARK",
+        "SESSION_RETURN_CONFIRM",
+        "PACKAGE_CANCEL_REVERT",  # BR-21 v0.4 (T-285)
+        "REPORT_EXPORT",  # API-153 (T-217, FR-09.06)
+        # Link chia sẻ (02 §6.2 API-160..163, J-25 — M16).
+        "SHARE_CREATE",
+        "SHARE_REVOKE",
+        "SHARE_EXPIRE",  # J-25 (người dùng null)
+        # Thiếu tệp (02 API-92 v0.4 — DEC-530, T-291).
+        "MEDIA_MARK_MISSING",
+        "MEDIA_MISSING_RECOVERED",
+        # Thông báo (02 §6.2 API-171..176 — M17).
+        "NOTIFY_CHANNEL_CREATE",
+        "NOTIFY_CHANNEL_UPDATE",
+        "NOTIFY_CHANNEL_DELETE",
+        "NOTIFY_TEST",
+        "NOTIFY_SETTINGS_UPDATE",
+        # Sao lưu cloud (02 §6.2 API-180..188, API-186 CLI — M15).
+        "BACKUP_TEST",
+        "BACKUP_SETTINGS_UPDATE",
+        "BACKUP_KEY_CONFIRM",
+        "BACKUP_RUN_NOW",
+        "BACKUP_REUPLOAD_OLD_KEY",
+        "BACKUP_ISSUE_RESOLVE",
+        "BACKUP_RESTORE_VERIFIED",  # CLI backup-verify đạt (người dùng null)
+        "BACKUP_VERIFY_ACCEPT",  # CLI backup-verify --accept (v0.3, DEC-518)
     }
 )
 

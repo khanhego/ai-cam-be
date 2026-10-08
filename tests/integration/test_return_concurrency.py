@@ -21,6 +21,7 @@ from aicam.main import create_app
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Package
 from aicam.modules.platforms.mock.adapter import MockAdapter
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 from aicam.modules.sessions.models import PackSession
 from aicam.modules.sessions.router import get_platform_adapter
 from aicam.modules.stations.models import Station
@@ -298,7 +299,7 @@ async def test_platform_cancel_waits_for_pack_scan(committed: AsyncEngine, test_
     sent: list[Any] = []
     jobs.set_sender(lambda task, args, queue, countdown: sent.append((task, args)))
     data = PlatformOrder("2410TST00031", "CANCELLED", ("SPXTST0000031",),
-                         (PlatformItem("Áo thun basic", 2, "AT-DEN-L", "Đen / L"),))  # fmt: skip
+                         (PlatformItem("Áo thun basic", 2, "AT-DEN-L", "Đen / L"),), status_group=shopee_order_group("CANCELLED"))  # fmt: skip
     try:
         async with sessionmaker()() as scan:
             package = await orders.find_package(scan, "SPXTST0000031", for_update=True)

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core.db import get_session
 from aicam.core.deps import Principal, require_roles
 from aicam.core.settings import Settings, get_settings
+from aicam.modules.orders.refs import PlatformCode
 from aicam.modules.reconciliation import service
 from aicam.modules.reconciliation.schemas import (
     AlertStatus,
@@ -42,11 +43,14 @@ async def list_alerts(
     date_to: date | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    platform: PlatformCode | None = None,
+    shop_id: uuid.UUID | None = None,
 ) -> ReconAlertPage:
     """API-120: danh sách cảnh báo lệch + tổng mở theo mức (FR-06.03, D15)."""
     return await service.list_alerts(
         db, tz=settings.tz_display, status=status, severity=severity, rule=rule, package_id=package_id,
-        date_from=date_from, date_to=date_to, page=page, page_size=page_size,
+        date_from=date_from, date_to=date_to, page=page, page_size=page_size, platform=platform,
+        shop_id=shop_id,
     )  # fmt: skip
 
 

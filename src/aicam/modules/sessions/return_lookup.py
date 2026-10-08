@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core.db import commit
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings
+from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package
 from aicam.modules.platforms.base import PlatformAdapter
 from aicam.modules.returns import service as returns
@@ -98,6 +99,7 @@ async def lookup(
             continue
         order = await session.get(Order, package.order_id) if package.order_id else None
         case = await _case_of(session, package.id)
+        shop = await orders.shop_of(session, order) if order else None
         alert = await return_scan.check_openable(
             session, package, case if case and case.status in OPEN_CASE_STATUSES else None, order,
             package.tracking_number, settings.tz_display,
@@ -119,6 +121,8 @@ async def lookup(
                 else None,
                 can_open=alert is None,
                 blocked_reason=alert.code if alert else None,
+                platform=shop.platform if shop else None,
+                shop_name=shop.name if shop else None,
             )
         )
     await commit(session)  # tra sàn có thể đã ghi đơn mới

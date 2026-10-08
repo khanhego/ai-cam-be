@@ -45,6 +45,15 @@ class UserBrief(BaseModel):
     display_name: str
 
 
+class ReturnSummary(BaseModel):
+    """API-20 (Phase 3, L11): tóm tắt phiên RETURN để Supervisor quyết hủy — D13 "Đã có kết luận: Hộp rỗng ·
+    3 ảnh · mở 4 phút"."""
+
+    conclusion: str | None
+    snapshot_count: int
+    opened_at: datetime
+
+
 class ApprovalItem(BaseModel):
     """Item API-20, cũng là `data` của WS-02 `approval.*`."""
 
@@ -64,11 +73,17 @@ class ApprovalItem(BaseModel):
     # Phase 2 (02 API-20): loại phiên của yêu cầu, người kiểm (phiên RETURN).
     session_type: Literal["PACK", "RETURN"] | None = None
     operator_name: str | None = None
+    return_summary: ReturnSummary | None = None  # chỉ `session_type = RETURN`
 
 
 class DecisionIn(BaseModel):
     action: Action
-    note: str | None = Field(default=None, max_length=500)
+    # Độ dài kiểm ở service **sau khi trim** → `fields.note` tiếng Việt (TC-04.70: 501 ký tự trước đây trả lời
+    # nhắn tiếng Anh của pydantic — DEC-974).
+    note: str | None = None
+    # Phase 3 (02 §6.2 API-21 v0.3 — DEC-514, 521): bắt buộc khi CANCEL_SESSION phiên RETURN (service kiểm,
+    # trả 422 `fields.reason_code` tiếng Việt); phiên PACK bỏ qua.
+    reason_code: str | None = Field(default=None, max_length=32)
 
 
 class DecisionResult(BaseModel):

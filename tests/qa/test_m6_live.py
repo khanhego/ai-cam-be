@@ -15,6 +15,8 @@ from typing import Any
 import httpx
 import pytest
 
+from tests.qa import stack
+
 BASE = os.environ.get("QA_BASE_URL")
 pytestmark = [
     pytest.mark.qa,
@@ -23,7 +25,7 @@ pytestmark = [
 
 ROOT = Path(__file__).resolve().parents[2]
 PASSWORD = "matkhau123"
-COMPOSE = ["docker", "compose", "-f", str(ROOT / "docker/compose.dev.yml")]
+COMPOSE = stack.COMPOSE
 
 
 def _psql(sql: str) -> str:
@@ -78,9 +80,9 @@ def _package_id(client: httpx.Client, headers: dict[str, str], code: str) -> str
 def test_mg_migration_head_and_retention_floor(
     client: httpx.Client, tokens: dict[str, dict[str, str]]
 ) -> None:
-    """TC-MG.01 (một phần, trên stack): DB ở head (0005 từ M10 — T-118), cột / bảng mới có, retention ≥ sàn 60
-    (DEC-257)."""
-    assert _psql("SELECT version_num FROM alembic_version") == "0005"
+    """TC-MG.01 (một phần, trên stack): DB ở head (0005 từ M10 — T-118; item 03 → 0007, TC-R3.01 — DEC-822),
+    cột / bảng mới có, retention ≥ sàn 60 (DEC-257)."""
+    assert _psql("SELECT version_num FROM alembic_version") == "0007"
     assert _psql("SELECT count(*) FROM package WHERE status_changed_at IS NULL OR created_at IS NULL") == "0"
     assert _psql("SELECT to_regclass('return_case') IS NOT NULL AND to_regclass('claim') IS NOT NULL") == "t"
     setting = client.get("/settings", headers=tokens["ADMIN"]).json()

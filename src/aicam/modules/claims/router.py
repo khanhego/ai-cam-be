@@ -11,7 +11,7 @@ from aicam.core.db import commit, get_session
 from aicam.core.deps import Principal, require_roles
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings, get_settings
-from aicam.modules.claims import pack, service, views
+from aicam.modules.claims import pack, review, service, views
 from aicam.modules.claims.models import Claim
 from aicam.modules.claims.schemas import (
     ClaimCreateIn,
@@ -26,8 +26,11 @@ from aicam.modules.claims.schemas import (
     EvidencePackOut,
     NoteIn,
     NoteOut,
+    ReviewIn,
+    ReviewOut,
     UserBrief,
 )
+from aicam.modules.orders.refs import PlatformCode
 from aicam.modules.users.queries import get_user_ref
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
@@ -49,11 +52,13 @@ async def list_claims(
     q: Annotated[str | None, Query(max_length=64)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    platform: PlatformCode | None = None,
+    shop_id: uuid.UUID | None = None,
 ) -> ClaimPage:
     """API-130: danh sách hồ sơ (D16)."""
     return await views.list_claims(
         db, viewer=p.user_id, status=status, claim_type=type, counterparty=counterparty, owner=owner, due=due,
-        q=q, page=page, page_size=page_size,
+        q=q, page=page, page_size=page_size, platform=platform, shop_id=shop_id,
     )  # fmt: skip
 
 
@@ -61,7 +66,7 @@ async def list_claims(
 async def create_claim(body: ClaimCreateIn, p: Staff, db: DbSession, settings: AppSettings) -> ClaimDetail:
     """API-131: tạo hồ sơ thủ công (FR-08.01)."""
     claim = await service.create_manual(db, body, p)
-    out = await views.claim_detail(db, claim.id, p.user_id, settings)
+    out = await views.claim_detail(db, claim.id, p.user_id, settings, role=p.role)
     await commit(db)
     return out
 
@@ -69,7 +74,7 @@ async def create_claim(body: ClaimCreateIn, p: Staff, db: DbSession, settings: A
 @router.get("/claims/{claim_id}", response_model=ClaimDetail)
 async def claim_detail(claim_id: uuid.UUID, p: Staff, db: DbSession, settings: AppSettings) -> ClaimDetail:
     """API-132: chi tiết hồ sơ (D17)."""
-    return await views.claim_detail(db, claim_id, p.user_id, settings)
+    return await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
 
 
 async def _locked(
@@ -80,7 +85,7 @@ async def _locked(
     if claim is None:
         raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ khiếu nại.", 404)
     if claim.version != version:
-        current = await views.claim_detail(db, claim_id, p.user_id, settings)
+        current = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
         raise AppError(
             "VERSION_CONFLICT",
             "Hồ sơ vừa được người khác cập nhật. Tải lại để xem bản mới.",
@@ -98,7 +103,7 @@ async def patch_claim(
     claim = await _locked(db, claim_id, body.version, p, settings)
     await service.patch(db, claim, body, p)
     await db.flush()
-    out = await views.claim_detail(db, claim_id, p.user_id, settings)
+    out = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
     await commit(db)
     return out
 
@@ -111,7 +116,29 @@ async def set_evidence(
     claim = await _locked(db, claim_id, body.version, p, settings)
     await service.set_evidence(db, claim, body, p)
     await db.flush()
-    out = await views.claim_detail(db, claim_id, p.user_id, settings)
+    out = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
+    await commit(db)
+    return out
+
+
+@router.post("/claims/{claim_id}/return-sessions/{session_id}/review", response_model=ReviewOut)
+async def review_return_session(
+    claim_id: uuid.UUID, session_id: uuid.UUID, body: ReviewIn, p: Staff, db: DbSession, settings: AppSettings
+) -> ReviewOut:
+    """API-189: đánh dấu / bỏ đánh dấu quét nhầm, xác nhận "Là phiên hoàn thật" (BR-39, EX-R21, D17)."""
+
+    async def _conflict(cid: uuid.UUID) -> AppError:
+        current = await views.claim_detail(db, cid, p.user_id, settings, role=p.role)
+        return AppError(
+            "VERSION_CONFLICT",
+            "Hồ sơ vừa được người khác cập nhật. Tải lại để xem bản mới.",
+            409,
+            {"current": current.model_dump(mode="json")},
+        )
+
+    result = await review.review_return_session(db, claim_id, session_id, body, p, version_conflict=_conflict)
+    detail = await views.claim_detail(db, claim_id, p.user_id, settings, role=p.role)
+    out = ReviewOut(**detail.model_dump(), affected_shares=result.affected_shares)
     await commit(db)
     return out
 

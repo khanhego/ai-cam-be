@@ -21,6 +21,7 @@ from aicam.core.settings import Settings
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, OrderItem, Package, StatusHistory
 from aicam.modules.platforms.mock.adapter import MockAdapter
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 
 from .factories import PASSWORD, make_user
 
@@ -330,7 +331,13 @@ async def test_commit_does_not_steal_package_claimed_after_classify(
         result = await original(session, parsed)
         await orders.upsert_platform_order(
             session,
-            PlatformOrder("2410APIY0001", "READY_TO_SHIP", ("SPXCSY0000002",), (PlatformItem("Quần", 1),)),
+            PlatformOrder(
+                "2410APIY0001",
+                "READY_TO_SHIP",
+                ("SPXCSY0000002",),
+                (PlatformItem("Quần", 1),),
+                status_group=shopee_order_group("READY_TO_SHIP"),
+            ),
         )
         return result
 
@@ -341,7 +348,14 @@ async def test_commit_does_not_steal_package_claimed_after_classify(
     assert await db.scalar(select(Order).where(Order.platform_order_sn == "2410CSY00001")) is None
     monkeypatch.setattr(imports_service, "classify", original)
     await orders.upsert_platform_order(
-        db, PlatformOrder("2410APIY0001", "READY_TO_SHIP", ("SPXCSY0000002",), (PlatformItem("Quần", 1),))
+        db,
+        PlatformOrder(
+            "2410APIY0001",
+            "READY_TO_SHIP",
+            ("SPXCSY0000002",),
+            (PlatformItem("Quần", 1),),
+            status_group=shopee_order_group("READY_TO_SHIP"),
+        ),
     )
     again = await api.post(f"/api/v1/imports/{body['id']}/commit", headers=sup)
     assert (again.status_code, again.json()["error"]["code"]) == (409, "IMPORT_HAS_ERRORS")

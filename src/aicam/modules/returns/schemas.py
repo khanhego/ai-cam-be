@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from aicam.core.pagination import Page
+from aicam.modules.orders.refs import ShopRef
 
 ReturnKind = Literal["FAILED_DELIVERY", "BUYER_RETURN", "REFUND_ONLY", "UNANNOUNCED", "UNIDENTIFIED"]
 ReturnStatus = Literal[
@@ -20,6 +21,7 @@ ReturnStatus = Literal[
     "NO_PARCEL",
 ]
 ReturnTab = Literal["EXPECTED", "MISSING", "RECEIVED", "NO_PARCEL", "UNIDENTIFIED", "ALL"]
+ReturnSort = Literal["due_asc", "created_desc"]
 
 
 class ReturnOrderBrief(BaseModel):
@@ -60,6 +62,13 @@ class ReturnCaseItem(BaseModel):
     conclusion: str | None
     claims: list[ClaimBrief]
     merged_into: CaseRef | None
+    # Phase 3 (02 §6.2 API-110 — T-215).
+    platform: str | None = None
+    shop: ShopRef | None = None
+    platform_status_group: str | None = None
+    response_due_at: datetime | None = None  # chỉ REFUND_ONLY (BR-40)
+    response_due_source: Literal["PLATFORM", "DEFAULT"] | None = None
+    claim: CaseRef | None = None  # hồ sơ khiếu nại chưa đóng mới nhất của đơn
 
 
 class TabCounts(BaseModel):

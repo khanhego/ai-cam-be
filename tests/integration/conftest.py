@@ -5,9 +5,13 @@ DB được tạo nếu chưa có, migrate tới head một lần mỗi phiên t
 """
 
 import asyncio
+import fcntl
+import hashlib
 import os
-from collections.abc import AsyncIterator
+import tempfile
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from typing import IO
 
 import pytest
 from alembic import command
@@ -33,6 +37,7 @@ async def _reset_schema(url: str) -> None:
     try:
         async with engine.connect() as conn:
             await conn.execute(text("DROP SCHEMA IF EXISTS phase2_archive CASCADE"))
+            await conn.execute(text("DROP SCHEMA IF EXISTS phase3_archive CASCADE"))  # 0006 downgrade (T-202)
             await conn.execute(text("DROP SCHEMA public CASCADE"))
             await conn.execute(text("CREATE SCHEMA public"))
     finally:
@@ -59,8 +64,55 @@ def alembic_config() -> Config:
     return cfg
 
 
+def single_run_lock_path(url: str) -> Path:
+    """Tệp khóa theo DB test (một máy) — xem `single_pytest_run`."""
+    digest = hashlib.sha256(url.encode()).hexdigest()[:12]
+    return Path(tempfile.gettempdir()) / f"aicam-pytest-{digest}.lock"
+
+
+def acquire_single_run_lock(path: Path) -> IO[str] | None:
+    """Lấy khóa tệp (không chờ). Trả tệp đang giữ khóa; `None` nếu khóa thuộc **chính tiến trình này**
+    (fixture nhập lại qua `tests/contract/conftest.py`). Tiến trình khác giữ → `pytest.exit` mã 3."""
+    fh: IO[str] = path.open("a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.seek(0)
+        owner = fh.read().strip()
+        fh.close()
+        if owner == str(os.getpid()):
+            return None
+        pytest.exit(
+            f"Một tiến trình pytest khác (PID {owner or '?'}) đang dùng DB test "
+            f"{make_url(TEST_DATABASE_URL).database} — chạy lần lượt (BUG-G4-2).",
+            returncode=3,
+        )
+    fh.seek(0)
+    fh.truncate()
+    fh.write(str(os.getpid()))
+    fh.flush()
+    return fh
+
+
 @pytest.fixture(scope="session")
-def migrated_database_url() -> str:
+def single_pytest_run() -> Iterator[None]:
+    """BUG-G4-2 (DEC-971): chỉ **một** tiến trình pytest dùng DB test cùng lúc. Hai lượt chồng nhau (vd
+    chạy lẻ một file trong lúc chạy cả bộ) làm test đếm dữ liệu toàn cục chập chờn (`check_timeouts`, J-02,
+    migration dựng lại schema `_mig` của bên kia) — lượt thứ hai dừng ngay với lời nhắn thay vì fail ngẫu
+    nhiên."""
+    fh = acquire_single_run_lock(single_run_lock_path(TEST_DATABASE_URL))
+    try:
+        yield
+    finally:
+        if fh is not None:
+            fh.seek(0)
+            fh.truncate()
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            fh.close()
+
+
+@pytest.fixture(scope="session")
+def migrated_database_url(single_pytest_run: None) -> str:
     asyncio.run(_ensure_database(TEST_DATABASE_URL))
     os.environ["DATABASE_URL"] = TEST_DATABASE_URL
     get_settings.cache_clear()
@@ -124,3 +176,10 @@ async def api(db: AsyncSession, redis_client: object, test_settings: Settings) -
     app.dependency_overrides[get_settings] = lambda: test_settings
     async with AsyncClient(transport=ASGITransport(app=app), base_url="https://testserver") as client:
         yield client
+
+
+# Sao lưu cloud (M15): kho MemoryStore, settings có khóa, client API (tests/integration/backup_fixtures.py).
+from .backup_fixtures import backup_api, backup_settings, memory_store, world  # noqa: E402, F401
+
+# Thông báo (M17): settings `NOTIFY_TRANSPORT=mock`, client API (tests/integration/notify_fixtures.py).
+from .notify_fixtures import notify_api, notify_settings  # noqa: E402, F401

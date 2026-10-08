@@ -22,6 +22,8 @@ class StationStateRef(StationRef):
     kind: Literal["PACK", "RETURN", "BOTH"]
     work_mode: Literal["PACK", "RETURN"]
     operator_name: str | None
+    # Phase 3 (FR-03.16): Admin bật `packer_name_required` ∧ `work_mode = PACK` → quét cần tên người đóng gói.
+    operator_required: bool = False
 
 
 class WorkModeIn(BaseModel):
@@ -47,10 +49,18 @@ class TrayOut(BaseModel):
     updated_at: datetime | None
 
 
+class MergedOrderRef(BaseModel):
+    platform_order_sn: str
+
+
 class OrderBrief(BaseModel):
-    platform: str
+    # Phase 3: `null` khi đơn chưa gắn shop (đơn nhập file — chưa rõ sàn, DEC-541).
+    platform: str | None
+    shop_name: str | None = None
     platform_order_sn: str
     buyer_note: str | None
+    # Kiện gộp (FR-05.22): đơn thêm cùng mã vận đơn; rỗng khi không gộp.
+    merged_orders: list[MergedOrderRef] = []
 
 
 class ItemOut(BaseModel):
@@ -59,6 +69,8 @@ class ItemOut(BaseModel):
     variation: str | None
     quantity: int
     image_url: str | None
+    # Đơn của dòng (kiện gộp có dòng của nhiều đơn) — luôn có khi kiện có đơn.
+    platform_order_sn: str | None = None
 
 
 class PackageBrief(BaseModel):
@@ -168,6 +180,8 @@ class SessionOut(BaseModel):
     inspection: InspectionOut | None = None
     snapshots: list[SnapshotOut] | None = None
     pack_reference: PackReference | None = None
+    # BR-37 (Phase 3): hạn station tự hủy phiên RETURN `OPEN`; null = không còn tự hủy (Gọi quản lý).
+    self_cancel_until: datetime | None = None
 
 
 class ApprovalBrief(BaseModel):
@@ -221,6 +235,9 @@ class AlertOut(BaseModel):
         "RETURN_IN_PROGRESS_ELSEWHERE",
         "INSPECTION_REQUIRED",
         "RETURN_CODE_DIFFERENT",
+        # Phase 3 (02 §6.2 API-11, DEC-455, DEC-492).
+        "ORDER_CANCEL_REQUESTED",
+        "RETURN_MULTIPLE_ORDERS",
     ]
     message: str
     data: dict[str, Any] = {}
@@ -298,6 +315,10 @@ class ReturnLookupItem(BaseModel):
     return_case: ReturnLookupCase | None
     can_open: bool
     blocked_reason: str | None
+    # Phase 3 (02 §6.2 API-104, §5.1 #11): mã trùng giữa shop → chip sàn · shop phân biệt; null khi chưa gắn
+    # đơn.
+    platform: str | None = None
+    shop_name: str | None = None
 
 
 class ReturnLookupOut(BaseModel):

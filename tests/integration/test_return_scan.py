@@ -14,6 +14,7 @@ from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import OrderItem, Package
 from aicam.modules.platforms.base import PlatformItem, PlatformOrder
 from aicam.modules.platforms.mock.adapter import MockAdapter
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 from aicam.modules.returns.models import ReturnCase
 from aicam.modules.sessions.models import InspectionLine, PackSession
 from aicam.modules.sessions.router import get_platform_adapter
@@ -348,6 +349,7 @@ async def test_resync_keeps_order_item_ids(db: AsyncSession) -> None:
         status="TO_RETURN",
         tracking_numbers=("SPXTST0000041",),
         items=(PlatformItem("Áo thun basic", 2, "AT-DEN-L", "Đen / L"), PlatformItem("Mũ", 1, "MU-1", None)),
+        status_group=shopee_order_group("TO_RETURN"),
     )
 
     await orders.upsert_platform_order(db, data)

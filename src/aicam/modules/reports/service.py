@@ -10,9 +10,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel
-from sqlalchemy import and_, any_, func, literal, or_, select
+from sqlalchemy import and_, any_, func, literal, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from aicam.core import clock
 from aicam.core.errors import AppError
@@ -25,7 +24,9 @@ from aicam.modules.media.models import Clip
 from aicam.modules.orders.models import Package, Shop
 from aicam.modules.reconciliation import service as recon
 from aicam.modules.returns.models import ReturnCase
+from aicam.modules.returns.queries import refund_pending_filter, response_due_sql
 from aicam.modules.sessions.models import ACTIVE_STATUSES, PackSession
+from aicam.modules.sessions.queries import dropped_return_filter
 from aicam.modules.settings import service as settings_service
 from aicam.modules.stations.models import Camera, Station
 from aicam.realtime.publish import daily_report_key
@@ -66,6 +67,10 @@ class Counts(BaseModel):
     claims_due_soon: int  # hiện tại: NEW / SUBMITTED / WAITING, hạn trong `claim_due_soon_hours`
     label_on_tray: int  # phiên PACK COMPLETED kết thúc trong ngày có cờ LABEL_ON_TRAY
     cam2_unverified: int  # ... có cờ CAM2_UNVERIFIED
+    # Phase 3 (02 §6.2 API-32 — T-215), hiện tại (không theo ngày).
+    returns_dropped_7d: int = 0  # phiên RETURN hủy / bỏ dở 7 ngày, trừ phiên bị loại (BR-39)
+    refund_only_pending: int = 0  # BR-40
+    claims_overdue_unsent: int = 0  # BR-42: hồ sơ NEW quá hạn
 
 
 class CameraBrief(BaseModel):
@@ -155,6 +160,12 @@ async def _counts(db: AsyncSession, start: datetime, end: datetime) -> Counts:
         ).all()
     )
     pack_done = and_(is_pack, PackSession.status == "COMPLETED", ended_in)
+    overdue_unsent = int(
+        await db.scalar(
+            select(func.count()).select_from(Claim).where(Claim.status == "NEW", Claim.deadline_at < now)
+        )
+        or 0
+    )
     return Counts(
         packed=await _count(db, PackSession.status == "COMPLETED", ended_in, is_pack),
         had_mismatch=await _count(
@@ -174,6 +185,13 @@ async def _counts(db: AsyncSession, start: datetime, end: datetime) -> Counts:
         claims_due_soon=int(claims_due_soon),
         label_on_tray=await _count(db, pack_done, literal("LABEL_ON_TRAY") == any_(PackSession.flags)),
         cam2_unverified=await _count(db, pack_done, literal("CAM2_UNVERIFIED") == any_(PackSession.flags)),
+        returns_dropped_7d=await _count(
+            db, dropped_return_filter(), PackSession.ended_at >= now - RECENT_RETURN_WINDOW
+        ),
+        refund_only_pending=int(
+            await db.scalar(select(func.count()).select_from(ReturnCase).where(refund_pending_filter())) or 0
+        ),
+        claims_overdue_unsent=overdue_unsent,
     )
 
 
@@ -264,7 +282,8 @@ async def _attention(db: AsyncSession, counts: Counts, settings: Settings) -> li
         at = (shop.last_error or {}).get("at") or (
             clock.iso_z(shop.last_synced_at) if shop.last_synced_at else None
         )
-        items.append({"kind": "SYNC_ERROR", "shop_id": str(shop.id), "at": at})
+        items.append({"kind": "SYNC_ERROR", "shop_id": str(shop.id), "at": at, "shop_name": shop.name,
+                      "platform": shop.platform, "code": (shop.last_error or {}).get("code")})  # fmt: skip
     failed = await db.scalar(
         select(func.count())
         .select_from(Clip)
@@ -272,42 +291,37 @@ async def _attention(db: AsyncSession, counts: Counts, settings: Settings) -> li
     )
     if failed:  # 02a J-01 "lỗi cuối → attention" (kind mới, DEC-105)
         items.append({"kind": "CLIP_FAILED", "count": int(failed)})
-    items.extend(await _return_attention(db, counts))
+    items.extend(await _return_attention(db, counts, settings))
+    from aicam.modules.orders import cancel_revert
+
+    revert = await cancel_revert.pending_count(db)
+    if revert:  # G3-EV-3: kiện hủy oan còn chờ `aicam fix-cancel-requests --apply` (chỉ ADMIN — việc của IT)
+        items.append({"kind": "CANCEL_REVERT_PENDING", "count": revert})
+    from aicam.modules.backup import service as backup_service  # backup → settings → reports: import muộn
+
+    items.extend(await backup_service.stale_attention(db, settings))  # chỉ ADMIN (ADMIN_ONLY_KINDS)
     disk = disk_usage(settings)
     if disk and disk["percent"] >= DISK_WARN_PERCENT:
         items.append({"kind": "DISK_USAGE", "percent": disk["percent"]})
     return items
 
 
-async def _return_attention(db: AsyncSession, counts: Counts) -> list[dict[str, Any]]:
-    """Phase 2 (02 §6.2 API-32, §6.3 #13, §6.5 #1): mục "Cần xử lý" hàng hoàn / đối soát / hồ sơ."""
+async def _return_attention(db: AsyncSession, counts: Counts, settings: Settings) -> list[dict[str, Any]]:
+    """Phase 2 (02 §6.2 API-32, §6.3 #13, §6.5 #1): mục "Cần xử lý" hàng hoàn / đối soát / hồ sơ.
+
+    Phase 3 (T-215): `RETURN_SESSION_ABANDONED` chỉ còn phiên RETURN mở có cờ `AUTO_CLOSE_BLOCKED`; phiên
+    hủy / bỏ dở 7 ngày chuyển sang `RETURN_SESSION_DROPPED` (BR-39 — trừ phiên bị loại); thêm
+    `REFUND_ONLY_PENDING` (BR-40), `CLAIM_OVERDUE` (BR-42)."""
     since = clock.now() - RECENT_RETURN_WINDOW
-    done = aliased(PackSession)
-    later_done = (
-        select(literal(1))
-        .where(
-            done.package_id == PackSession.package_id,
-            done.type == "RETURN",
-            done.status == "COMPLETED",
-            done.started_at > PackSession.started_at,
-        )
-        .exists()
-    )
-    abandoned = int(
+    blocked = int(
         await db.scalar(
             select(func.count())
             .select_from(PackSession)
             .where(
                 PackSession.type == "RETURN",
-                or_(
-                    and_(PackSession.status == "ABANDONED", PackSession.ended_at >= since, ~later_done),
-                    # G3 J-07 (DEC-340): quá hạn bỏ dở nhưng kết luận đã lưu chưa đủ → giữ phiên, cần quản lý
-                    # xem.
-                    and_(
-                        PackSession.status.in_(("OPEN", "MISMATCH")),
-                        PackSession.flags.contains(["AUTO_CLOSE_BLOCKED"]),
-                    ),
-                ),
+                # G3 J-07 (DEC-340): quá hạn bỏ dở nhưng kết luận đã lưu chưa đủ → giữ phiên, cần quản lý xem.
+                PackSession.status.in_(("OPEN", "MISMATCH")),
+                PackSession.flags.contains(["AUTO_CLOSE_BLOCKED"]),
             )
         )
         or 0
@@ -329,10 +343,37 @@ async def _return_attention(db: AsyncSession, counts: Counts) -> list[dict[str, 
         ("RECON_HIGH", counts.recon_open.HIGH),
         ("CLAIM_DUE_SOON", counts.claims_due_soon),
         ("RETURN_UNIDENTIFIED", int(unidentified)),
-        ("RETURN_SESSION_ABANDONED", abandoned),
+        ("RETURN_SESSION_ABANDONED", blocked),
         ("RETURN_FORCE_NEW", int(force_new)),
+        ("CLAIM_OVERDUE", counts.claims_overdue_unsent),
+        ("RETURN_SESSION_DROPPED", counts.returns_dropped_7d),
     )
-    return [{"kind": kind, "count": count} for kind, count in candidates if count]
+    items: list[dict[str, Any]] = [{"kind": kind, "count": count} for kind, count in candidates if count]
+    if counts.refund_only_pending:
+        hours = (await settings_service.get(db)).refund_only_default_hours
+        nearest = await db.scalar(
+            select(func.min(response_due_sql(hours))).select_from(ReturnCase).where(refund_pending_filter())
+        )
+        items.append(
+            {
+                "kind": "REFUND_ONLY_PENDING",
+                "count": counts.refund_only_pending,
+                "nearest_due_at": clock.iso_z(nearest) if nearest else None,
+            }
+        )
+    return items
+
+
+# 02 §6.2 API-32: mục chỉ ADMIN thấy (lọc theo vai **sau** cache).
+ADMIN_ONLY_KINDS = frozenset({"SYNC_ERROR", "BACKUP_STALE", "CANCEL_REVERT_PENDING"})
+
+
+def for_role(out: "DailyOut", role: str) -> "DailyOut":
+    if role == "ADMIN":
+        return out
+    return out.model_copy(
+        update={"attention": [a for a in out.attention if a["kind"] not in ADMIN_ONLY_KINDS]}
+    )
 
 
 async def daily(db: AsyncSession, day: date | None, settings: Settings) -> DailyOut:

@@ -5,8 +5,22 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol
 
-# Trạng thái đơn chung (map từ trạng thái riêng của từng sàn trong adapter).
-CANCELLED_STATUSES = frozenset({"CANCELLED", "IN_CANCEL"})
+# Nhóm trạng thái đơn chung mọi sàn (02 §5.2, ADR-011, BR-30): adapter ánh xạ chữ của sàn → nhóm
+# (`platforms/<sàn>/mapping.py`); lõi chỉ đọc nhóm, không đọc chữ trạng thái của sàn (NFR-28).
+ORDER_STATUS_GROUPS = (
+    "UNPAID",
+    "AWAITING_SHIPMENT",
+    "SHIPPED",
+    "DELIVERED",
+    "CANCEL_REQUESTED",
+    "CANCELLED",
+    "RETURNING",
+    "UNKNOWN",
+)
+# Nhóm chặn mở phiên đóng gói (BR-01 — giữ hành vi Phase 2: Shopee `IN_CANCEL` cũng chặn).
+CANCEL_GROUPS = ("CANCEL_REQUESTED", "CANCELLED")
+# Đơn đã rời kho trên sàn (đã giao ĐVVC / đã giao / đang hoàn về) — kiện `NEW` mở phiên hoàn được (EX-R3).
+SHIPPED_GROUPS = ("SHIPPED", "DELIVERED", "RETURNING")
 
 
 @dataclass(frozen=True)
@@ -21,21 +35,30 @@ class PlatformItem:
 @dataclass(frozen=True)
 class PlatformOrder:
     platform_order_sn: str
-    status: str  # trạng thái sàn, giữ nguyên chữ của sàn (vd READY_TO_SHIP)
+    status: str  # trạng thái sàn, giữ nguyên chữ của sàn (vd READY_TO_SHIP) — chỉ lưu / hiển thị
     tracking_numbers: tuple[str, ...]
     items: tuple[PlatformItem, ...]
     buyer_note: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # Nhóm chung ∈ ORDER_STATUS_GROUPS — adapter đặt (TikTok cần cả yêu cầu hủy, không suy được từ `status`).
+    status_group: str = "UNKNOWN"
+    # Kiện gộp (FR-05.22, DEC-454): mã đơn **khác** cùng shop đi chung mã vận đơn với đơn này — adapter đánh
+    # dấu; `orders.upsert_platform_order` ghi `package_order` thay vì chuyển kiện sang đơn này.
+    merged_order_sns: tuple[str, ...] = ()
+    # Đơn do kho của sàn giao (TikTok `fulfillment_type`, AS-13, EX-T5): kho không đóng gói → J-04 bỏ qua +
+    # đếm, tra khi quét coi như không thấy.
+    fulfilled_by_platform: bool = False
 
     @property
     def is_cancelled(self) -> bool:
-        return self.status in CANCELLED_STATUSES
+        """Đơn **đã hủy** trên sàn (BR-21 làm rõ — DEC-494): chỉ nhóm `CANCELLED`, không gồm yêu cầu hủy."""
+        return self.status_group == "CANCELLED"
 
 
-# Nhóm trạng thái yêu cầu trả (02a §7, DEC-262).
-RETURN_STATUS_GROUPS = ("OPEN", "CANCELLED", "DONE", "CLOSED")
+# Nhóm trạng thái yêu cầu trả chung (02 §5.2, BR-31): chữ lạ → None (không chờ duyệt, không kết thúc).
+RETURN_STATUS_GROUPS = ("REQUESTED", "ACCEPTED", "CANCELLED", "DONE", "CLOSED")
 
 
 @dataclass(frozen=True)
@@ -52,12 +75,12 @@ class ReturnItem:
 
 @dataclass(frozen=True)
 class PlatformReturn:
-    """Yêu cầu trả / hoàn tiền (02a §7). `status` giữ chữ sàn; `status_group` ∈ RETURN_STATUS_GROUPS."""
+    """Yêu cầu trả / hoàn tiền (02a §7). `status` = chữ sàn; `status_group` ∈ RETURN_STATUS_GROUPS / None."""
 
     return_sn: str
     order_sn: str
     status: str
-    status_group: str
+    status_group: str | None
     needs_parcel: bool
     return_tracking_number: str | None = None
     reason: str | None = None
@@ -68,6 +91,9 @@ class PlatformReturn:
     created_at: datetime | None = None
     updated_at: datetime | None = None
     raw: dict[str, Any] = field(default_factory=dict)
+    # TikTok `REPLACEMENT` (BR-31): hồ sơ "Khách trả hàng", lý do `EXCHANGE` ("Đổi hàng") — không lưu cột
+    # riêng.
+    is_exchange: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,6 +111,7 @@ class ShippingStatus:
     warehouse_hint: str | None
     order_status: str | None = None
     updated_at: datetime | None = None
+    order_status_group: str | None = None  # nhóm của `order_status` (adapter đặt cùng lúc)
 
 
 @dataclass(frozen=True)
@@ -97,10 +124,20 @@ class ShipmentRef:
 
 @dataclass(frozen=True)
 class ShopCredentials:
+    """Token của một shop. `shop_id` = mã shop trên sàn (`shop.platform_shop_id`).
+
+    Phase 3 (02a §2 base.py, DEC-433): `grant_ref` — lần ủy quyền chung (TikTok `open_id`; Shopee = mã shop);
+    `shop_cipher` (TikTok, tham số API cấp shop — không trả API), `shop_name`, `region` (adapter điền khi
+    `exchange_code` biết)."""
+
     shop_id: str
     access_token: str
     refresh_token: str
     expires_at: datetime
+    shop_cipher: str | None = None
+    grant_ref: str | None = None
+    shop_name: str | None = None
+    region: str | None = None
 
 
 class PlatformError(Exception):
@@ -114,9 +151,13 @@ class PlatformAuthError(PlatformError):
 class PlatformAdapter(Protocol):
     code: str
 
-    def build_auth_url(self, redirect_url: str) -> str: ...
+    def build_auth_url(self, redirect_url: str, state: str) -> str:
+        """URL trang ủy quyền. Shopee: `state` đã nằm trong `redirect_url`; TikTok: tham số `state`."""
+        ...
 
-    async def exchange_code(self, code: str, shop_id: str) -> ShopCredentials: ...
+    async def exchange_code(self, code: str, shop_id: str | None) -> list[ShopCredentials]:
+        """Đổi `code` → token cho **mọi** shop của lần ủy quyền (Shopee 1 shop; TikTok nhiều — FR-05.13)."""
+        ...
 
     async def refresh(self, creds: ShopCredentials) -> ShopCredentials: ...
 

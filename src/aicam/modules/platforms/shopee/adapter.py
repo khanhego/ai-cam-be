@@ -87,8 +87,8 @@ class ShopeeAdapter:
         self._tracking_cache: OrderedDict[str, str] = OrderedDict()
 
     # ------------------------------------------------------------ ủy quyền (FR-05.01)
-    def build_auth_url(self, redirect_url: str) -> str:
-        return self.client.auth_partner_url(redirect_url)
+    def build_auth_url(self, redirect_url: str, state: str) -> str:
+        return self.client.auth_partner_url(redirect_url)  # `state` đã nằm trong `redirect_url` (API-71)
 
     def _creds(self, data: dict[str, Any], shop_id: str) -> ShopCredentials:
         access, refresh = data.get("access_token"), data.get("refresh_token")
@@ -96,13 +96,16 @@ class ShopeeAdapter:
             raise PlatformError("Shopee không trả access_token / refresh_token")
         expire_in = int(data.get("expire_in") or 14400)  # tài liệu: access token 4 giờ
         return ShopCredentials(
-            str(shop_id), str(access), str(refresh), clock.now() + timedelta(seconds=expire_in)
-        )
+            str(shop_id), str(access), str(refresh), clock.now() + timedelta(seconds=expire_in),
+            grant_ref=str(shop_id),
+        )  # fmt: skip
 
-    async def exchange_code(self, code: str, shop_id: str) -> ShopCredentials:
+    async def exchange_code(self, code: str, shop_id: str | None) -> list[ShopCredentials]:
+        if not shop_id or not shop_id.strip().isdigit():
+            raise PlatformError("Shopee callback thiếu shop_id")
         body = {"code": code, "shop_id": int(shop_id), "partner_id": self.client.partner_id}
         data = await self.client.call("POST", "/api/v2/auth/token/get", body=body)
-        return self._creds(data, shop_id)
+        return [self._creds(data, shop_id.strip())]
 
     async def refresh(self, creds: ShopCredentials) -> ShopCredentials:
         body = {
@@ -212,6 +215,7 @@ class ShopeeAdapter:
             created_at=_ts(detail.get("create_time")),
             updated_at=_ts(detail.get("update_time")),
             raw={"detail": detail, "tracking_by_package": by_package},
+            status_group=mapping.order_group(status),
         )
 
     def _remember(self, tracking: str, order_sn: str) -> None:
@@ -300,6 +304,7 @@ class ShopeeAdapter:
                         mapping.warehouse_hint(status, raw),
                         status,
                         _ts(detail.get("update_time")),
+                        mapping.order_group(status),
                     )
                 )
         return out

@@ -8,7 +8,9 @@ KN-000124/
 ├── ho-so.json, README.txt
 ├── 01-dong-goi-<yyyymmdd-hhmm>/   video-ghep-co-chu.mp4, goc-CAM1.mp4, goc-CAM2.mp4,
 │                                  anh-luc-dong-goi.jpg, info.json
-├── 02-mo-hoan-<yyyymmdd-hhmm>/    như trên + anh-01.jpg … + ket-luan.json
+├── 02-mo-hoan-<yyyymmdd-hhmm>/    phiên chính (BR-39): như trên + anh-01.jpg … + ket-luan.json
+├── 03-mo-hoan-phien-truoc-<…>/    phiên mở hoàn trước đã hủy / bỏ dở (BR-39) — như mo-hoan
+├── 03-mo-hoan-can-soat-<…>/       phiên quản lý hủy chưa rõ lý do ("Cần soát" — DEC-516) — như mo-hoan
 └── 03-phien-khac-<…>/             chỉ clip gốc + info.json (không encode)
 ```
 
@@ -38,9 +40,10 @@ from aicam.core.db import commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.settings import Settings
+from aicam.modules.claims import evidence_rules
 from aicam.modules.claims.models import Claim, ClaimEvidence, EvidencePack
 from aicam.modules.claims.schemas import EvidencePackCreated, EvidencePackOut, PackFiles, PackMissing
-from aicam.modules.claims.service import CONCLUSION_LABELS
+from aicam.modules.claims.service import CONCLUSION_LABELS, effective_pack_session
 from aicam.modules.media import ffmpeg, jobs, signing
 from aicam.modules.media.exports import (
     Progress,
@@ -74,8 +77,15 @@ Thư mục:
 - 01-dong-goi-…: phiên đóng gói — video ghép Cam 1 + Cam 2 có chữ (mã vận đơn, mã đơn, giờ, station),
   clip gốc từng camera (goc-CAM1.mp4, goc-CAM2.mp4), ảnh lúc đóng gói, info.json.
 - 02-mo-hoan-…: phiên mở hàng hoàn — như trên + ảnh chụp khi kiểm (anh-01.jpg …) + ket-luan.json
-  (kết luận, từng dòng hàng, người kiểm, lịch sử sửa kết luận).
+  (kết luận, từng dòng hàng, người kiểm, lịch sử sửa kết luận). Phiên mở hoàn chính (video mở hộp sớm
+  nhất) đứng đầu.
+- …-mo-hoan-phien-truoc-…: phiên mở hàng hoàn trước đó đã bị hủy / bỏ dở (vd. mất điện) — như trên.
+- …-mo-hoan-can-soat-…: phiên mở hàng hoàn do quản lý hủy, chưa rõ lý do — cần xem lại trước khi dùng.
 - 03-phien-khac-…: phiên khác được thêm làm bằng chứng — chỉ clip gốc + info.json.
+{primary_note}
+Phần còn thiếu (ho-so.json "missing"): CLIP_MISSING / SNAPSHOT_MISSING = Thiếu tệp — hệ thống có ghi nhận
+clip / ảnh nhưng máy chủ không còn tệp (mất khi khôi phục hoặc không thấy tại kho); CLIP_DELETED = đã xóa
+theo chính sách lưu trữ; CLIP_FAILED / CLIP_NOT_READY = không cắt được / chưa cắt xong.
 
 Kiểm tính toàn vẹn: clip gốc không bị sửa nếu mã SHA-256 của tệp trùng với mã ghi trong ho-so.json và
 info.json.
@@ -101,7 +111,10 @@ async def create_pack(
     claim = await db.get(Claim, claim_id)
     if claim is None:
         raise AppError("NOT_FOUND", "Không tìm thấy hồ sơ khiếu nại.", 404)
-    if await db.scalar(select(ClaimEvidence.id).where(ClaimEvidence.claim_id == claim.id).limit(1)) is None:
+    active = select(ClaimEvidence.id).where(
+        ClaimEvidence.claim_id == claim.id, ClaimEvidence.removed_at.is_(None)
+    )
+    if await db.scalar(active.limit(1)) is None:
         raise AppError("NO_EVIDENCE", "Hồ sơ chưa có bằng chứng.", 409)
     active = await db.scalar(
         select(EvidencePack)
@@ -268,8 +281,7 @@ class _Builder:
     def miss(self, session_id: uuid.UUID, role: str, reason: str, **extra: Any) -> None:
         self.missing.append({"session_id": str(session_id), "camera_role": role, "reason": reason, **extra})
 
-    def folder_name(self, index: int, pack: PackSession, main: bool) -> str:
-        kind = "phien-khac" if not main else ("dong-goi" if pack.type == "PACK" else "mo-hoan")
+    def folder_name(self, index: int, pack: PackSession, kind: str) -> str:
         when = (pack.ended_at or pack.started_at).astimezone(self.tz).strftime("%Y%m%d-%H%M")
         return f"{index:02d}-{kind}-{when}"
 
@@ -282,11 +294,11 @@ class _Builder:
         copied: list[Clip] = []
         for role in ROLES:
             clip = clips.get(role)
-            if clip is None:
-                self.miss(pack.id, role, "CLIP_MISSING")
+            if clip is None:  # chưa có dòng clip (J-01 chưa chạy) — khác `MISSING` (DEC-677)
+                self.miss(pack.id, role, "CLIP_NOT_READY")
                 continue
             if clip.status != "READY" or not clip.path:
-                reason = {"DELETED": "CLIP_DELETED", "FAILED": "CLIP_FAILED"}.get(
+                reason = {"DELETED": "CLIP_DELETED", "FAILED": "CLIP_FAILED", "MISSING": "CLIP_MISSING"}.get(
                     clip.status, "CLIP_NOT_READY"
                 )
                 self.miss(pack.id, role, reason)
@@ -306,7 +318,8 @@ class _Builder:
 
     async def copy_snapshot(self, snap: Snapshot, dst: Path) -> None:
         if snap.status != "READY" or not snap.path:
-            self.miss(snap.session_id, "CAM1", "SNAPSHOT_DELETED", snapshot_id=str(snap.id))
+            reason = "SNAPSHOT_MISSING" if snap.status == "MISSING" else "SNAPSHOT_DELETED"
+            self.miss(snap.session_id, "CAM1", reason, snapshot_id=str(snap.id))
             return
         try:
             await asyncio.to_thread(shutil.copyfile, absolute(self.settings, snap.path), dst)
@@ -324,10 +337,14 @@ class _Builder:
 
 async def _session_rows(
     db: AsyncSession, claim: Claim
-) -> tuple[list[tuple[PackSession, bool]], list[Snapshot]]:
+) -> tuple[list[tuple[PackSession, bool, str]], list[Snapshot]]:
+    """(phiên, phiên chính để dựng video, loại thư mục). Thứ tự: đóng gói hiệu lực, phiên mở hoàn chính
+    (BR-39, DEC-448), phiên mở hoàn khác theo giờ (phiên trước → `mo-hoan-phien-truoc`), phiên thêm tay."""
     evidence = (
         await db.scalars(
-            select(ClaimEvidence).where(ClaimEvidence.claim_id == claim.id).order_by(ClaimEvidence.added_at)
+            select(ClaimEvidence)
+            .where(ClaimEvidence.claim_id == claim.id, ClaimEvidence.removed_at.is_(None))  # BR-38
+            .order_by(ClaimEvidence.added_at)
         )
     ).all()
     session_ids = [e.session_id for e in evidence if e.session_id]
@@ -336,11 +353,29 @@ async def _session_rows(
     if session_ids:
         sessions = list((await db.scalars(select(PackSession).where(PackSession.id.in_(session_ids)))).all())
     # Phiên chính: tự chọn, phiên RETURN, phiên PACK `COMPLETED` (hiệu lực); còn lại = phiên thêm tay.
-    rows = [
-        (s, s.id in auto or s.type == "RETURN" or (s.type == "PACK" and s.status == "COMPLETED"))
-        for s in sessions
-    ]
-    rows.sort(key=lambda r: (not r[1], r[0].type != "PACK", r[0].started_at, r[0].id))
+    with_clip = await evidence_rules.live_clip_sessions(db, [s.id for s in sessions])
+    effective = await effective_pack_session(db, claim.package_id)
+    primary = evidence_rules.primary_session(sessions, with_clip, effective.id if effective else None)
+    latest_done = await evidence_rules.latest_completed_return_start(
+        db, claim.package_id, claim.return_case_id
+    )
+    rows: list[tuple[PackSession, bool, str]] = []
+    for s in sessions:
+        main = s.id in auto or s.type == "RETURN" or (s.type == "PACK" and s.status == "COMPLETED")
+        if evidence_rules.excluded(s):
+            main = False  # BR-39 v0.4: phiên bị loại thêm tay → chỉ clip gốc, không bao giờ thư mục chính
+        if not main:
+            kind = "phien-khac"
+        elif s.type == "PACK":
+            kind = "dong-goi"
+        elif evidence_rules.review_needed(s):
+            kind = "mo-hoan-can-soat"  # "Cần soát" (DEC-516): như mo-hoan, không là phiên chính
+        elif s.id != primary and s.id in with_clip and evidence_rules.is_prior_return(s, latest_done):
+            kind = "mo-hoan-phien-truoc"
+        else:
+            kind = "mo-hoan"
+        rows.append((s, main, kind))
+    rows.sort(key=lambda r: (not r[1], r[0].type != "PACK", r[0].id != primary, r[0].started_at, r[0].id))
     snapshot_ids = [e.snapshot_id for e in evidence if e.snapshot_id]
     snapshots = []
     if snapshot_ids:
@@ -354,6 +389,55 @@ async def _session_rows(
             ).all()
         )
     return rows, snapshots
+
+
+PRIMARY_REASON_TEXT = {
+    "CLIP_MISSING": "thiếu tệp (máy chủ không còn tệp clip)",
+    "CLIP_DELETED": "clip đã bị xóa theo chính sách lưu trữ",
+    "CLIP_FAILED": "clip không cắt được",
+    "CLIP_PENDING": "clip chưa cắt xong",
+}
+
+
+async def _primary_note(db: AsyncSession, claim: Claim, tz: ZoneInfo) -> str:
+    """G3-EV-4: phiên chính (lần mở hộp đầu — BR-39, không đổi) mà Cam 1 không dùng được → README ghi rõ
+    "phiên chính thiếu tệp" để người nhận gói không tưởng thiếu video là lỗi gói."""
+    _, sessions_with_clip, primary = await _primary_of(db, claim)
+    reason = await evidence_rules.primary_unavailable_reason(db, primary)
+    if reason is None or primary is None:
+        return ""
+    s = sessions_with_clip[primary]
+    at = s.started_at.astimezone(tz).strftime("%H:%M %d/%m/%Y")
+    return (
+        f"\nLƯU Ý — PHIÊN CHÍNH THIẾU TỆP: phiên mở hộp đầu tiên ({at}) là phiên chính nhưng Cam 1 "
+        f"{PRIMARY_REASON_TEXT.get(reason, reason)} ({reason}). Gói không có video ghép của phiên này; "
+        "xem clip còn lại / các phiên mở hoàn khác trong gói.\n"
+    )
+
+
+async def _primary_of(
+    db: AsyncSession, claim: Claim
+) -> tuple[list[PackSession], dict[uuid.UUID, PackSession], uuid.UUID | None]:
+    ids = [
+        sid
+        for sid in (
+            await db.scalars(
+                select(ClaimEvidence.session_id).where(
+                    ClaimEvidence.claim_id == claim.id,
+                    ClaimEvidence.removed_at.is_(None),
+                    ClaimEvidence.session_id.is_not(None),
+                )
+            )
+        ).all()
+        if sid is not None
+    ]
+    sessions = (
+        list((await db.scalars(select(PackSession).where(PackSession.id.in_(ids)))).all()) if ids else []
+    )
+    with_clip = await evidence_rules.live_clip_sessions(db, ids)
+    effective = await effective_pack_session(db, claim.package_id)
+    primary = evidence_rules.primary_session(sessions, with_clip, effective.id if effective else None)
+    return sessions, {s.id: s for s in sessions}, primary
 
 
 async def _session_info(
@@ -461,10 +545,10 @@ async def _build(db: AsyncSession, pack_id: uuid.UUID, settings: Settings, rende
         by_session: dict[uuid.UUID, list[Snapshot]] = {}
         for snap in snapshots:
             by_session.setdefault(snap.session_id, []).append(snap)
-        renders = max(1, sum(1 for _, main in rows if main))
+        renders = max(1, sum(1 for _, main, _ in rows if main))
         done = 0
-        for index, (session, main) in enumerate(rows, start=1):
-            folder = work / b.folder_name(index, session, main)
+        for index, (session, main, kind) in enumerate(rows, start=1):
+            folder = work / b.folder_name(index, session, kind)
             folder.mkdir()
             copied = await b.copy_clips(folder, session)
             rendered = None
@@ -498,6 +582,7 @@ async def _build(db: AsyncSession, pack_id: uuid.UUID, settings: Settings, rende
                 code=claim.code,
                 at=clock.now().astimezone(b.tz).strftime("%H:%M %d/%m/%Y"),
                 who=who["display_name"] or who["id"],
+                primary_note=await _primary_note(db, claim, b.tz),
             ),
             encoding="utf-8",
         )

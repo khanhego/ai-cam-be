@@ -19,6 +19,8 @@ from typing import Any
 import httpx
 import pytest
 
+from tests.qa import stack
+
 BASE = os.environ.get("QA_BASE_URL")
 pytestmark = [
     pytest.mark.qa,
@@ -27,7 +29,7 @@ pytestmark = [
 
 ROOT = Path(__file__).resolve().parents[2]
 PASSWORD = "matkhau123"
-COMPOSE = ["docker", "compose", "-f", str(ROOT / "docker/compose.dev.yml")]
+COMPOSE = stack.COMPOSE
 SETTINGS = {"retention_raw_days": 30, "retention_clip_days": 90, "session_warn_minutes": 15,
             "session_abandon_minutes": 30}  # fmt: skip
 
@@ -87,8 +89,18 @@ def synced(client: httpx.Client, tokens: dict[str, dict[str, str]]) -> str:
     # (trình duyệt coi localhost an toàn).
     cookie = {"Cookie": f"aicam_shopee_state={res.cookies['aicam_shopee_state']}"}
     redirect = client.get(f"{BASE}{url.raw_path.decode()}", headers=cookie, follow_redirects=False)
-    assert redirect.headers["location"] == "/admin/settings/shopee?result=connected", redirect.headers
-    return _job("tasks.sync_returns()")
+    # Item 03 (TC-R3.03, DEC-822): callback về D7 `/admin/settings/platforms`.
+    assert redirect.headers["location"] == (
+        "/admin/settings/platforms?platform=shopee&result=connected&count=1"
+    ), redirect.headers
+    return _sync_returns_shop_a()
+
+
+def _sync_returns_shop_a() -> str:
+    """Item 03 (T-205, DEC-822): `platforms.sync_returns()` không shop = phân phối mỗi shop một task (queue
+    `sync`) → chạy J-13 đồng bộ cho shop Shopee đầu (`990001`, dữ liệu Phase 2) để có kết quả xác định."""
+    shop_id = _psql("SELECT id FROM shop WHERE platform = 'SHOPEE' AND platform_shop_id = '990001'")
+    return _job(f"tasks.sync_shop_returns({shop_id!r})")
 
 
 def _case(client: httpx.Client, headers: dict[str, str], tab: str, code: str) -> dict[str, Any]:
@@ -145,7 +157,7 @@ def test_tc_05_30_31_j13_mock_creates_cases(
     # Chạy lại: idempotent theo `platform_return_sn` (mock nạp lại fixture trong tiến trình mới → hạn người
     # bán tương đối đổi, nên chỉ so số hồ sơ / trạng thái).
     before = _psql("SELECT count(*), string_agg(status, ',' ORDER BY code) FROM return_case")
-    assert "'status': 'OK'" in _job("tasks.sync_returns()")
+    assert "'status': 'OK'" in _sync_returns_shop_a()
     assert _psql("SELECT count(*), string_agg(status, ',' ORDER BY code) FROM return_case") == before
 
 

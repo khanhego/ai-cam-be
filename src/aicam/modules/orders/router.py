@@ -13,8 +13,9 @@ from aicam.core.pagination import Page
 from aicam.core.settings import Settings, get_settings
 from aicam.modules.orders import adjust, packages
 from aicam.modules.orders.models import WAREHOUSE_STATUSES
+from aicam.modules.orders.refs import PlatformCode
 from aicam.modules.sessions import correction
-from aicam.modules.sessions.models import SESSION_FLAGS, SESSION_STATUSES
+from aicam.modules.sessions.models import SESSION_FLAGS
 from aicam.modules.users.queries import get_user_ref
 
 DbSession = Annotated[AsyncSession, Depends(get_session)]
@@ -23,7 +24,6 @@ Staff = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR", "CSKH"
 Lead = Annotated[Principal, Depends(require_roles("ADMIN", "SUPERVISOR"))]
 
 WarehouseStatus = Literal[WAREHOUSE_STATUSES]  # type: ignore[valid-type]
-SessionStatus = Literal[SESSION_STATUSES]  # type: ignore[valid-type]
 SessionFlag = Literal[SESSION_FLAGS]  # type: ignore[valid-type]
 
 router = APIRouter(tags=["packages"])
@@ -39,18 +39,24 @@ async def search_packages(
     date_to: date | None = None,
     station_id: uuid.UUID | None = None,
     warehouse_status: WarehouseStatus | None = None,
-    session_status: SessionStatus | None = None,
+    # Phase 3: nhiều giá trị cách dấu phẩy (≤ 4) — D2 → D3 phiên hủy / bỏ dở.
+    session_status: Annotated[str | None, Query(max_length=200)] = None,
     session_flag: SessionFlag | None = None,
     session_type: Literal["PACK", "RETURN"] | None = None,
     source: Literal["API", "CSV"] | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    platform: PlatformCode | None = None,
+    shop_id: uuid.UUID | None = None,
+    return_dropped: bool = False,
 ) -> Page[packages.PackageItem]:
     """API-30: tra cứu kiện (FR-07.01, 07.03)."""
     return await packages.search(
         db, tz=settings.tz_display, page=page, page_size=page_size, q=q, date_from=date_from,
         date_to=date_to, station_id=station_id, warehouse_status=warehouse_status,
-        session_status=session_status, session_flag=session_flag, session_type=session_type, source=source,
+        session_status=packages.parse_session_statuses(session_status), session_flag=session_flag,
+        session_type=session_type, source=source, platform=platform, shop_id=shop_id,
+        return_dropped=return_dropped,
     )  # fmt: skip
 
 

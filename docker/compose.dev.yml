@@ -67,6 +67,41 @@ services:
     depends_on: [mediamtx]
     restart: unless-stopped
 
+  # Kho lưu S3-compatible cho sao lưu + link (02a §7.2, ADR-010). Ảnh `minio/minio` chính thức không còn phát
+  # hành trên Docker Hub → bản build cộng đồng `pgsty/minio` (cùng mã MinIO, có sẵn `mc`) — DEC-652.
+  # API :59000, console :59001 (root dev: aicamroot / aicamroot-dev-secret).
+  minio:
+    image: pgsty/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: aicamroot
+      MINIO_ROOT_PASSWORD: aicamroot-dev-secret
+    ports: ["59000:9000", "59001:9001"]
+    volumes: [minio:/data]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      retries: 10
+
+  # Tạo bucket sao lưu (versioning + lifecycle phiên bản cũ 7 ngày) + bucket link + user ứng dụng theo
+  # docs/s3-policy.example.json (không xóa phiên bản / không đổi versioning — DEC-501). Chạy lại được.
+  minio-init:
+    image: pgsty/minio:latest
+    entrypoint: ["bash", "/init/init.sh"]
+    environment:
+      MINIO_URL: http://minio:9000
+      MINIO_ROOT_USER: aicamroot
+      MINIO_ROOT_PASSWORD: aicamroot-dev-secret
+      BACKUP_BUCKET: aicam-dev-backup
+      SHARE_BUCKET: aicam-dev-share
+      APP_KEY: aicam-app
+      APP_SECRET: aicam-app-dev-secret
+    volumes:
+      - ./minio/init.sh:/init/init.sh:ro
+      - ../docs/s3-policy.example.json:/policy/s3-policy.example.json:ro
+    depends_on:
+      minio: { condition: service_healthy }
+
   # Một tiến trình uvicorn (G3-F12, docs/ops.md §8).
   api:
     build:
@@ -82,12 +117,36 @@ services:
       # `SHOPEE_ENABLED=true docker compose -f docker/compose.dev.yml up -d api worker beat`.
       SHOPEE_ENABLED: ${SHOPEE_ENABLED:-false}
       PLATFORM_ADAPTER: ${PLATFORM_ADAPTER:-mock}
+      # Phase 3 (02a §7.2, §9 — T-211): mock Shopee nhiều shop + mock TikTok 2 shop (adapter TikTok thật trên
+      # transport giả). Tắt TikTok: `TIKTOK_ENABLED=false`. Áp dụng khi dựng lại stack (không tự đổi container).
+      MOCK_SHOPEE_SHOP_IDS: ${MOCK_SHOPEE_SHOP_IDS:-990001,990002}
+      TIKTOK_ENABLED: ${TIKTOK_ENABLED:-true}
+      TIKTOK_RETURNS_ENABLED: ${TIKTOK_RETURNS_ENABLED:-true}
+      TIKTOK_ADAPTER: ${TIKTOK_ADAPTER:-mock}
+      # Phase 3 sao lưu cloud + link (02a §7.2, §9, ADR-010): MinIO 2 bucket (minio-init). Kho thật chưa có
+      # (Q20). Khóa sao lưu dev cố định (chỉ dev — dữ liệu giả); production: `aicam backup-keygen`.
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:59000}
+      S3_REGION: us-east-1
+      S3_BUCKET: aicam-dev-backup
+      S3_SHARE_BUCKET: aicam-dev-share
+      S3_ADDRESSING_STYLE: path
+      S3_ACCESS_KEY_ID: aicam-app
+      S3_SECRET_ACCESS_KEY: aicam-app-dev-secret
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-ZGV2LW9ubHktYmFja3VwLWtleS0zMi1ieXRlcyEhISE=}
+      BACKUP_OLD_KEYS: ${BACKUP_OLD_KEYS:-}
+      # Phase 3 thông báo (02a §7.2, §9 — T-226 / T-276): bot / OA thật chưa có (Q21) → mock ghi Redis
+      # `notify:mock:{TELEGRAM|ZALO_OA}` + log. Link "Xem:" trong tin trỏ FE dev.
+      NOTIFY_TRANSPORT: ${NOTIFY_TRANSPORT:-mock}
+      NOTIFY_MOCK_FAIL: ${NOTIFY_MOCK_FAIL:-}
+      SITE_ADDRESS: ${SITE_ADDRESS:-http://localhost:5180}
     ports: ["8180:8000"]
     volumes: [video:/data/video, imports:/data/imports]
     depends_on:
       video-init: { condition: service_completed_successfully }
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
+      minio-init: { condition: service_completed_successfully }
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
       interval: 10s
@@ -109,12 +168,31 @@ services:
     volumes: [video:/data/video, imports:/data/imports]
     depends_on: [api]
 
-  # Queue `sync` (Shopee) tách khỏi cắt clip (G3-F11, NFR-03).
+  # Queue `sync_fast` (J-04, J-05, J-12 — gọi sàn ngắn) tách khỏi cắt clip (G3-F11, NFR-03) và khỏi job sàn dài
+  # (02a §7, DEC-503 — T-276): shop chậm ở J-06 / J-13 không chiếm slot J-04 (NFR-39).
   worker-sync:
     image: aicam-dev
-    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync", "-c", "2", "-n", "sync@%h", "--loglevel", "info"]
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync_fast", "-c", "3", "-n", "sync@%h", "--loglevel", "info"]
     env_file: [../.env.example]
     environment: *app_env
+    depends_on: [api]
+
+  # Queue `sync` (J-06, J-13 — ngân sách 300 giây / shop), -c 2 (DEC-503).
+  worker-sync-long:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "sync", "-c", "2", "-n", "sync-long@%h", "--loglevel", "info"]
+    env_file: [../.env.example]
+    environment: *app_env
+    depends_on: [api]
+
+  # Thông báo J-26..J-28 (queue `notify`, -c 1 — tuần tự, không chờ J-20 / J-24 — DEC-504). Video chỉ đọc: N07
+  # đo dung lượng ổ lưu video (DEC-733).
+  worker-notify:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "notify", "-c", "1", "-n", "notify@%h", "--loglevel", "info"]
+    env_file: [../.env.example]
+    environment: *app_env
+    volumes: ["video:/data/video:ro"]
     depends_on: [api]
 
   # Encode bản xuất tách riêng, mỗi lần 1 job: không chặn cắt clip (DEC-32).
@@ -124,6 +202,16 @@ services:
     env_file: [../.env.example]
     environment: *app_env
     volumes: [video:/data/video]
+    depends_on: [api]
+
+  # Sao lưu cloud J-20..J-23 (queue `backup`, -c 1 — 02a §9): video / imports chỉ đọc; file dump tạm trong
+  # /tmp của container (BACKUP_TMP_DIR). Image có pg_dump 16 (Dockerfile, RB-32).
+  worker-backup:
+    image: aicam-dev
+    command: ["celery", "-A", "aicam.entrypoints.worker", "worker", "-Q", "backup", "-c", "1", "-n", "backup@%h", "--loglevel", "info"]
+    env_file: [../.env.example]
+    environment: *app_env
+    volumes: ["video:/data/video:ro", "imports:/data/imports:ro"]
     depends_on: [api]
 
   beat:
@@ -137,3 +225,4 @@ volumes:
   pgdata:
   video:
   imports:
+  minio:

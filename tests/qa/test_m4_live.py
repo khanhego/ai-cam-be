@@ -16,6 +16,8 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.qa import stack
+
 BASE = os.environ.get("QA_BASE_URL")
 pytestmark = [
     pytest.mark.qa,
@@ -25,7 +27,7 @@ pytestmark = [
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "csv"
 PASSWORD = "matkhau123"
-COMPOSE = ["docker", "compose", "-f", str(ROOT / "docker/compose.dev.yml")]
+COMPOSE = stack.COMPOSE
 
 
 def _psql(sql: str) -> str:
@@ -174,12 +176,23 @@ def test_shopee_connect_or_not_configured(client: httpx.Client, tokens: dict[str
     cookie = {"Cookie": f"aicam_shopee_state={res.cookies['aicam_shopee_state']}"}
     redirect = client.get(f"{BASE}{url.raw_path.decode()}", headers=cookie, follow_redirects=False)
     assert redirect.status_code == 302
-    assert redirect.headers["location"] == "/admin/settings/shopee?result=connected"
+    # Item 03 (TC-R3.03, DEC-822): callback về D7 `/admin/settings/platforms`; seed Phase 3 đã có 4 shop mock
+    # (2 Shopee + 2 TikTok) → kết nối lại shop Shopee đầu, không thêm shop.
+    assert (
+        redirect.headers["location"] == "/admin/settings/platforms?platform=shopee&result=connected&count=1"
+    )
     items = client.get("/shops", headers=_h(tokens["ADMIN"])).json()["items"]
-    assert [(s["auth_status"], s["name"]) for s in items] == [("CONNECTED", "TST Shop (mock)")]
+    assert ("CONNECTED", "TST Shop (mock)") in [(s["auth_status"], s["name"]) for s in items]
+    assert {s["auth_status"] for s in items} == {"CONNECTED"}
+    assert len(items) == 4
     assert _psql("SELECT count(*) FROM audit_log WHERE action = 'SHOP_CONNECT'") == "1"
     # Token lưu mã hóa (Fernet), không có chữ rõ.
-    assert _psql("SELECT position('mock-access' in convert_from(access_token_enc, 'UTF8')) FROM shop") == "0"
+    assert (
+        _psql(
+            "SELECT count(*) FROM shop WHERE position('mock' in convert_from(access_token_enc, 'UTF8')) > 0"
+        )
+        == "0"
+    )
 
 
 def test_shopee_sync_now_runs_on_worker(client: httpx.Client, tokens: dict[str, str]) -> None:

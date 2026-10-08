@@ -27,6 +27,7 @@ from aicam.core.redis import get_redis
 from aicam.core.settings import Settings
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package
+from aicam.modules.orders.refs import shop_conditions, shop_ref
 from aicam.modules.reconciliation import rules
 from aicam.modules.reconciliation.models import ReconAlert
 from aicam.modules.reconciliation.schemas import (
@@ -143,6 +144,8 @@ async def alert_out(
         closed_at=alert.closed_at,
         resolution=resolution,
         allowed_status_targets=list(manual_targets.get(package.warehouse_status, ())),
+        platform=shop.platform if (shop := await orders.shop_of(session, order) if order else None) else None,
+        shop=shop_ref(shop),
     )
 
 
@@ -186,6 +189,8 @@ async def list_alerts(
     date_to: date | None,
     page: int,
     page_size: int,
+    platform: str | None = None,
+    shop_id: uuid.UUID | None = None,
 ) -> ReconAlertPage:
     """API-120: lọc theo trạng thái / mức / quy tắc / kiện / ngày phát hiện (giờ VN); sắp mức (HIGH trước) rồi
     `detected_at` cũ trước; `summary` = số cảnh báo mở theo mức (một truy vấn `GROUP BY`)."""
@@ -199,6 +204,14 @@ async def list_alerts(
         conds.append(ReconAlert.rule == rule)
     if package_id:
         conds.append(ReconAlert.package_id == package_id)
+    if platform or shop_id:
+        order_shop = (
+            select(Order.shop_id)
+            .join(Package, Package.order_id == Order.id)
+            .where(Package.id == ReconAlert.package_id)
+            .scalar_subquery()
+        )
+        conds += shop_conditions(order_shop, platform, shop_id)
     if date_from:
         conds.append(ReconAlert.detected_at >= _day_start(date_from, tz))
     if date_to:

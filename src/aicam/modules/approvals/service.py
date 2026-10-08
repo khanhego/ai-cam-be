@@ -33,11 +33,11 @@ from aicam.modules.approvals.schemas import (
     DecisionResult,
     UserBrief,
 )
-from aicam.modules.approvals.views import approval_item, user_brief
+from aicam.modules.approvals.views import approval_item, snapshot_counts, user_brief
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Package
 from aicam.modules.sessions import service as sessions
-from aicam.modules.sessions.models import PackSession
+from aicam.modules.sessions.models import CANCEL_CAUSES, PackSession
 from aicam.modules.sessions.schemas import StationStateOut
 from aicam.modules.sessions.tray import read_tray
 from aicam.modules.stations import service as stations
@@ -48,6 +48,8 @@ log = structlog.get_logger()
 
 _REQUIRED_STATUS = {"MISMATCH": "MISMATCH", "ASSIST": "OPEN"}
 RETURN_ACTIONS = ("CONTINUE", "CANCEL_SESSION")  # yêu cầu từ phiên RETURN (02 API-21)
+RETURN_CANCEL_NOTE_MIN, RETURN_CANCEL_NOTE_MAX = 5, 500
+NOTE_MAX = 500
 
 
 def _not_eligible(message: str) -> AppError:
@@ -249,7 +251,9 @@ async def list_requests(
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
-    items = [await approval_item(session, a) for a in rows.all()]
+    found = rows.all()
+    counts = await snapshot_counts(session, [a.session_id for a in found if a.session_id])
+    items = [await approval_item(session, a, counts) for a in found]
     return Page(items=items, page=page, page_size=page_size, total=total)
 
 
@@ -291,6 +295,7 @@ async def _decide_on_session(
     action: str,
     note: str | None,
     actor_label: str,
+    reason_code: str | None = None,
 ) -> None:
     pack = await _locked_session(session, approval.session_id)
     if pack is None or pack.status != "WAITING_APPROVAL":
@@ -298,6 +303,18 @@ async def _decide_on_session(
     if pack.type == "RETURN" and action not in RETURN_ACTIONS:
         # Phiên hoàn đóng bằng quét + kết luận (02 API-21): chỉ "Cho tiếp tục" / "Hủy phiên".
         raise AppError("INVALID_ACTION", "Phiên mở hoàn chỉ được cho tiếp tục hoặc hủy.", 422)
+    if pack.type == "RETURN" and action == "CANCEL_SESSION":
+        # BR-37 / FR-04.14 (Phase 3, DEC-447): Supervisor hủy phiên mở hoàn phải ghi lý do 5–500 ký tự;
+        # v0.3 (DEC-514, 521): + mã lý do — `WRONG_SCAN` / `NOT_A_RETURN` loại phiên khỏi bằng chứng (BR-39).
+        fields: dict[str, str] = {}
+        if reason_code not in CANCEL_CAUSES:
+            fields["reason_code"] = "Chọn lý do hủy."
+        if not (note and RETURN_CANCEL_NOTE_MIN <= len(note) <= RETURN_CANCEL_NOTE_MAX):
+            fields["note"] = "Nhập ghi chú (5–500 ký tự)."
+        if fields:
+            raise AppError("VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422, {"fields": fields})
+    elif note is not None and len(note) > NOTE_MAX:  # hủy phiên PACK: ghi chú tùy chọn, tối đa 500
+        raise _invalid("note", "Nhập ghi chú (1–500 ký tự)")
     tray = await read_tray(get_redis(), station.id, pack.open_code)
     pack.status_before_approval = None
     pack.warn_notified = False  # cảnh báo 15 phút tính lại từ lúc hết chờ (DEC-60)
@@ -318,6 +335,8 @@ async def _decide_on_session(
         await sessions.end_without_packing(
             session, pack, status="CANCELLED", reason="SUPERVISOR", note=note, actor_label=actor_label
         )
+        if pack.type == "RETURN":
+            pack.cancel_cause = reason_code  # `cancel_reason` giữ SUPERVISOR (ai hủy) — DEC-521
     sessions.record_event(session, pack, "APPROVAL_DECIDED", approval_id=str(approval.id), action=action)
 
 
@@ -327,6 +346,8 @@ async def decide(
     """API-21: ADMIN / SUPERVISOR duyệt. Người sau → ALREADY_RESOLVED; audit APPROVAL_DECISION (FR-03.12)."""
     note = body.note.strip() if body.note and body.note.strip() else None
     if body.action == "CLOSE_WITH_NOTE" and note is None:
+        raise _invalid("note", "Nhập ghi chú (1–500 ký tự)")
+    if note is not None and len(note) > NOTE_MAX and body.action != "CANCEL_SESSION":
         raise _invalid("note", "Nhập ghi chú (1–500 ký tự)")
     found = await session.get(ApprovalRequest, approval_id)
     if found is None:
@@ -351,7 +372,9 @@ async def decide(
         if body.action == "APPROVE_REPACK":
             await _open_repack(session, station, approval, actor_label)
     else:
-        await _decide_on_session(session, station, approval, body.action, note, actor_label)
+        await _decide_on_session(
+            session, station, approval, body.action, note, actor_label, reason_code=body.reason_code
+        )
 
     now = clock.now()
     approval.status = "RESOLVED"
@@ -364,7 +387,9 @@ async def decide(
         object_id=approval.id, ip=actor.ip,
         data={"type": approval.type, "action": body.action, "station_id": str(station_id),
               "session_id": str(approval.session_id) if approval.session_id else None,
-              "tracking_number": approval.tracking_number, "note": note},
+              "tracking_number": approval.tracking_number, "note": note,
+              **({"reason_code": body.reason_code} if body.action == "CANCEL_SESSION" and body.reason_code
+                 else {})},
     )  # fmt: skip
     await session.flush()
     state = await sessions.build_state(session, station, settings)

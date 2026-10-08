@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from aicam.modules.backup.schemas import HealthBackupOut
+
 Days = Field(ge=1, le=365)
 Minutes = Field(ge=1, le=1440)
 # Phase 2 (02 §6.2 API-80): 6 ngưỡng mới — tùy chọn khi PUT (thiếu = giữ giá trị cũ).
@@ -30,6 +32,10 @@ class SettingsIn(BaseModel):
     handover_warn_hours: int | None = Field(None, ge=1, le=168)
     claim_deadline_days: int | None = Field(None, ge=1, le=90)
     claim_due_soon_hours: int | None = Field(None, ge=1, le=168)
+    # Phase 3 (FR-03.16): tùy chọn khi PUT (thiếu = giữ).
+    packer_name_required: bool | None = None
+    # Phase 3 (FR-08.08, BR-40): giờ mặc định hạn phản hồi Chỉ hoàn tiền khi sàn không có hạn.
+    refund_only_default_hours: int | None = Field(None, ge=1, le=168)
     # Giảm `retention_clip_days` / `retention_raw_days` cần xác nhận (FR-02.10) — thiếu → 409.
     confirm_reduction: bool = False
 
@@ -45,6 +51,8 @@ class SettingsOut(BaseModel):
     handover_warn_hours: int
     claim_deadline_days: int
     claim_due_soon_hours: int
+    packer_name_required: bool = False
+    refund_only_default_hours: int = 48
     # Sàn giữ clip (BR-25) — chỉ đọc, từ biến môi trường `RETENTION_CLIP_MIN_DAYS`.
     retention_clip_min_days: int
     updated_at: datetime
@@ -81,6 +89,8 @@ class CameraHealth(BaseModel):
 
 class SyncHealth(BaseModel):
     shop_id: uuid.UUID
+    platform: str | None = None  # Phase 3 (02 API-81)
+    shop_name: str | None = None
     last_success_at: datetime | None
     last_error: dict[str, Any] | None
 
@@ -92,3 +102,4 @@ class HealthOut(BaseModel):
     disk: DiskOut | None
     cameras: list[CameraHealth]
     sync: list[SyncHealth]
+    backup: HealthBackupOut | None = None  # Phase 3 API-81 (02 §6.2)

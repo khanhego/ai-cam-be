@@ -1,0 +1,25 @@
+{
+  "_shop": "TTMOCKA",
+  "id": "2410DUP00001",
+  "status": "AWAITING_SHIPMENT",
+  "fulfillment_type": "FULFILLMENT_BY_SELLER",
+  "buyer_message": "",
+  "line_items": [
+    {
+      "id": "LI21",
+      "product_name": "Áo thun TikTok",
+      "sku_name": "Trắng / M",
+      "seller_sku": "TT-AO-TRANG-M",
+      "sku_id": "SKUTT-AO-TRANG-M",
+      "sku_image": "https://example.invalid/tt-ao.jpg",
+      "package_id": "PK21",
+      "tracking_number": "TTTST0000000021"
+    }
+  ],
+  "packages": [
+    {
+      "id": "PK21"
+    }
+  ],
+  "_note": "Trùng mã đơn với shop Shopee 990002 (BR-29, TC-05.73)"
+}

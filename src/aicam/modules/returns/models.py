@@ -9,6 +9,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from aicam.core.db import Base, UUIDPk, enum_check, utcnow
+from aicam.modules.platforms.base import RETURN_STATUS_GROUPS
 
 RETURN_KINDS = ("FAILED_DELIVERY", "BUYER_RETURN", "REFUND_ONLY", "UNANNOUNCED", "UNIDENTIFIED")
 RETURN_CASE_STATUSES = (
@@ -37,8 +38,10 @@ class ReturnCase(UUIDPk, Base):
     __tablename__ = "return_case"
     __table_args__ = (
         Index("uq_return_case_code", "code", unique=True),
+        # BR-29 (0007): mã yêu cầu trả unique theo shop.
         Index(
-            "uq_return_case_platform_return_sn",
+            "uq_return_case_shop_return_sn",
+            "shop_id",
             "platform_return_sn",
             unique=True,
             postgresql_where=text("platform_return_sn IS NOT NULL"),
@@ -51,6 +54,11 @@ class ReturnCase(UUIDPk, Base):
         enum_check("kind", RETURN_KINDS),
         enum_check("status", RETURN_CASE_STATUSES),
         enum_check("source", RETURN_SOURCES),
+        # 0006
+        enum_check("platform_status_group", RETURN_STATUS_GROUPS),
+        Index(None, "shop_id"),
+        Index(None, "created_at"),
+        Index(None, "received_at"),
     )
 
     code: Mapped[str] = mapped_column(Text, server_default=text(RETURN_CASE_CODE_DEFAULT))
@@ -86,6 +94,9 @@ class ReturnCase(UUIDPk, Base):
     pending_merge_order_id: Mapped[uuid.UUID | None]
     # Chốt lúc mở phiên đầu (R3-10).
     single_session: Mapped[bool | None]
+    # 0006: shop của yêu cầu trả (unique theo shop ở 0007); backfill từ `order.shop_id`.
+    shop_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("shop.id", ondelete="SET NULL"))
+    platform_status_group: Mapped[str | None] = mapped_column(Text)
 
 
 class ReturnCasePackage(Base):

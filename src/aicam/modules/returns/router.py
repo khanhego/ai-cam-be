@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.core.db import commit, get_session
 from aicam.core.deps import Principal, require_roles
 from aicam.core.settings import Settings, get_settings
+from aicam.modules.orders.refs import PlatformCode
 from aicam.modules.returns import service, views
 from aicam.modules.returns.schemas import (
     CaseRef,
@@ -19,6 +20,7 @@ from aicam.modules.returns.schemas import (
     ReturnCaseDetail,
     ReturnCasePage,
     ReturnKind,
+    ReturnSort,
     ReturnTab,
 )
 from aicam.modules.users.queries import get_user_ref
@@ -43,11 +45,16 @@ async def list_returns(
     date_to: date | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    platform: PlatformCode | None = None,
+    shop_id: uuid.UUID | None = None,
+    pending_only: bool = False,
+    sort: ReturnSort | None = None,
 ) -> ReturnCasePage:
     """API-110: danh sách hồ sơ hàng hoàn (D14)."""
     return await views.list_cases(
         db, tz=settings.tz_display, tab=tab, kind=kind, q=q, date_from=date_from, date_to=date_to,
-        page=page, page_size=page_size,
+        page=page, page_size=page_size, platform=platform, shop_id=shop_id, pending_only=pending_only,
+        sort=sort,
     )  # fmt: skip
 
 

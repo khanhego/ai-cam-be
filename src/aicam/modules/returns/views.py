@@ -3,16 +3,21 @@
 import uuid
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import ColumnElement, and_, case, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from aicam.core import clock
 from aicam.core.errors import AppError
 from aicam.modules.claims.models import Claim
 from aicam.modules.orders.models import Order, Package
+from aicam.modules.orders.refs import shop_conditions, shop_ref, shops_by_id
 from aicam.modules.platforms.shopee.returns_mapping import REASON_LABELS
+from aicam.modules.platforms.tiktok.returns_mapping import REASON_LABELS as TIKTOK_REASON_LABELS
+from aicam.modules.returns import queries
 from aicam.modules.returns.models import ReturnCase, ReturnCasePackage
 from aicam.modules.returns.schemas import (
     CaseRef,
@@ -27,6 +32,7 @@ from aicam.modules.returns.schemas import (
     TabCounts,
 )
 from aicam.modules.sessions.models import PackSession
+from aicam.modules.settings import service as settings_service
 from aicam.modules.stations.models import Station
 
 MAX_RANGE_DAYS = 92
@@ -42,7 +48,7 @@ def reason_label(reason: str | None) -> str | None:
     """Mã lý do sàn → chữ tiếng Việt; mã lạ → giữ chữ gốc (02 §6.2 API-110)."""
     if not reason:
         return None
-    return REASON_LABELS.get(reason, reason)
+    return REASON_LABELS.get(reason) or TIKTOK_REASON_LABELS.get(reason, reason)
 
 
 def waiting_days(expected_since: datetime | None, received_at: datetime | None, tz: str) -> int | None:
@@ -75,11 +81,40 @@ def _day_start(day: date, tz: str) -> datetime:
     return datetime.combine(day, time.min, tzinfo=ZoneInfo(tz))
 
 
+def case_shop_sql() -> ColumnElement[object]:
+    """Shop của hồ sơ: `return_case.shop_id`, chưa có (hồ sơ tạo trước khi gắn shop) → shop của đơn."""
+    return func.coalesce(
+        ReturnCase.shop_id, select(Order.shop_id).where(Order.id == ReturnCase.order_id).scalar_subquery()
+    )
+
+
+async def _handling_claims(db: AsyncSession, case_ids: list[uuid.UUID]) -> dict[uuid.UUID, CaseRef]:
+    """Hồ sơ khiếu nại chưa đóng **mới nhất** xử lý từng hồ sơ hàng hoàn — cùng luật BR-40
+    (`queries.handling_claim_exists`, L26 — DEC-1001): không tính `LEGACY_HOLD` / hồ sơ của yêu cầu khác."""
+    if not case_ids:
+        return {}
+    rc = aliased(ReturnCase)
+    rows = (
+        await db.execute(
+            select(rc.id, Claim.id, Claim.code)
+            .join(Package, Package.id == Claim.package_id)
+            .join(rc, queries.handling_claim_condition(rc))
+            .where(rc.id.in_(case_ids))
+            .order_by(rc.id, Claim.created_at.desc(), Claim.id.desc())
+        )
+    ).all()
+    out: dict[uuid.UUID, CaseRef] = {}
+    for case_id, claim_id, code in rows:
+        out.setdefault(case_id, CaseRef(id=claim_id, code=code))
+    return out
+
+
 async def items_of(db: AsyncSession, cases: list[ReturnCase], tz: str) -> list[ReturnCaseItem]:
     """Item API-110 (dùng lại ở API-111, API-31 `return_cases[]`)."""
     ids = [c.id for c in cases]
     if not ids:
         return []
+    hours = (await settings_service.get(db)).refund_only_default_hours
     packages: dict[uuid.UUID, list[ReturnPackageBrief]] = defaultdict(list)
     for case_id, package in (
         await db.execute(
@@ -111,9 +146,20 @@ async def items_of(db: AsyncSession, cases: list[ReturnCase], tz: str) -> list[R
     if merged_ids:
         rows = await db.scalars(select(ReturnCase).where(ReturnCase.id.in_(merged_ids)))
         merged = {r.id: r.code for r in rows.all()}
+    shops = await shops_by_id(
+        db, [c.shop_id or (orders[c.order_id].shop_id if c.order_id in orders else None) for c in cases]
+    )
+    open_claims = await _handling_claims(db, ids)
     out = []
     for c in cases:
         order = orders.get(c.order_id) if c.order_id else None
+        shop = shops.get(c.shop_id or (order.shop_id if order else None))  # type: ignore[arg-type]
+        due_at, due_source = None, None
+        if c.kind == "REFUND_ONLY":
+            if c.seller_due_at is not None:
+                due_at, due_source = c.seller_due_at, "PLATFORM"
+            elif c.reported_at is not None:
+                due_at, due_source = c.reported_at + timedelta(hours=hours), "DEFAULT"
         out.append(
             ReturnCaseItem(
                 id=c.id,
@@ -135,6 +181,12 @@ async def items_of(db: AsyncSession, cases: list[ReturnCase], tz: str) -> list[R
                 merged_into=CaseRef(id=c.merged_into_id, code=merged[c.merged_into_id])
                 if c.merged_into_id and c.merged_into_id in merged
                 else None,
+                platform=shop.platform if shop else None,
+                shop=shop_ref(shop),
+                platform_status_group=c.platform_status_group,
+                response_due_at=due_at,
+                response_due_source=due_source,
+                claim=open_claims.get(c.id),
             )
         )
     return out
@@ -151,11 +203,20 @@ async def list_cases(
     date_to: date | None,
     page: int,
     page_size: int,
+    platform: str | None = None,
+    shop_id: uuid.UUID | None = None,
+    pending_only: bool = False,
+    sort: str | None = None,
 ) -> ReturnCasePage:
     """API-110 (FR-05.05, 05.11, 05.12): lọc theo tab / loại / mã / ngày (theo `reported_at`, hồ sơ do kho tạo
-    theo lúc tạo); `tab_counts` một truy vấn `GROUP BY` trên cùng bộ lọc (trừ tab)."""
+    theo lúc tạo); `tab_counts` một truy vấn `GROUP BY` trên cùng bộ lọc (trừ tab).
+
+    Phase 3 (FR-08.08, 07.01): `platform`, `shop_id` (shop hồ sơ, không có → shop đơn); `pending_only` =
+    BR-40; `sort` `due_asc` (hạn phản hồi SQL — mặc định tab NO_PARCEL) / `created_desc`."""
     _validate_range(date_from, date_to)
-    conds: list[ColumnElement[bool]] = []
+    conds: list[ColumnElement[bool]] = [*shop_conditions(case_shop_sql(), platform, shop_id)]
+    if pending_only:
+        conds.append(queries.refund_pending_filter())
     if kind:
         conds.append(ReturnCase.kind == kind)
     if q and q.strip():
@@ -199,11 +260,19 @@ async def list_cases(
     tab_cond = _tab_condition(tab)
     where = [*conds, *([tab_cond] if tab_cond is not None else [])]
     total = await db.scalar(select(func.count()).select_from(ReturnCase).where(*where)) or 0
-    order_by = (
-        (ReturnCase.expected_since.asc().nulls_last(), ReturnCase.id)
-        if tab in ("EXPECTED", "MISSING")
-        else (ReturnCase.created_at.desc(), ReturnCase.id.desc())
-    )
+    if sort is None and tab == "NO_PARCEL":
+        sort = "due_asc"
+    if sort == "due_asc":
+        hours = (await settings_service.get(db)).refund_only_default_hours
+        order_by: tuple[Any, ...] = (
+            queries.response_due_sql(hours).asc().nulls_last(),
+            ReturnCase.created_at.desc(),
+            ReturnCase.id,
+        )
+    elif sort is None and tab in ("EXPECTED", "MISSING"):  # Phase 2: chờ lâu nhất trước
+        order_by = (ReturnCase.expected_since.asc().nulls_last(), ReturnCase.id)
+    else:
+        order_by = (ReturnCase.created_at.desc(), ReturnCase.id.desc())
     cases = list(
         (
             await db.scalars(

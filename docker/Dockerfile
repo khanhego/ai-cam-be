@@ -9,8 +9,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH"
 
 # FFmpeg cho cắt clip / xuất; fontconfig + Be Vietnam Pro cho overlay drawtext (02a J-03).
+# pg_dump / pg_restore 16 = server postgres:16-alpine (J-20, lệnh khôi phục — RB-32): repo PGDG (bookworm chỉ có 15).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg fontconfig curl ca-certificates \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-16 \
     && mkdir -p /usr/share/fonts/truetype/bevietnampro \
     && for w in Regular SemiBold; do \
          curl -fsSL -o /usr/share/fonts/truetype/bevietnampro/BeVietnamPro-$w.ttf \

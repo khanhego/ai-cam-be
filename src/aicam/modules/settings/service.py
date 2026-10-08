@@ -8,7 +8,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
 from aicam.core import audit
-from aicam.core.db import commit
+from aicam.core.db import after_commit, commit
 from aicam.core.deps import Principal
 from aicam.core.errors import AppError
 from aicam.core.redis import get_redis
@@ -29,6 +29,7 @@ log = structlog.get_logger()
 
 FIELDS = ("retention_raw_days", "retention_clip_days", "session_warn_minutes", "session_abandon_minutes")
 ALL_FIELDS = (*FIELDS, *THRESHOLD_FIELDS)
+PHASE3_FIELDS = ("packer_name_required", "refund_only_default_hours")
 
 
 async def get(session: AsyncSession) -> Setting:
@@ -43,6 +44,8 @@ async def get(session: AsyncSession) -> Setting:
 def to_out(row: Setting, settings: Settings) -> SettingsOut:
     return SettingsOut(
         **{f: getattr(row, f) for f in ALL_FIELDS},
+        packer_name_required=row.packer_name_required,
+        refund_only_default_hours=row.refund_only_default_hours,
         retention_clip_min_days=settings.retention_clip_min_days,
         updated_at=row.updated_at,
     )
@@ -111,8 +114,17 @@ async def update(session: AsyncSession, data: SettingsIn, p: Principal, settings
             )
     for f, value in after.items():
         setattr(row, f, value)
+    # Phase 3: trường tùy chọn (thiếu = giữ).
+    extra_before: dict[str, object] = {f: getattr(row, f) for f in PHASE3_FIELDS}
+    extra_after: dict[str, object] = {
+        f: extra_before[f] if getattr(data, f) is None else getattr(data, f) for f in PHASE3_FIELDS
+    }
+    for f, value in extra_after.items():
+        setattr(row, f, value)
     audit.record(session, "SETTINGS_UPDATE", user_id=p.user_id, object_type="SETTING", object_id="1", ip=p.ip,
-                 data={"before": before, "after": after})  # fmt: skip
+                 data={"before": {**before, **extra_before}, "after": {**after, **extra_after}})  # fmt: skip
+    if extra_before["packer_name_required"] != extra_after["packer_name_required"]:
+        after_commit(session, lambda: _publish_station_states(session, settings))
     if impact is not None:
         audit.record(
             session, "RETENTION_REDUCED", user_id=p.user_id, object_type="SETTING", object_id="1", ip=p.ip,
@@ -127,6 +139,20 @@ async def update(session: AsyncSession, data: SettingsIn, p: Principal, settings
     out = to_out(row, settings)
     await commit(session)
     return out
+
+
+async def _publish_station_states(session: AsyncSession, settings: Settings) -> None:
+    """`packer_name_required` đổi → WS `station.state` cho mọi station đang bật (02 API-80, FR-03.16)."""
+    from aicam.modules.sessions.service import publish_state  # sessions → settings: import muộn tránh vòng
+    from aicam.modules.stations.models import Station
+
+    ids = (await session.scalars(select(Station.id).where(Station.is_active.is_(True)))).all()
+    for station_id in ids:
+        try:
+            await publish_state(session, station_id, settings)
+        except Exception:  # một station lỗi không chặn station khác; state tới ở lần đổi kế tiếp / poll
+            log.exception("publish_station_state_failed", station_id=str(station_id))
+    await session.commit()
 
 
 async def _check(coro: Any, limit_s: float = 3.0) -> str:
@@ -149,7 +175,13 @@ async def _ping_db(session: AsyncSession) -> None:
         await conn.execute(text("SELECT 1"))
 
 
-async def health(session: AsyncSession, *, mediamtx_check: Any, disk: dict[str, int] | None) -> HealthOut:
+async def health(
+    session: AsyncSession,
+    *,
+    mediamtx_check: Any,
+    disk: dict[str, int] | None,
+    settings: Settings | None = None,
+) -> HealthOut:
     """API-81: DB, Redis, MediaMTX, ổ đĩa video, camera, đồng bộ sàn. Luôn 200, từng phần OK / ERROR."""
     from aicam.modules.orders.models import Shop
     from aicam.modules.stations.models import Camera, Station
@@ -179,10 +211,22 @@ async def health(session: AsyncSession, *, mediamtx_check: Any, disk: dict[str, 
             for c, name in rows
         ]
         sync = [
-            SyncHealth(shop_id=s.id, last_success_at=s.last_synced_at, last_error=s.last_error)
+            SyncHealth(
+                shop_id=s.id,
+                platform=s.platform,
+                shop_name=s.name,
+                last_success_at=s.last_synced_at,
+                last_error=s.last_error,
+            )
             for s in (await session.scalars(select(Shop).order_by(Shop.created_at))).all()
         ]
+    backup = None
+    if db_status == "OK" and settings is not None:
+        from aicam.modules.backup import service as backup_service  # backup → settings: import muộn
+
+        backup = await backup_service.health_summary(session, settings)
     return HealthOut(
+        backup=backup,
         db=db_status,
         redis=redis_status,
         mediamtx=mediamtx_status,

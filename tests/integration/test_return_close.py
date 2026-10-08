@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aicam.modules.orders.models import OrderItem, Package
 from aicam.modules.platforms.base import ReturnItem
 from aicam.modules.platforms.mock.adapter import MockAdapter
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 from aicam.modules.returns import service as returns
 from aicam.modules.returns.models import ReturnCase
 from aicam.modules.sessions.models import PackSession
@@ -394,7 +395,14 @@ async def test_lines_keep_order_item_after_resync(desk: Desk, db: AsyncSession) 
     await buyer_return_case(db, order, 41)
     session = await _open(desk, "SPXRTTST000041")
     await orders.upsert_platform_order(
-        db, PlatformOrder("2410TST00041", "TO_RETURN", ("SPXTST0000041",), (ITEM,))
+        db,
+        PlatformOrder(
+            "2410TST00041",
+            "TO_RETURN",
+            ("SPXTST0000041",),
+            (ITEM,),
+            status_group=shopee_order_group("TO_RETURN"),
+        ),
     )
 
     res = await _save(

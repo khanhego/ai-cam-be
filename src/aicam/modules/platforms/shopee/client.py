@@ -18,9 +18,7 @@ import asyncio
 import hashlib
 import hmac
 import time
-from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
-from contextvars import ContextVar
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import urlencode
 
@@ -28,6 +26,7 @@ import httpx
 import structlog
 
 from aicam.core import clock
+from aicam.modules.platforms import budget
 from aicam.modules.platforms.base import PlatformAuthError, PlatformError
 
 log = structlog.get_logger()
@@ -50,17 +49,8 @@ RETRY_ERRORS = frozenset(
 Sleep = Callable[[float], Awaitable[None]]
 
 # G3 F-14: hạn chót (monotonic) của job đang gọi — chờ Retry-After / giãn cách không vượt thời gian còn lại
-# của task Celery (soft_time_limit giết task giữa chừng, cursor không ghi được lỗi).
-_deadline: ContextVar[float | None] = ContextVar("shopee_deadline", default=None)
-
-
-@contextmanager
-def time_budget(seconds: float) -> Iterator[None]:
-    token = _deadline.set(time.monotonic() + seconds)
-    try:
-        yield
-    finally:
-        _deadline.reset(token)
+# của task Celery. Phase 3: chuyển sang `platforms/budget.py` dùng chung Shopee + TikTok (giữ tên cũ).
+time_budget = budget.time_budget
 
 
 class ShopeeRequestError(PlatformError):
@@ -192,7 +182,7 @@ class ShopeeClient:
                     return data
             if attempt < attempts:
                 delay = self._delay(attempt, retry_after)
-                deadline = _deadline.get()
+                deadline = budget.deadline()
                 if deadline is not None and time.monotonic() + delay + self.timeout_s > deadline:
                     log.warning(
                         "shopee_call", path=path, attempt=attempt, outcome="no_time_left", wait_s=delay

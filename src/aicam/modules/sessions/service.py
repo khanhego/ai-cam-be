@@ -1,6 +1,5 @@
 """Phiên đóng gói: trạng thái station (API-10) và xử lý quét (API-11) — 02a §4.1, BR-01..06, BR-18."""
 
-import asyncio
 import re
 import uuid
 from datetime import date, datetime, time, timedelta
@@ -24,8 +23,8 @@ from aicam.modules.media import jobs as media_jobs
 from aicam.modules.media.queries import clips_of_session
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import RETURN_STATUSES, Order, Package
-from aicam.modules.platforms import service as platforms
-from aicam.modules.platforms.base import PlatformAdapter, PlatformError
+from aicam.modules.platforms import lookup
+from aicam.modules.platforms.base import PlatformAdapter
 from aicam.modules.returns import service as returns
 from aicam.modules.sessions import return_scan, return_state
 from aicam.modules.sessions.events import record_event as record_event
@@ -39,6 +38,7 @@ from aicam.modules.sessions.schemas import (
     InspectionIn,
     InspectionSavedOut,
     ItemOut,
+    MergedOrderRef,
     MismatchOut,
     OrderBrief,
     PackageBrief,
@@ -152,22 +152,35 @@ async def _package_brief(session: AsyncSession, package: Package) -> PackageBrie
     if package.order_id:
         order = await orders.get_order(session, package.order_id)
         if order is not None:
+            shop = await orders.shop_of(session, order)
+            merged = await orders.merged_orders(session, package.id)
             order_brief = OrderBrief(
-                platform="SHOPEE", platform_order_sn=order.platform_order_sn, buyer_note=order.buyer_note
+                platform=shop.platform if shop else None,
+                shop_name=shop.name if shop else None,
+                platform_order_sn=order.platform_order_sn,
+                buyer_note=order.buyer_note,
+                merged_orders=[MergedOrderRef(platform_order_sn=m.platform_order_sn) for m in merged],
             )
-            items = [
-                ItemOut(
-                    order_item_id=i.id,
-                    product_name=i.product_name,
-                    variation=i.variation,
-                    quantity=i.quantity,
-                    image_url=i.image_url,
-                )
-                for i in await orders.items_of(session, order.id)
-            ]
+            for o in (order, *merged):
+                items += [
+                    ItemOut(
+                        order_item_id=i.id,
+                        product_name=i.product_name,
+                        variation=i.variation,
+                        quantity=i.quantity,
+                        image_url=i.image_url,
+                        platform_order_sn=o.platform_order_sn,
+                    )
+                    for i in await orders.items_of(session, o.id)
+                ]
     return PackageBrief(
         id=package.id, tracking_number=package.tracking_number, order=order_brief, items=items
     )
+
+
+def operator_required(packer_name_required: bool, station: Station) -> bool:
+    """API-10 `operator_required` (FR-03.16): setting bật ∧ station đang ở chế độ đóng gói."""
+    return packer_name_required and station.work_mode == "PACK"
 
 
 async def build_state(session: AsyncSession, station: Station, settings: Settings) -> StationStateOut:
@@ -178,9 +191,9 @@ async def build_state(session: AsyncSession, station: Station, settings: Setting
         CameraState(role=c.role, status=c.status) for c in await stations.cameras_of(session, station.id)
     ]
     session_out = None
+    cfg = await settings_service.get(session)
     if current is not None:
         package = await _require_package(session, current.package_id)
-        cfg = await settings_service.get(session)
         is_return = current.type == "RETURN"
         warn_m, abandon_m = (
             (cfg.return_warn_minutes, cfg.return_abandon_minutes)
@@ -221,6 +234,7 @@ async def build_state(session: AsyncSession, station: Station, settings: Setting
             kind=station.kind,
             work_mode=station.work_mode,
             operator_name=station.operator_name,
+            operator_required=operator_required(cfg.packer_name_required, station),
         ),
         state=state,
         cameras=cameras,
@@ -271,35 +285,32 @@ async def lock_station(session: AsyncSession, station_id: uuid.UUID) -> None:
 
 async def _lookup_platform(
     session: AsyncSession, code: str, adapter: PlatformAdapter, settings: Settings
-) -> Package | None:
-    """BR-04: tra sàn tối đa `PLATFORM_LOOKUP_TIMEOUT_S` (2 giây); có → ghi đơn; không / quá hạn / lỗi → None.
+) -> list[dict[str, str | None]] | None:
+    """BR-04 + BR-32: tra mọi shop đang kết nối song song, cắt `PLATFORM_LOOKUP_TIMEOUT_S` (2 giây) mỗi shop.
 
-    Gọi ngoài lock station; ghi đơn trong savepoint (station khác có thể vừa ghi cùng đơn — review M1 #5).
+    Đúng 1 shop có → ghi đơn vào shop đó (savepoint — station khác có thể vừa ghi cùng đơn, review M1 #5).
+    ≥ 2 shop → không ghi, trả danh sách shop `[{platform, name}]` để phiên mở chưa xác minh + cờ
+    `AMBIGUOUS_SHOP` (FR-05.19). 0 / quá hạn / lỗi → None (chưa xác minh như Phase 1). Gọi ngoài lock station.
     """
     try:
-        target = await platforms.lookup_target(session, adapter, settings)
-        if target is None:
-            return None
-        found = await asyncio.wait_for(
-            adapter.find_by_tracking(target.creds, code), timeout=settings.platform_lookup_timeout_s
-        )
-    except (TimeoutError, PlatformError) as exc:
-        log.info("platform_lookup_failed", code=code, error=type(exc).__name__)
-        return None
+        found = await lookup.find_everywhere(session, code, settings, adapter)
     except SQLAlchemyError:
         raise  # lỗi DB: transaction quét đã hỏng, không giả như "không tìm thấy"
     except Exception:  # tra sàn lỗi bất ngờ không được làm quét 500 (BR-04 → UNVERIFIED, G3-P2-6)
         log.exception("platform_lookup_error", code=code)
         return None
-    if found is None:
+    if found.ambiguous:
+        return found.shops_brief()
+    hit = found.single
+    if hit is None:
         return None
     try:
         # Station khác vừa ghi cùng đơn (tra ngoài lock): bỏ qua, bước mở phiên đọc lại từ DB (review #5).
         async with session.begin_nested():
-            result = await orders.upsert_platform_order(session, found, shop_id=target.shop_id)
+            await orders.upsert_platform_order(session, hit.order, shop_id=hit.shop_id)
     except IntegrityError:
         return None
-    return next((p for p in result.packages if p.tracking_number == code), None)
+    return None
 
 
 def _hhmm(at: datetime, tz: str) -> str:
@@ -307,18 +318,26 @@ def _hhmm(at: datetime, tz: str) -> str:
 
 
 async def _open_session(
-    session: AsyncSession, station: Station, code: str, settings: Settings
+    session: AsyncSession,
+    station: Station,
+    code: str,
+    settings: Settings,
+    ambiguous_shops: list[dict[str, str | None]] | None = None,
 ) -> tuple[str, AlertOut | None]:
     """Hai station tranh cùng kiện / cùng mã mới: unique index chặn → ALERT thay vì 500 (review #5)."""
     try:
         async with session.begin_nested():
-            return await _open_session_unsafe(session, station, code, settings)
+            return await _open_session_unsafe(session, station, code, settings, ambiguous_shops)
     except IntegrityError:
         return "ALERT", _alert("PACKED_ELSEWHERE_IN_PROGRESS", f"{code} đang được đóng gói ở station khác.")
 
 
 async def _open_session_unsafe(
-    session: AsyncSession, station: Station, code: str, settings: Settings
+    session: AsyncSession,
+    station: Station,
+    code: str,
+    settings: Settings,
+    ambiguous_shops: list[dict[str, str | None]] | None = None,
 ) -> tuple[str, AlertOut | None]:
     # Khóa kiện (DEC-266, sau station): API-122 chỉnh tay cùng lúc không bị bên quét ghi đè (DEC-303 d).
     package = await orders.find_package(session, code, for_update=True)
@@ -329,7 +348,24 @@ async def _open_session_unsafe(
             "ALREADY_HANDED_OVER", f"{code} là kiện hàng hoàn — nhận ở bàn nhận hoàn.", is_return=True
         )
     if await orders.is_cancelled(session, package):
-        return "ALERT", _alert("ORDER_CANCELLED", f"{code} đã bị hủy trên Shopee. Không đóng gói.")
+        # BR-01 theo nhóm (DEC-455): đang yêu cầu hủy → alert riêng; đã hủy → như Phase 2, bỏ chữ "Shopee".
+        order = await orders.get_order(session, package.order_id) if package.order_id else None
+        shop = await orders.shop_of(session, order) if order else None
+        platform = shop.platform if shop else None
+        if (
+            package.warehouse_status not in ("CANCELLED", "CANCELLED_AFTER_PACK")
+            and order is not None
+            and order.platform_status_group == "CANCEL_REQUESTED"
+        ):
+            return "ALERT", _alert(
+                "ORDER_CANCEL_REQUESTED",
+                # Thân S4 theo 01 §10.4 / 02b-station §9 (station hiện `message` server — DEC-825).
+                f"{code}: người mua đang xin hủy đơn này. Chờ xử lý trên sàn, chưa đóng gói.",
+                platform=platform,
+            )
+        return "ALERT", _alert(
+            "ORDER_CANCELLED", f"{code} đã bị hủy trên sàn. Không đóng gói.", platform=platform
+        )
     if package.warehouse_status == "PACKED":
         done = await last_completed(session, package.id)
         station_name = None
@@ -358,6 +394,7 @@ async def _open_session_unsafe(
         open_code=code,
         package_status_before=package.warehouse_status,
         flags=[] if package.verified else ["UNVERIFIED"],
+        operator_name=station.operator_name,  # FR-03.16: người đóng gói của phiên PACK
     )
     # Phiếu đã nằm trên khay và khớp trước khi quét: vision không phát sự kiện mới, nên ghi nhận ngay (BR-18).
     tray = await read_tray(get_redis(), station.id, code)
@@ -366,6 +403,11 @@ async def _open_session_unsafe(
     await orders.transition(session, package, "PACKING", source="WAREHOUSE", actor_label=station.name)
     await session.flush()
     record_event(session, pack, "SCAN_OPEN", code=code)
+    if ambiguous_shops and not package.verified:
+        # BR-32 / FR-05.19: mã có ở ≥ 2 shop → phiên chưa xác minh + cờ + sự kiện liệt kê shop (D4 dòng thời
+        # gian "Mã có ở 2 shop: …" — API-31 `timeline[].shops`, DEC-561).
+        set_flag(pack, "AMBIGUOUS_SHOP")
+        record_event(session, pack, "AMBIGUOUS_SHOP", code=code, shops=ambiguous_shops)
     # Khay đã có phiếu khác trước khi quét: vision không phát sự kiện mới nên xét ngay (BR-06, DEC-111).
     if apply_tray(session, pack, tray) == "MISMATCH":
         return "MISMATCH", None
@@ -491,17 +533,23 @@ async def scan(
 
     valid = re.fullmatch(settings.scan_code_regex, code) is not None
     prepared: return_scan.Prepared | None = None
+    ambiguous_shops: list[dict[str, str | None]] | None = None
+    need_operator = (
+        operator_required((await settings_service.get(session)).packer_name_required, station)
+        and not station.operator_name
+    )
     if station.work_mode == "RETURN":
         # Bàn hoàn (02a §4.1, R3-4): tra mã + tra sàn + khóa `order:{sn}` ngoài khóa station.
         prepared = await return_scan.prepare(session, station, code, adapter, settings)
         await session.flush()
     elif (
         valid
+        and not need_operator  # FR-03.16: chưa có tên người đóng gói → không tra sàn
         and await active_session(session, station.id) is None
         and await orders.find_package(session, code) is None
     ):
         # Tra sàn ngoài khóa station (02a §4.1): chỉ khi mã hợp lệ, station rảnh và mã chưa có.
-        await _lookup_platform(session, code, adapter, settings)
+        ambiguous_shops = await _lookup_platform(session, code, adapter, settings)
         await session.flush()
 
     await lock_station(session, station.id)
@@ -524,8 +572,18 @@ async def scan(
             "ALERT",
             _alert("INVALID_CODE", "Mã vừa quét không phải mã vận đơn. Quét lại mã trên phiếu."),
         )
+    elif (
+        pack is None
+        and operator_required((await settings_service.get(session)).packer_name_required, station)
+        and not station.operator_name
+    ):
+        # FR-03.16 (kiểm lại dưới khóa station — Admin vừa bật / station vừa đổi tên)
+        outcome, alert = (
+            "ALERT",
+            _alert("OPERATOR_REQUIRED", "Nhập tên người đóng gói trước khi đóng gói.", mode="PACK"),
+        )
     elif pack is None:
-        outcome, alert = await _open_session(session, station, code, settings)
+        outcome, alert = await _open_session(session, station, code, settings, ambiguous_shops)
     else:
         outcome, alert, closed = await _continue_session(session, station, pack, code)
 
@@ -623,7 +681,10 @@ async def open_return_by_request(
 
     alert: AlertOut | None
     if not station.operator_name:
-        outcome, alert = "ALERT", _alert("OPERATOR_REQUIRED", "Nhập tên người kiểm trước khi nhận hàng hoàn.")
+        outcome, alert = (
+            "ALERT",
+            _alert("OPERATOR_REQUIRED", "Nhập tên người kiểm trước khi nhận hàng hoàn.", mode="RETURN"),
+        )
     elif body.force_new:
         outcome, alert = await return_scan.open_force_new(
             session, station, code, note or "", resolution, actor=actor, ip=ip, tz=settings.tz_display
@@ -782,6 +843,8 @@ async def cancel(
             "VALIDATION_ERROR", "Dữ liệu không hợp lệ.", 422,
             {"fields": {"reason": "Lý do không áp dụng cho loại phiên này"}},
         )  # fmt: skip
+    if pack.type == "RETURN":
+        await _check_self_cancel(session, pack)
     await end_without_packing(
         session, pack, status="CANCELLED", reason=reason, note=note and note.strip(), actor_label=station.name
     )
@@ -790,6 +853,20 @@ async def cancel(
     notify_after_commit(session, station.id, state)
     await commit(session)
     return state
+
+
+async def _check_self_cancel(session: AsyncSession, pack: PackSession) -> None:
+    """BR-37: dưới khóa station, theo giờ server — quá 60 giây / đã lưu kết luận / đã chụp ảnh tay → 409."""
+    until = await return_state.self_cancel_until(session, pack)
+    if until is not None and clock.now() <= until:
+        return
+    if pack.inspection_saved_at is not None:
+        cause, message = "INSPECTION_SAVED", "Phiên đã lưu kết luận. Bấm Gọi quản lý để hủy."
+    elif until is None:
+        cause, message = "SNAPSHOT_TAKEN", "Phiên đã có ảnh chụp. Bấm Gọi quản lý để hủy."
+    else:
+        cause, message = "TIME_EXCEEDED", "Phiên đã quá 60 giây. Bấm Gọi quản lý để hủy."
+    raise AppError("CANCEL_REQUIRES_SUPERVISOR", message, 409, {"reason": cause})
 
 
 async def save_inspection(
@@ -1054,30 +1131,40 @@ async def check_timeouts(session: AsyncSession, settings: Settings) -> dict[str,
 # ---------------------------------------------------------------- BR-21 đơn hủy khi đang đóng (T-117)
 
 
-async def flag_order_cancelled(session: AsyncSession, package_id: uuid.UUID, settings: Settings) -> str:
+async def flag_order_cancelled(
+    session: AsyncSession, package_id: uuid.UUID, settings: Settings, *, kind: str = "CANCELLED"
+) -> str:
     """Task riêng sau J-04 / J-06 thấy đơn hủy khi kiện `PACKING` (BR-21, DEC-266, R3-8).
 
     Khóa `order:{sn}` → station của phiên → kiện. Phiên còn hoạt động → cờ `ORDER_CANCELLED` + WS-01
     `alert ORDER_CANCELLED_DURING_SESSION` + `station.state`; phiên đã đóng trước khi task chạy (kiện
-    `PACKED`) → `PACKED → CANCELLED_AFTER_PACK`. Trả kết quả (log / test)."""
+    `PACKED`) → `PACKED → CANCELLED_AFTER_PACK`. Trả kết quả (log / test).
+
+    `kind = CANCEL_REQUESTED` (DEC-494): người mua đang xin hủy → chỉ cờ phiên `ORDER_CANCEL_REQUESTED` +
+    `station.state` (S2 banner vàng); phiên đóng bình thường, trạng thái kho **không** đổi; đơn đã rời nhóm
+    `CANCEL_REQUESTED` lúc task chạy → không làm gì."""
     for _ in range(2):  # phiên vừa mở giữa bước đọc và bước khóa → làm lại với đúng station
-        result = await _flag_order_cancelled_once(session, package_id, settings)
+        result = await _flag_order_cancelled_once(session, package_id, settings, kind)
         if result != "retry":
             return result
     return "noop"
 
 
-async def _flag_order_cancelled_once(session: AsyncSession, package_id: uuid.UUID, settings: Settings) -> str:
+async def _flag_order_cancelled_once(
+    session: AsyncSession, package_id: uuid.UUID, settings: Settings, kind: str = "CANCELLED"
+) -> str:
     from aicam.realtime import publish
 
     package = await session.get(Package, package_id)
     if package is None:
         await rollback(session)
         return "missing"
+    order: Order | None = None
     if package.order_id is not None:
         order = await session.get(Order, package.order_id)
         if order is not None:
             await orders.lock_orders(session, [order.platform_order_sn])
+            order = await session.get(Order, order.id, populate_existing=True)
     active = await active_session_of_package(session, package_id)
     if active is not None:
         await lock_station(session, active.station_id)
@@ -1091,6 +1178,8 @@ async def _flag_order_cancelled_once(session: AsyncSession, package_id: uuid.UUI
         await rollback(session)
         return "retry"
     package = await _lock_package(session, package_id)
+    if kind == "CANCEL_REQUESTED":
+        return await _flag_cancel_requested(session, pack, order, package, settings)
     if pack is not None:
         if pack.type != "PACK" or "ORDER_CANCELLED" in pack.flags:
             await rollback(session)
@@ -1126,6 +1215,30 @@ async def _flag_order_cancelled_once(session: AsyncSession, package_id: uuid.UUI
         return "cancelled_after_pack"
     await rollback(session)
     return "noop"
+
+
+async def _flag_cancel_requested(
+    session: AsyncSession, pack: PackSession | None, order: Order | None, package: Package, settings: Settings
+) -> str:
+    """BR-21 làm rõ: cờ `ORDER_CANCEL_REQUESTED` trên phiên PACK đang mở (đã khóa station → phiên → kiện)."""
+    if (
+        pack is None
+        or pack.type != "PACK"
+        or order is None
+        or order.platform_status_group != "CANCEL_REQUESTED"
+        or "ORDER_CANCEL_REQUESTED" in pack.flags
+    ):
+        await rollback(session)
+        return "noop"
+    set_flag(pack, "ORDER_CANCEL_REQUESTED")
+    record_event(session, pack, "ORDER_CANCEL_REQUESTED")
+    await session.flush()
+    station = await stations.get_station(session, pack.station_id)
+    state = await build_state(session, station, settings) if station else None
+    notify_after_commit(session, pack.station_id, state)
+    await commit(session)
+    log.info("order_cancel_requested_during_session", session_id=str(pack.id), package_id=str(package.id))
+    return "flagged"
 
 
 # ---------------------------------------------------------------- cờ phiên (T-14)

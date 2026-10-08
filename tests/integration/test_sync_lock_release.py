@@ -23,6 +23,7 @@ from aicam.modules.platforms import service as platforms
 from aicam.modules.platforms import sync
 from aicam.modules.platforms.base import PlatformItem, PlatformOrder, ShopCredentials
 from aicam.modules.platforms.mock.adapter import MOCK_SHOP_ID, MockAdapter
+from aicam.modules.platforms.shopee.mapping import order_group as shopee_order_group
 
 pytestmark = pytest.mark.integration
 
@@ -51,6 +52,7 @@ def _order(n: int) -> PlatformOrder:
         items=(PlatformItem("Áo thun", 1),),
         created_at=NOW,
         updated_at=NOW,
+        status_group=shopee_order_group("READY_TO_SHIP"),
     )
 
 

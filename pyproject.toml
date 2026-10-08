@@ -1,6 +1,6 @@
 [project]
 name = "aicam"
-version = "0.1.0"
+version = "0.3.0"
 description = "Hệ thống X — ghi hình và đối soát đóng gói (backend: api, worker, beat, vision)"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
@@ -25,6 +25,7 @@ dependencies = [
     "python-multipart>=0.0.32",
     "openpyxl>=3.1.5",
     "defusedxml>=0.7.1",
+    "boto3>=1.35",
 ]
 
 [project.scripts]
@@ -69,7 +70,7 @@ packages = ["aicam"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["celery", "celery.*"]
+module = ["celery", "celery.*", "boto3", "boto3.*", "botocore", "botocore.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -97,3 +98,15 @@ name = "module nghiệp vụ không import entrypoints"
 type = "forbidden"
 source_modules = ["aicam.modules"]
 forbidden_modules = ["aicam.entrypoints"]
+
+[[tool.importlinter.contracts]]
+name = "cloud không import module nghiệp vụ (DEC-463)"
+type = "forbidden"
+source_modules = ["aicam.modules.cloud"]
+forbidden_modules = [
+    "aicam.modules.approvals", "aicam.modules.backup", "aicam.modules.claims", "aicam.modules.imports",
+    "aicam.modules.media", "aicam.modules.notify", "aicam.modules.orders", "aicam.modules.platforms",
+    "aicam.modules.reconciliation", "aicam.modules.reports", "aicam.modules.returns", "aicam.modules.sessions",
+    "aicam.modules.settings", "aicam.modules.shares", "aicam.modules.stations", "aicam.modules.users",
+    "aicam.modules.vision", "aicam.realtime", "aicam.workers",
+]

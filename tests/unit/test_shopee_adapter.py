@@ -90,7 +90,7 @@ def _detail(
 
 def test_auth_partner_url_signed_with_public_base(adapter: ShopeeAdapter) -> None:
     """FR-05.01: auth_partner ký `partner_id + path + timestamp`, giữ nguyên `redirect` (có state)."""
-    url = adapter.build_auth_url("https://kho.local/api/v1/shops/shopee/callback?state=abc")
+    url = adapter.build_auth_url("https://kho.local/api/v1/shops/shopee/callback?state=abc", "abc")
     parsed = urlparse(url)
     q = {k: v[0] for k, v in parse_qs(parsed.query).items()}
     ts = int(NOW.timestamp())
@@ -108,8 +108,10 @@ async def test_exchange_code_and_shop_call_signature(adapter: ShopeeAdapter) -> 
         return_value=ok(access_token="acc-new", refresh_token="ref-new", expire_in=14400)
     )
     info_route = respx.get(f"{BASE}/api/v2/shop/get_shop_info").mock(return_value=ok(shop_name="Shop ABC"))
-    creds = await adapter.exchange_code("CODE-1", "990001")
-    assert creds == ShopCredentials("990001", "acc-new", "ref-new", NOW + timedelta(hours=4))
+    (creds,) = await adapter.exchange_code("CODE-1", "990001")
+    assert creds == ShopCredentials(
+        "990001", "acc-new", "ref-new", NOW + timedelta(hours=4), grant_ref="990001"
+    )  # Phase 3: list một phần tử, `grant_ref` = mã shop (02a §2 base.py)
     req = token_route.calls.last.request
     assert json.loads(req.content) == {"code": "CODE-1", "shop_id": 990001, "partner_id": PARTNER_ID}
     q = {k: v[0] for k, v in parse_qs(req.url.query.decode()).items()}

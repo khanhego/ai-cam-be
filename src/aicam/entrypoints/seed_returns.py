@@ -32,6 +32,7 @@ from aicam.modules.claims.schemas import ClaimCreateIn
 from aicam.modules.orders import service as orders
 from aicam.modules.orders.models import Order, Package
 from aicam.modules.platforms.base import PlatformItem, PlatformOrder
+from aicam.modules.platforms.shopee import mapping as shopee_mapping
 from aicam.modules.platforms.shopee import returns_mapping
 from aicam.modules.reconciliation import service as recon
 from aicam.modules.returns import service as returns
@@ -107,6 +108,19 @@ async def _pack_and_ship(session: AsyncSession, package: Package, station: Stati
         await orders.transition(session, package, "DELIVERED", source="PLATFORM", actor_label="Sàn")
 
 
+async def upsert_seed_order(session: AsyncSession, data: PlatformOrder) -> None:
+    """Ghi đơn mock của seed như J-04 Phase 1 (chưa shop) — nhưng nếu mã đơn đã thuộc một shop (seed Phase 3
+    đã cho `990001` nhận ở lần chạy trước) thì ghi vào đúng shop đó: chạy lại `seed-demo` không tạo đơn trùng
+    mã không shop và không gắn kiện sang đơn mới (T-229, DEC-821)."""
+    shop_id = await session.scalar(
+        select(Order.shop_id)
+        .where(Order.platform_order_sn == data.platform_order_sn, Order.shop_id.is_not(None))
+        .order_by(Order.id)
+        .limit(1)
+    )
+    await orders.upsert_platform_order(session, data, shop_id=shop_id)
+
+
 async def seed_returns(
     session: AsyncSession, settings: Settings, station: Station, supervisor: User
 ) -> list[str]:
@@ -114,12 +128,13 @@ async def seed_returns(
     base = clock.now() - timedelta(days=10)
     for demo in DEMO:
         order_sn = f"2410TST{demo.n:05d}"
+        status = "COMPLETED" if demo.final == "DELIVERED" else "READY_TO_SHIP"  # chữ Shopee (dữ liệu mock)
         data = PlatformOrder(
-            platform_order_sn=order_sn, status="COMPLETED" if demo.final == "DELIVERED" else "READY_TO_SHIP",
-            tracking_numbers=_codes(demo), items=demo.items, created_at=base, updated_at=base,
-            raw={"seed": "demo-returns", "n": demo.n},
+            platform_order_sn=order_sn, status=status, tracking_numbers=_codes(demo), items=demo.items,
+            created_at=base, updated_at=base, raw={"seed": "demo-returns", "n": demo.n},
+            status_group=shopee_mapping.order_group(status),
         )  # fmt: skip
-        await orders.upsert_platform_order(session, data)
+        await upsert_seed_order(session, data)
         for code in _codes(demo):
             package = await orders.find_package(session, code, for_update=True)
             if package is not None and package.warehouse_status == "NEW":
